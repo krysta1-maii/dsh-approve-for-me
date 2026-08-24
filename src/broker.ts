@@ -1,0 +1,191 @@
+import { parseApprovalDecision } from './protocol.js'
+import type { ApprovalDecision, ApprovalRequest } from './protocol.js'
+
+export type ReviewFailureCode =
+  | 'aborted'
+  | 'cancelled'
+  | 'delivery-failed'
+  | 'disposed'
+  | 'identity-mismatch'
+  | 'invalid-result'
+  | 'timed-out'
+
+export class ReviewProtocolError extends Error {
+  constructor(readonly code: ReviewFailureCode, message: string) {
+    super(message)
+    this.name = 'ReviewProtocolError'
+  }
+}
+
+export interface DecisionSubmissionContext {
+  readonly actualReviewerSessionId: string
+  readonly receivedAt?: number
+}
+
+export type SubmitDecisionResult =
+  | { readonly status: 'accepted'; readonly decision: ApprovalDecision }
+  | { readonly status: 'duplicate'; readonly reviewId: string }
+  | { readonly status: 'identity-mismatch'; readonly reviewId: string }
+  | { readonly status: 'invalid'; readonly reviewId?: string; readonly error: TypeError }
+  | { readonly status: 'late'; readonly reviewId: string }
+  | { readonly status: 'unknown'; readonly reviewId: string }
+
+export interface ReviewClock {
+  now(): number
+  setTimeout(callback: () => void, delayMs: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+const systemClock: ReviewClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+}
+
+interface PendingReview {
+  readonly request: ApprovalRequest
+  readonly resolve: (decision: ApprovalDecision) => void
+  readonly reject: (error: ReviewProtocolError) => void
+  readonly timer: unknown
+  readonly signal?: AbortSignal
+  readonly onAbort?: () => void
+}
+
+type TerminalStatus = 'accepted' | ReviewFailureCode
+
+function routingReviewId(input: unknown): string | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const value = (input as Record<string, unknown>).reviewId
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/** Owns the one-shot, schema-validated result channel used by the Reviewer tool. */
+export class DecisionBroker {
+  private readonly pending = new Map<string, PendingReview>()
+  private readonly terminal = new Map<string, TerminalStatus>()
+  private disposed = false
+
+  constructor(
+    private readonly clock: ReviewClock = systemClock,
+    private readonly terminalHistoryLimit = 1024,
+  ) {
+    if (!Number.isSafeInteger(terminalHistoryLimit) || terminalHistoryLimit < 1) {
+      throw new TypeError('terminalHistoryLimit must be a positive safe integer')
+    }
+  }
+
+  arm(request: ApprovalRequest, signal?: AbortSignal): Promise<ApprovalDecision> {
+    if (this.disposed) return Promise.reject(new ReviewProtocolError('disposed', 'decision broker is disposed'))
+    if (this.pending.has(request.reviewId) || this.terminal.has(request.reviewId)) {
+      return Promise.reject(new TypeError(`review ${request.reviewId} has already been armed`))
+    }
+    if (signal?.aborted) {
+      this.remember(request.reviewId, 'aborted')
+      return Promise.reject(new ReviewProtocolError('aborted', `review ${request.reviewId} was aborted before delivery`))
+    }
+    const delay = request.deadlineAt - this.clock.now()
+    if (delay <= 0) {
+      this.remember(request.reviewId, 'timed-out')
+      return Promise.reject(new ReviewProtocolError('timed-out', `review ${request.reviewId} reached its deadline`))
+    }
+    return new Promise<ApprovalDecision>((resolve, reject) => {
+      const timer = this.clock.setTimeout(() => {
+        this.rejectPending(request.reviewId, 'timed-out', `review ${request.reviewId} reached its deadline`)
+      }, delay)
+      const onAbort = signal === undefined
+        ? undefined
+        : () => { this.rejectPending(request.reviewId, 'aborted', `review ${request.reviewId} was aborted`) }
+      if (onAbort !== undefined) signal!.addEventListener('abort', onAbort, { once: true })
+      this.pending.set(request.reviewId, {
+        request,
+        resolve,
+        reject,
+        timer,
+        ...signal === undefined ? {} : { signal },
+        ...onAbort === undefined ? {} : { onAbort },
+      })
+    })
+  }
+
+  submit(input: unknown, context: DecisionSubmissionContext): SubmitDecisionResult {
+    const routedReviewId = routingReviewId(input)
+    let decision: ApprovalDecision
+    try {
+      decision = parseApprovalDecision(input)
+    } catch (error: unknown) {
+      const typed = error instanceof TypeError ? error : new TypeError(String(error))
+      if (routedReviewId !== undefined && this.pending.has(routedReviewId)) {
+        this.rejectPending(routedReviewId, 'invalid-result', `review ${routedReviewId} returned an invalid result`)
+      }
+      return { status: 'invalid', ...routedReviewId === undefined ? {} : { reviewId: routedReviewId }, error: typed }
+    }
+    const entry = this.pending.get(decision.reviewId)
+    if (entry === undefined) {
+      const terminal = this.terminal.get(decision.reviewId)
+      if (terminal === 'accepted') return { status: 'duplicate', reviewId: decision.reviewId }
+      if (terminal !== undefined) return { status: 'late', reviewId: decision.reviewId }
+      return { status: 'unknown', reviewId: decision.reviewId }
+    }
+    const now = context.receivedAt ?? this.clock.now()
+    if (now > entry.request.deadlineAt) {
+      this.rejectPending(decision.reviewId, 'timed-out', `review ${decision.reviewId} returned after its deadline`)
+      return { status: 'late', reviewId: decision.reviewId }
+    }
+    const matches = decision.parentSessionId === entry.request.parentSessionId
+      && decision.reviewerSessionId === entry.request.reviewerSessionId
+      && context.actualReviewerSessionId === entry.request.reviewerSessionId
+      && decision.generation === entry.request.generation
+      && decision.actionHash === entry.request.actionHash
+    if (!matches) {
+      this.rejectPending(decision.reviewId, 'identity-mismatch', `review ${decision.reviewId} returned mismatched identity`)
+      return { status: 'identity-mismatch', reviewId: decision.reviewId }
+    }
+    this.pending.delete(decision.reviewId)
+    this.cleanup(entry)
+    this.remember(decision.reviewId, 'accepted')
+    entry.resolve(decision)
+    return { status: 'accepted', decision }
+  }
+
+  cancel(reviewId: string, code: Exclude<ReviewFailureCode, 'disposed' | 'timed-out'> = 'cancelled', message?: string): boolean {
+    return this.rejectPending(reviewId, code, message ?? `review ${reviewId} was ${code}`)
+  }
+
+  hasPending(reviewId: string): boolean {
+    return this.pending.has(reviewId)
+  }
+
+  close(): void {
+    if (this.disposed) return
+    this.disposed = true
+    for (const reviewId of [...this.pending.keys()]) {
+      this.rejectPending(reviewId, 'disposed', `review ${reviewId} was closed with the broker`)
+    }
+  }
+
+  private rejectPending(reviewId: string, code: ReviewFailureCode, message: string): boolean {
+    const entry = this.pending.get(reviewId)
+    if (entry === undefined) return false
+    this.pending.delete(reviewId)
+    this.cleanup(entry)
+    this.remember(reviewId, code)
+    entry.reject(new ReviewProtocolError(code, message))
+    return true
+  }
+
+  private cleanup(entry: PendingReview): void {
+    this.clock.clearTimeout(entry.timer)
+    if (entry.signal !== undefined && entry.onAbort !== undefined) {
+      entry.signal.removeEventListener('abort', entry.onAbort)
+    }
+  }
+
+  private remember(reviewId: string, status: TerminalStatus): void {
+    this.terminal.set(reviewId, status)
+    while (this.terminal.size > this.terminalHistoryLimit) {
+      const oldest = this.terminal.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.terminal.delete(oldest)
+    }
+  }
+}

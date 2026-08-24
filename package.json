@@ -1,0 +1,42 @@
+{
+  "name": "dsh-approve-for-me",
+  "version": "0.1.0-dev.0",
+  "private": true,
+  "description": "Managed approval reviewer plugin for DeepSeek Harness",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "docs"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "approval",
+    "managed-agent"
+  ],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

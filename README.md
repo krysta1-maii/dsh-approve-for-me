@@ -2,54 +2,80 @@
 
 面向 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/DeepSeek-Harness) 的受管自动审批插件。
 
-> 当前状态：设计共识已落盘，尚未开始实现。
+> 当前状态：首个审批协议核心已实现并通过测试；真实 Cordis／DSH 适配等待 `dsh-managed-agent` 实现其已定稿的 `managed` subagent API。项目尚未安装或挂载到 DSH。
 
 ## 项目目标
 
-`dsh-approve-for-me` 为每个主 live Session 配置一个常驻的 Approval Reviewer。Reviewer 使用独立模型和隔离 Session，读取有界、不可变的动作快照，并返回结构化审批决定，用于在不放宽 DSH 原有安全边界的前提下自动处理工具审批。
+`dsh-approve-for-me` 为每个主 Session 管理一个持久的 Approval Reviewer child。Reviewer 使用独立 Session 和受控模型配置，接收有界、不可变的动作快照，并通过插件自有的结构化结果工具返回审批决定。
 
-本项目是 [`dsh-managed-agent`](../dsh-managed-agent) 的首个业务应用。它依赖后者提供可见但不可被自由聊天消息驱动的 Managed Agent 节点、controller capability、类型化协议、生命周期和审计投影；本仓库只负责审批领域逻辑。
+这里的“持久”指 Reviewer Session 和 transcript 可以在 Activation 释放后继续保留，并在后续审批时 cold-resume；不要求 Reviewer Agent 永久在线。
+
+本项目是 [`dsh-managed-agent`](../dsh-managed-agent) 的首个业务应用。基础插件将为官方 `ctx.subagents` 增加第三种 `managed` mode，并提供 provider 私有的 Controller capability：
+
+```text
+registerManagedProvider()
+└── controller
+    ├── create(parent, options)
+    ├── list(parentSessionId)
+    ├── deliver(parent, childId, content)
+    └── interrupt(parent, childId)
+```
+
+基础层只负责受控创建、发现、投递、恢复和停止；审批 schema、singleton、串行、deadline、结果关联和失败关闭全部由本仓库负责。
 
 历史讨论中曾使用工作名 `dsh-approval-for-me`，本仓库以 **`dsh-approve-for-me`** 为正式项目名。
 
-## 核心原则
+## 已实现的首个里程碑
 
-- **Controller 独占**：每个 Reviewer 只接受其 `ReviewerSessionManager` 提交的审批请求。
-- **结构化协议**：输入为 `ApprovalRequest`／`ActionSnapshot`，输出为 `ApprovalDecision`，不以自由文本作为控制接口。
-- **最小权限**：Reviewer 不继承父 Session 的 memory、skills、plugins、hooks、MCP、web、subagent 或 workflow；首期只拥有提交审批结果所需的专用工具。
-- **失败关闭**：超时、取消、模型或 transport 错误、非法输出、缺失结果、迟到结果均不能产生 `allow`。
-- **可见且可审计**：Reviewer 有独立 Agent／Session，可在 Agent 树中查看状态和执行记录，但不能通过 composer、`send_message` 或 follow-up 被聊天式 steer。
-- **复用 DSH 模型设施**：直接复用 `llm.models`／`llm.providers` catalog、provider adapter、凭据、retry、reasoning effort 与现有模型选择机制。
-- **配置安全换代**：模型、policy 或 toolset 变化后生成新配置代际；进行中的审查不中途切换模型，旧代际结果不得污染新代际。
+当前代码实现了与未来 Managed Controller 对齐、但不导入尚不存在 API 的纯 TypeScript 核心：
+
+- lossless JSON snapshot、递归冻结和规范化序列化；
+- versioned `ReviewerProviderData` 及可复算配置指纹；
+- 不可变 `ActionSnapshot` 和带 domain separator 的 SHA-256 `actionHash`；
+- 严格的 `ApprovalRequest`／`ApprovalDecision` 运行时解析；
+- 绑定 parent、Reviewer child、generation、action hash 和实际 scoped-tool child 的一次性 `DecisionBroker`；
+- invalid、identity mismatch、timeout、abort、duplicate、late 和 unknown 结果处理；
+- 按 parent Session 串行、不同 parent 并行的 `ReviewerSessionManager`；
+- 一父 Session／一配置代际 Reviewer 的懒创建和复用；
+- DSH `approval/request` answerer 的纯适配逻辑；
+- 用 `tools/pre-execute` 完整动作补齐窄 `approval/request` 的 capture store；
+- 37 项单元测试，以及 TypeScript typecheck／build gate。
+
+`ManagedReviewerController` 是本仓库当前的窄端口。隔壁基础插件可用后，真实 adapter 将把它直接映射到 `registerManagedProvider()` 返回的 Controller。
+
+## 核心安全原则
+
+- **精确父 Agent**：未来 approval hook 必须把 `ApprovalRequest.agent` 原样交给 Managed Controller，不以 session id 重新查找或替代 live authority。
+- **结构化协议**：输入和输出均做运行时校验；模型自由文本不能产生审批结果。
+- **实例绑定**：结果同时绑定 `reviewId`、parent Session、Reviewer Session、generation、`actionHash` 和实际调用结果工具的 child Session。
+- **一次性终结**：首个完全匹配的结果生效；重复、迟到和跨实例结果不产生副作用。
+- **失败关闭**：超时、取消、模型／transport 错误、非法输出、身份不匹配和缺失动作快照均不能产生 `allowed-once`。
+- **最小权限**：真实 Reviewer setup 将隐藏继承工具，只注册审批结果工具，并设置 approval `never`、sandbox `read-only`、complete prompt 和 runtime-context suppression。
+- **不伪装 continuable**：不会用当前 `startContinuable()`／`followup()` 模拟 Managed Agent。
 
 ## 审批模式
 
-- `auto`：Reviewer 只在得到有效、确定的 `allow` 时自动放行；其余情况失败关闭。
-- `auto-then-user`：Reviewer 返回不确定或要求人工复核时，转交 DSH 现有人工 answerer；没有可用人工通道时明确返回 unavailable／rejected，不静默放行。
+- `auto`：只有完整验证的 `allow` 自动映射为 `allowed-once`；其他决定或故障均不放行。
+- `auto-then-user`：有效 `human_review` 或无法取得完整动作快照时调用 approval waterfall 的 `next()`，转交现有人工 answerer；没有后续 answerer 时由 DSH 失败关闭。
 
-## 仓库边界
+## 当前安全能力边界
 
-本仓库负责：
+DSH `0.1.1-rc.2` 的公开 API 可以隐藏 Reviewer 的继承工具、覆盖 prompt、抑制 runtime context，并设置 read-only sandbox／approval never；但尚不能对所有同进程插件 hook、provider 网络访问或任意 Node.js I/O 提供 OS 级隔离。因此，在基础设施提供更强 composition boundary 前，本项目不会宣称已经实现“绝对无 hooks／plugins／network”的硬沙箱。
 
-- Approval Reviewer 的类型注册与 `ReviewerSessionManager`；
-- 审批请求快照、结构化决定、风险与用户授权语义；
-- Reviewer 的提示词、上下文预算、deadline、有限重试与拒绝熔断；
-- Reviewer 模型配置界面和配置代际管理；
-- 审批链路与 DSH approval／answerer 的集成；
-- Codex Guardian 可复用策略的移植、适配和第三方归属。
+## 开发
 
-本仓库不负责：
+```bash
+npm install
+npm run check
+```
 
-- 实现通用 Managed Agent 基础设施；
-- 复制 DSH provider 私有配置或凭据；
-- 将普通 continuable subagent 当作 Reviewer 实现本体；
-- 允许任意聊天消息或未授权插件绕过 controller 输入通道；
-- 在无法验证 Reviewer 结果时默认放行。
+`npm run check` 依次执行 typecheck、37 项测试和构建。
 
 ## 文档
 
 - [项目共识与设计边界](docs/consensus.md)
+- [实现状态与后续接入](docs/implementation.md)
 
 ## 许可证与上游归属
 
-项目自身许可证尚未确定。DSH 使用 MIT 许可证，计划参考的 Codex Guardian 使用 Apache-2.0。直接复制或改编 Guardian 的提示词与代码时，必须记录上游 commit，保留 Apache-2.0 许可证及第三方归属，并将原样上游 policy 与 DSH adapter 分层存放。
+项目自身许可证尚未确定，当前包标记为 `private`／`UNLICENSED`。DSH 使用 MIT 许可证，计划参考的 Codex Guardian 使用 Apache-2.0。直接复制或改编 Guardian 的提示词与代码时，必须记录上游 commit，保留 Apache-2.0 许可证及第三方归属，并将原样上游 policy 与 DSH adapter 分层存放。
