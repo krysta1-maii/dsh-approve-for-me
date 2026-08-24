@@ -1,5 +1,5 @@
-import { parseApprovalDecision } from './protocol.js'
-import type { ApprovalDecision, ApprovalRequest } from './protocol.js'
+import { parseApprovalDecision } from '../domain/protocol.js'
+import type { ApprovalDecision, ApprovalReviewRequest } from '../domain/protocol.js'
 
 export type ReviewFailureCode =
   | 'aborted'
@@ -42,8 +42,25 @@ const systemClock: ReviewClock = {
   clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 }
 
+/**
+ * One-shot result channel owned by the application layer. The decision tool
+ * stages a candidate; the child-scoped `tools/result` observer calls
+ * {@link DecisionChannel.submit} with the ACTUAL reviewer Session that called
+ * the tool, so identity is never taken from model payload alone.
+ */
+export interface DecisionChannel {
+  arm(request: ApprovalReviewRequest, signal?: AbortSignal): Promise<ApprovalDecision>
+  submit(payload: unknown, context: DecisionSubmissionContext): SubmitDecisionResult
+  cancel(
+    reviewId: string,
+    code?: Exclude<ReviewFailureCode, 'disposed' | 'timed-out'>,
+    message?: string,
+  ): boolean
+  dispose(): void
+}
+
 interface PendingReview {
-  readonly request: ApprovalRequest
+  readonly request: ApprovalReviewRequest
   readonly resolve: (decision: ApprovalDecision) => void
   readonly reject: (error: ReviewProtocolError) => void
   readonly timer: unknown
@@ -59,8 +76,8 @@ function routingReviewId(input: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-/** Owns the one-shot, schema-validated result channel used by the Reviewer tool. */
-export class DecisionBroker {
+/** Owns arm/await/submit correlation, deadline, cancellation, and tombstones. */
+export class DefaultDecisionChannel implements DecisionChannel {
   private readonly pending = new Map<string, PendingReview>()
   private readonly terminal = new Map<string, TerminalStatus>()
   private disposed = false
@@ -74,8 +91,8 @@ export class DecisionBroker {
     }
   }
 
-  arm(request: ApprovalRequest, signal?: AbortSignal): Promise<ApprovalDecision> {
-    if (this.disposed) return Promise.reject(new ReviewProtocolError('disposed', 'decision broker is disposed'))
+  arm(request: ApprovalReviewRequest, signal?: AbortSignal): Promise<ApprovalDecision> {
+    if (this.disposed) return Promise.reject(new ReviewProtocolError('disposed', 'decision channel is disposed'))
     if (this.pending.has(request.reviewId) || this.terminal.has(request.reviewId)) {
       return Promise.reject(new TypeError(`review ${request.reviewId} has already been armed`))
     }
@@ -107,11 +124,11 @@ export class DecisionBroker {
     })
   }
 
-  submit(input: unknown, context: DecisionSubmissionContext): SubmitDecisionResult {
-    const routedReviewId = routingReviewId(input)
+  submit(payload: unknown, context: DecisionSubmissionContext): SubmitDecisionResult {
+    const routedReviewId = routingReviewId(payload)
     let decision: ApprovalDecision
     try {
-      decision = parseApprovalDecision(input)
+      decision = parseApprovalDecision(payload)
     } catch (error: unknown) {
       const typed = error instanceof TypeError ? error : new TypeError(String(error))
       if (routedReviewId !== undefined && this.pending.has(routedReviewId)) {
@@ -147,19 +164,19 @@ export class DecisionBroker {
     return { status: 'accepted', decision }
   }
 
-  cancel(reviewId: string, code: Exclude<ReviewFailureCode, 'disposed' | 'timed-out'> = 'cancelled', message?: string): boolean {
+  cancel(
+    reviewId: string,
+    code: Exclude<ReviewFailureCode, 'disposed' | 'timed-out'> = 'cancelled',
+    message?: string,
+  ): boolean {
     return this.rejectPending(reviewId, code, message ?? `review ${reviewId} was ${code}`)
   }
 
-  hasPending(reviewId: string): boolean {
-    return this.pending.has(reviewId)
-  }
-
-  close(): void {
+  dispose(): void {
     if (this.disposed) return
     this.disposed = true
     for (const reviewId of [...this.pending.keys()]) {
-      this.rejectPending(reviewId, 'disposed', `review ${reviewId} was closed with the broker`)
+      this.rejectPending(reviewId, 'disposed', `review ${reviewId} was closed with the channel`)
     }
   }
 

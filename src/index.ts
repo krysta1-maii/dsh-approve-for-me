@@ -1,36 +1,37 @@
+// Domain protocol and JSON helpers.
 export {
   JsonSnapshotError,
   canonicalJson,
   freezeJson,
   snapshotJson,
-} from './json.js'
-export type { JsonPrimitive, JsonValue } from './json.js'
+} from './domain/json.js'
+export type { JsonPrimitive, JsonValue } from './domain/json.js'
 
 export {
   APPROVAL_PROTOCOL_VERSION,
   REVIEWER_PROVIDER,
-  approvalRequestContent,
+  approvalReviewRequestContent,
   createActionSnapshot,
-  createApprovalRequest,
+  createApprovalReviewRequest,
   createReviewerProviderData,
   fingerprintReviewerConfiguration,
   hashAction,
   parseActionSnapshot,
   parseApprovalDecision,
-  parseApprovalRequest,
+  parseApprovalReviewRequest,
   parseReviewerProviderData,
   resolveApprovalDecision,
-} from './protocol.js'
+} from './domain/protocol.js'
 export type {
   ActionSnapshot,
   ActionSnapshotInput,
   ApprovalDecision,
   ApprovalDecisionKind,
   ApprovalOutcome,
-  ApprovalRequest,
   ApprovalResolution,
+  ApprovalReviewRequest,
   ApprovalRisk,
-  CreateApprovalRequestOptions,
+  CreateApprovalReviewOptions,
   RequestedPermission,
   RequestedPermissionKind,
   ReviewerConfiguration,
@@ -39,35 +40,78 @@ export type {
   ReviewerTextBlock,
   ReviewMode,
   UserAuthorization,
-} from './protocol.js'
+} from './domain/protocol.js'
 
+// Application services (no DSH imports).
 export {
-  DecisionBroker,
+  DefaultDecisionChannel,
   ReviewProtocolError,
-} from './broker.js'
+} from './application/decision-channel.js'
 export type {
+  DecisionChannel,
   DecisionSubmissionContext,
   ReviewClock,
   ReviewFailureCode,
   SubmitDecisionResult,
-} from './broker.js'
+} from './application/decision-channel.js'
+export { SerialLanes } from './application/serial-lanes.js'
+export {
+  DefaultReviewerDirectory,
+} from './application/reviewer-directory.js'
+export type { ReviewerDirectory } from './application/reviewer-directory.js'
+export {
+  DefaultReviewCoordinator,
+} from './application/review-coordinator.js'
+export type { ReviewCoordinator, ReviewCoordinatorOptions } from './application/review-coordinator.js'
 
-export { ActionCaptureStore } from './capture.js'
-export type { CapturedAction } from './capture.js'
-
-export { createApprovalAnswerer } from './answerer.js'
+// Ports.
 export type {
-  ApprovalAnswerer,
-  ApprovalAnswererOptions,
-  ApprovalHookRequest,
-  ApprovalNext,
-  ApprovalReviewer,
-} from './answerer.js'
-
-export { ReviewerSessionManager } from './manager.js'
-export type {
+  ParentAuthority,
   ManagedOwnedReviewer,
-  ManagedReviewerController,
-  ReviewActionOptions,
-  ReviewerSessionManagerOptions,
-} from './manager.js'
+  ManagedReviewerPort,
+} from './ports/managed-reviewer.js'
+export {
+  DefaultActionCapture,
+} from './ports/action-projector.js'
+export type {
+  ActionCapture,
+  ActionProjector,
+} from './ports/action-projector.js'
+
+// Reviewer composition (real DSH types).
+export {
+  REVIEWER_SECTION,
+  createReviewerProvider,
+} from './reviewer/provider.js'
+export type { ReviewerProviderOptions } from './reviewer/provider.js'
+export {
+  REVIEWER_DECISION_PARAMETERS,
+  REVIEWER_POLICY_VERSION,
+  createPolicyRegistry,
+  createReviewerPolicyV1,
+} from './reviewer/policy.js'
+export type { PolicyRegistry, ReviewerPolicy } from './reviewer/policy.js'
+export {
+  SUBMIT_DECISION_TOOL,
+  createDecisionTool,
+} from './reviewer/decision-tool.js'
+export type { DecisionSubmitter, ScopedDecisionTool } from './reviewer/decision-tool.js'
+
+// DSH adapters.
+export { createManagedReviewerPort } from './dsh/managed-controller.js'
+export {
+  createCaptureBridge,
+  createDefaultActionProjector,
+} from './dsh/action-capture.js'
+export type { CaptureBridge } from './dsh/action-capture.js'
+export { createApprovalAnswerer } from './dsh/approval-answerer.js'
+export type { ApprovalAnswerer, ApprovalAnswererOptions } from './dsh/approval-answerer.js'
+
+// Cordis plugin entry and serializable config.
+export { Config, inject, name, normalizeConfig } from './config.js'
+export type { Config as ApproveForMeConfig, NormalizedConfig } from './config.js'
+export {
+  apply,
+  installApproveForMe,
+} from './plugin.js'
+export type { ApproveForMeInstallOptions, ApproveForMePlugin } from './plugin.js'

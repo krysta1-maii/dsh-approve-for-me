@@ -17,7 +17,7 @@ const PERMISSION_KINDS = ['filesystem', 'network', 'sandbox', 'process', 'other'
 export interface ReviewerModelRoute {
   readonly providerId: string
   readonly modelId: string
-  readonly effort?: string
+  readonly reasoningEffort?: string
 }
 
 export interface ReviewerConfiguration {
@@ -59,7 +59,7 @@ export interface ActionSnapshotInput {
   }[]
 }
 
-export interface ApprovalRequest {
+export interface ApprovalReviewRequest {
   readonly protocolVersion: 1
   readonly reviewId: string
   readonly parentSessionId: string
@@ -73,7 +73,7 @@ export interface ApprovalRequest {
   readonly action: ActionSnapshot
 }
 
-export interface CreateApprovalRequestOptions {
+export interface CreateApprovalReviewOptions {
   readonly reviewId?: string
   readonly parentSessionId: string
   readonly reviewerSessionId: string
@@ -169,11 +169,13 @@ function digest(domain: string, input: unknown): string {
 
 function parseModelRoute(input: unknown): ReviewerModelRoute {
   const value = record(input, 'providerData.modelRoute')
-  exactKeys(value, ['providerId', 'modelId'], ['effort'], 'providerData.modelRoute')
+  exactKeys(value, ['providerId', 'modelId'], ['reasoningEffort'], 'providerData.modelRoute')
   const route: ReviewerModelRoute = {
     providerId: identifier(value.providerId, 'providerData.modelRoute.providerId'),
     modelId: identifier(value.modelId, 'providerData.modelRoute.modelId'),
-    ...value.effort === undefined ? {} : { effort: identifier(value.effort, 'providerData.modelRoute.effort') },
+    ...value.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: identifier(value.reasoningEffort, 'providerData.modelRoute.reasoningEffort') },
   }
   return Object.freeze(route)
 }
@@ -269,7 +271,7 @@ export function hashAction(action: ActionSnapshot): string {
 }
 
 /** Bind one review identity, Reviewer identity, and deadline to an action snapshot. */
-export function createApprovalRequest(action: ActionSnapshot, options: CreateApprovalRequestOptions): ApprovalRequest {
+export function createApprovalReviewRequest(action: ActionSnapshot, options: CreateApprovalReviewOptions): ApprovalReviewRequest {
   const parsedAction = parseActionSnapshot(action)
   const issuedAt = timestamp(options.issuedAt, 'request.issuedAt')
   const deadlineAt = timestamp(options.deadlineAt, 'request.deadlineAt')
@@ -290,7 +292,7 @@ export function createApprovalRequest(action: ActionSnapshot, options: CreateApp
 }
 
 /** Parse a request and recompute its action hash instead of trusting the payload. */
-export function parseApprovalRequest(input: unknown): ApprovalRequest {
+export function parseApprovalReviewRequest(input: unknown): ApprovalReviewRequest {
   const value = record(input, 'request')
   exactKeys(
     value,
@@ -300,7 +302,7 @@ export function parseApprovalRequest(input: unknown): ApprovalRequest {
   )
   if (value.protocolVersion !== 1) throw new TypeError('request.protocolVersion must be 1')
   const action = parseActionSnapshot(value.action)
-  const request = createApprovalRequest(action, {
+  const request = createApprovalReviewRequest(action, {
     reviewId: identifier(value.reviewId, 'request.reviewId'),
     parentSessionId: identifier(value.parentSessionId, 'request.parentSessionId'),
     reviewerSessionId: identifier(value.reviewerSessionId, 'request.reviewerSessionId'),
@@ -349,7 +351,7 @@ export function parseApprovalDecision(input: unknown): ApprovalDecision {
 }
 
 /** Build the complete next-turn payload delivered through the managed Controller. */
-export function approvalRequestContent(request: ApprovalRequest): readonly ReviewerTextBlock[] {
+export function approvalReviewRequestContent(request: ApprovalReviewRequest): readonly ReviewerTextBlock[] {
   return Object.freeze([Object.freeze({
     type: 'text' as const,
     text: [

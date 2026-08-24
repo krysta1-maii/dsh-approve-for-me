@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
   JsonSnapshotError,
-  approvalRequestContent,
+  approvalReviewRequestContent,
   createActionSnapshot,
-  createApprovalRequest,
+  createApprovalReviewRequest,
   createReviewerProviderData,
   hashAction,
   parseApprovalDecision,
-  parseApprovalRequest,
+  parseApprovalReviewRequest,
   parseReviewerProviderData,
   resolveApprovalDecision,
   snapshotJson,
-} from '../src/index.js'
+} from '../../src/index.js'
 
 const providerData = () => createReviewerProviderData({
   generation: 'generation-1',
-  modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat', effort: 'high' },
+  modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat', reasoningEffort: 'high' },
   policyVersion: 'policy-1',
   toolsetVersion: 1,
 })
@@ -26,7 +26,7 @@ const action = () => createActionSnapshot({
   requestedPermissions: [{ kind: 'sandbox', scope: 'workspace-write' }],
 })
 
-const request = () => createApprovalRequest(action(), {
+const request = () => createApprovalReviewRequest(action(), {
   reviewId: 'review-1',
   parentSessionId: 'parent-1',
   reviewerSessionId: 'reviewer-1',
@@ -54,10 +54,26 @@ const decision = () => ({
 describe('reviewer provider data', () => {
   it('computes and verifies a frozen composition fingerprint', () => {
     const data = providerData()
+    expect(data.modelRoute.reasoningEffort).toBe('high')
     expect(data.configurationFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/)
     expect(parseReviewerProviderData(structuredClone(data))).toEqual(data)
     expect(Object.isFrozen(data)).toBe(true)
     expect(Object.isFrozen(data.modelRoute)).toBe(true)
+  })
+
+  it('includes reasoningEffort in the configuration fingerprint', () => {
+    const withEffort = providerData()
+    const withoutEffort = createReviewerProviderData({
+      generation: 'generation-1',
+      modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      policyVersion: 'policy-1',
+      toolsetVersion: 1,
+    })
+    expect(withEffort.configurationFingerprint).not.toBe(withoutEffort.configurationFingerprint)
+    expect(() => parseReviewerProviderData({
+      ...withoutEffort,
+      modelRoute: { ...withoutEffort.modelRoute, effort: 'high' },
+    })).toThrow(/not supported/)
   })
 
   it('rejects unknown versions, fields, and forged fingerprints', () => {
@@ -99,15 +115,15 @@ describe('action snapshots and requests', () => {
 
   it('recomputes actionHash when parsing an untrusted request', () => {
     const value = request()
-    expect(parseApprovalRequest(structuredClone(value))).toEqual(value)
-    expect(() => parseApprovalRequest({ ...value, actionHash: `sha256:${'0'.repeat(64)}` })).toThrow(/does not match/)
+    expect(parseApprovalReviewRequest(structuredClone(value))).toEqual(value)
+    expect(() => parseApprovalReviewRequest({ ...value, actionHash: `sha256:${'0'.repeat(64)}` })).toThrow(/does not match/)
   })
 
   it('serializes one complete immutable request block', () => {
-    const content = approvalRequestContent(request())
+    const content = approvalReviewRequestContent(request())
     expect(content).toHaveLength(1)
     const encoded = content[0]!.text.split('\n').at(-1)!
-    expect(parseApprovalRequest(JSON.parse(encoded))).toEqual(request())
+    expect(parseApprovalReviewRequest(JSON.parse(encoded))).toEqual(request())
     expect(Object.isFrozen(content)).toBe(true)
   })
 })

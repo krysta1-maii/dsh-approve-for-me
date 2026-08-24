@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DecisionBroker,
+  DefaultDecisionChannel,
   ReviewProtocolError,
   createActionSnapshot,
-  createApprovalRequest,
-} from '../src/index.js'
-import type { ApprovalRequest, ReviewClock } from '../src/index.js'
+  createApprovalReviewRequest,
+} from '../../src/index.js'
+import type { ApprovalReviewRequest, ReviewClock } from '../../src/index.js'
 
 class FakeClock implements ReviewClock {
   value = 100
@@ -30,8 +30,8 @@ class FakeClock implements ReviewClock {
   }
 }
 
-function request(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
-  const base = createApprovalRequest(createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), {
+function request(overrides: Partial<ApprovalReviewRequest> = {}): ApprovalReviewRequest {
+  const base = createApprovalReviewRequest(createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), {
     reviewId: 'review-1',
     parentSessionId: 'parent-1',
     reviewerSessionId: 'reviewer-1',
@@ -58,34 +58,35 @@ function decision(req = request()) {
   }
 }
 
-describe('DecisionBroker', () => {
+describe('DefaultDecisionChannel', () => {
   it('accepts the first fully matching result and tombstones duplicates', async () => {
     const clock = new FakeClock()
-    const broker = new DecisionBroker(clock)
-    const pending = broker.arm(request())
-    const first = broker.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })
-    const second = broker.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })
+    const channel = new DefaultDecisionChannel(clock)
+    const pending = channel.arm(request())
+    const first = channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })
+    const second = channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })
     expect(first.status).toBe('accepted')
     expect(second).toEqual({ status: 'duplicate', reviewId: 'review-1' })
     await expect(pending).resolves.toMatchObject({ decision: 'allow' })
   })
 
   it('closes a routable malformed result instead of waiting for a replacement', async () => {
-    const broker = new DecisionBroker(new FakeClock())
-    const pending = broker.arm(request())
-    const disposition = broker.submit({ ...decision(), risk: 'safe' }, { actualReviewerSessionId: 'reviewer-1' })
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    const disposition = channel.submit({ ...decision(), risk: 'safe' }, { actualReviewerSessionId: 'reviewer-1' })
     expect(disposition.status).toBe('invalid')
     await expect(pending).rejects.toMatchObject({ code: 'invalid-result' })
-    expect(broker.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })).toEqual({ status: 'late', reviewId: 'review-1' })
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' }))
+      .toEqual({ status: 'late', reviewId: 'review-1' })
   })
 
   it('does not let an unroutable malformed payload close another request', async () => {
-    const broker = new DecisionBroker(new FakeClock())
-    const pending = broker.arm(request())
-    expect(broker.submit('allow', { actualReviewerSessionId: 'reviewer-1' }).status).toBe('invalid')
-    expect(broker.hasPending('review-1')).toBe(true)
-    broker.cancel('review-1')
-    await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    expect(channel.submit('allow', { actualReviewerSessionId: 'reviewer-1' }).status).toBe('invalid')
+    // Pending work stays open: a later valid result is still accepted.
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' }).status).toBe('accepted')
+    await expect(pending).resolves.toMatchObject({ decision: 'allow' })
   })
 
   it.each([
@@ -94,50 +95,59 @@ describe('DecisionBroker', () => {
     ['generation', 'generation-2'],
     ['actionHash', `sha256:${'0'.repeat(64)}`],
   ] as const)('fails closed when %s mismatches', async (field, value) => {
-    const broker = new DecisionBroker(new FakeClock())
-    const pending = broker.arm(request())
-    expect(broker.submit({ ...decision(), [field]: value }, { actualReviewerSessionId: 'reviewer-1' }).status)
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    expect(channel.submit({ ...decision(), [field]: value }, { actualReviewerSessionId: 'reviewer-1' }).status)
       .toBe('identity-mismatch')
     await expect(pending).rejects.toMatchObject({ code: 'identity-mismatch' })
   })
 
   it('binds the result to the actual scoped-tool child identity', async () => {
-    const broker = new DecisionBroker(new FakeClock())
-    const pending = broker.arm(request())
-    expect(broker.submit(decision(), { actualReviewerSessionId: 'reviewer-elsewhere' }).status)
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-elsewhere' }).status)
       .toBe('identity-mismatch')
     await expect(pending).rejects.toMatchObject({ code: 'identity-mismatch' })
   })
 
   it('times out, rejects the promise, and classifies a later result', async () => {
     const clock = new FakeClock()
-    const broker = new DecisionBroker(clock)
-    const pending = broker.arm(request())
+    const channel = new DefaultDecisionChannel(clock)
+    const pending = channel.arm(request())
     clock.advance(101)
     await expect(pending).rejects.toEqual(expect.objectContaining<Partial<ReviewProtocolError>>({ code: 'timed-out' }))
-    expect(broker.submit(decision(), { actualReviewerSessionId: 'reviewer-1' })).toEqual({ status: 'late', reviewId: 'review-1' })
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' }))
+      .toEqual({ status: 'late', reviewId: 'review-1' })
   })
 
   it('honors abort and disposal without double settlement', async () => {
-    const broker = new DecisionBroker(new FakeClock())
+    const channel = new DefaultDecisionChannel(new FakeClock())
     const abort = new AbortController()
-    const first = broker.arm(request(), abort.signal)
+    const first = channel.arm(request(), abort.signal)
     const secondRequest = request({ reviewId: 'review-2' })
-    const second = broker.arm(secondRequest)
+    const second = channel.arm(secondRequest)
     abort.abort()
-    broker.close()
-    broker.close()
+    channel.dispose()
+    channel.dispose()
     await expect(first).rejects.toMatchObject({ code: 'aborted' })
     await expect(second).rejects.toMatchObject({ code: 'disposed' })
   })
 
   it('reports unknown ids without affecting pending work', async () => {
-    const broker = new DecisionBroker(new FakeClock())
-    const pending = broker.arm(request())
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
     const unknown = { ...decision(), reviewId: 'review-unknown' }
-    expect(broker.submit(unknown, { actualReviewerSessionId: 'reviewer-1' }))
+    expect(channel.submit(unknown, { actualReviewerSessionId: 'reviewer-1' }))
       .toEqual({ status: 'unknown', reviewId: 'review-unknown' })
-    broker.cancel('review-1')
+    channel.cancel('review-1')
     await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
+  })
+
+  it('rejects arming an id that already settled', async () => {
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    channel.cancel('review-1')
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
+    await expect(channel.arm(request())).rejects.toThrow(/already been armed/)
   })
 })

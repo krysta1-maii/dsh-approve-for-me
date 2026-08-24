@@ -1,79 +1,69 @@
 # 实现状态与后续接入
 
+> 状态：2026-08-25。施工计划 Phase 0–4 已完成并提交；Phase 5（patched-DSH 运行时集成验证）尚未执行。本文以当前真实代码为准。
+
 ## 当前里程碑
 
-仓库已经具备独立可构建、可测试的审批协议核心，不依赖尚未实现的 `managed` subagent API。
+仓库已经改为**真实 DSH 公共契约的编译期消费者**：不再导入任何本地 `Dsh*` facsimile，也不再依赖结构 mock 作为兼容性证据。
 
 ### 模块
 
 | 文件 | 职责 |
 |---|---|
-| `src/json.ts` | lossless JSON snapshot、递归冻结、canonical JSON |
-| `src/protocol.ts` | providerData、ActionSnapshot、Request／Decision、hash 和结果映射 |
-| `src/broker.ts` | 一次性 pending result、身份校验、timeout／abort 和 tombstone |
-| `src/capture.ts` | exact Agent + call id 的工具动作捕获关联 |
-| `src/manager.ts` | Reviewer singleton、per-parent 串行和 Managed Controller 窄端口 |
-| `src/answerer.ts` | DSH approval waterfall 的纯 fail-closed answerer 逻辑 |
-| `src/index.ts` | 公共导出 |
+| `src/config.ts` | `name`／`inject`／Schemastery `Config`／`normalizeConfig` |
+| `src/domain/json.ts` | lossless JSON snapshot、递归冻结、canonical JSON |
+| `src/domain/protocol.ts` | providerData、ActionSnapshot、ReviewRequest、Decision、hash、结果映射 |
+| `src/application/decision-channel.ts` | 一次性 pending 结果、身份校验、timeout／abort、tombstone |
+| `src/application/reviewer-directory.ts` | find-or-create、role／generation／fingerprint 选择 |
+| `src/application/serial-lanes.ts` | per-parent 串行、跨 parent 并行 |
+| `src/application/review-coordinator.ts` | 一次审批的完整编排（ParentAuthority 入口） |
+| `src/ports/managed-reviewer.ts` | 最窄 managed port 与 `ParentAuthority` |
+| `src/ports/action-projector.ts` | `ActionProjector`／`ActionCapture` 与默认实现 |
+| `src/reviewer/policy.ts` | v1 policy、decision schema、policy registry |
+| `src/reviewer/provider.ts` | 真实 `ManagedSubagentProvider` 与 `AgentSetup` |
+| `src/reviewer/decision-tool.ts` | 真实 `ToolDefinition` 两阶段结果工具 |
+| `src/dsh/managed-controller.ts` | 官方 Controller → 应用 port 适配 |
+| `src/dsh/action-capture.ts` | 真实 `ToolExecution` 的 capture／release bridge |
+| `src/dsh/approval-answerer.ts` | 真实 `approval/request` waterfall answerer |
+| `src/plugin.ts` | Cordis composition root |
 
 ### 验证
 
 ```bash
-npm run typecheck
-npm test
-npm run build
+npm run check
 ```
 
-当前测试覆盖 5 个测试文件、37 个用例。
+当前 70 项测试分布在：
 
-## 为什么还没有真实插件入口
+- `tests/domain/` — 协议与 JSON 边界（含 `reasoningEffort` 指纹）；
+- `tests/application/` — decision channel、approval-answerer、review coordinator（fake ports）；
+- `tests/adapters/` — 动作捕获 bridge、两阶段决策工具、provider materialize／setup、真实契约 fixture、插件组合根。
 
-DSH `0.1.1-rc.2` 当前没有以下 API：
+## 真实契约消费方式
 
-- `mode: 'managed'`；
-- `ctx.subagents.registerManagedProvider()`；
-- provider Controller 的 `create/list/deliver/interrupt`。
+依赖边界（均为精确版本 peer）：
 
-因此仓库只定义结构对齐的 `ManagedReviewerController` port，不声明合并、不伪造包导出，也不使用 continuable subagent 兼容实现。
+```text
+@deepseek-ai/cordis 4.0.1             @deepseek-ai/dsh-sandbox          0.1.1-rc.2
+@deepseek-ai/schemastery 3.18.1       @deepseek-ai/dsh-sandbox-policy  0.1.1-rc.2
+@deepseek-ai/dsh-agent    0.1.1-rc.2  @deepseek-ai/dsh-session         0.1.1-rc.2
+@deepseek-ai/dsh-llm      0.1.1-rc.2  @deepseek-ai/dsh-subagent        0.1.1-rc.2
+@deepseek-ai/dsh-system-prompt  0.1.1-rc.2   @deepseek-ai/dsh-tools          0.1.1-rc.2
+@deepseek-ai/dsh-user-approval   0.1.1-rc.2
+dsh-managed-agent         0.1.0-dev.0
+```
 
-## 基础插件可用后的接入顺序
+`dsh-managed-agent` 只作为编译期契约：`import type` 全部擦除，运行时零引用。其 `src/index.ts` 提供：
 
-1. **Managed adapter**
-   - 注册 `dsh-approve-for-me/reviewer`；
-   - 用 Cordis effect 持有 registration disposer；
-   - 将真实 Controller 包装成 `ManagedReviewerController<Agent>`。
+1. `Managed*` 契约类型；
+2. 对 `SubagentRuntime` 的模块增强（`registerManagedProvider`／`isManagedAgent`／`stopManaged`）；
+3. `SubagentRuntime` 类型再导出 —— 该引用强制把 patched 运行时声明（含其 `ctx.subagents` 增强）载入消费者程序，没有它增强不会生效。
 
-2. **Reviewer materializer**
-   - runtime parse providerData；
-   - 安装明确模型和 `installModelSelection`；
-   - complete prompt + runtime-context suppression；
-   - inherited tools restriction；
-   - 注册 scoped decision tool；
-   - 设置 approval `never` 和 sandbox `read-only`。
+`tsc` 在本仓库可见真实 `registerManagedProvider()`，`tests/adapters/real-contract.test.ts` 是 Phase 0 退出条件的持续回归。
 
-3. **动作捕获**
-   - 在 `tools/pre-execute` 保存 exact Agent、call id、工具名和 frozen arguments；
-   - 从参数和执行环境提取 requested permissions；
-   - 在 `tools/result`、abort 和 scope teardown 后清理。
+## Phase 5 待办（patched-DSH 运行时集成）
 
-4. **Approval answerer**
-   - 监听 `approval/request` waterfall；
-   - 原样使用 `req.agent`；
-   - 调用当前 `createApprovalAnswerer()`；
-   - `human_review` 通过 `next()` 转人工。
-
-5. **结果工具**
-   - 将 raw payload 和实际 child Session id 交给 `submitDecision()`；
-   - 只返回 acknowledgement；
-   - 不在工具内执行审批副作用。
-
-6. **集成测试**
-   - create → deliver → tool result；
-   - 同 Session cold-resume；
-   - parent／provider teardown；
-   - HMR re-register；
-   - provider unavailable；
-   - Web read-only 节点。
+见 [docs/integration.md](integration.md)。关键点：runtime 的 `registerManagedProvider()` 来自应用了 `dsh-managed-agent` 上游补丁的 DSH；npm 发布的 `@deepseek-ai/dsh-subagent@0.1.1-rc.2` 不包含该运行时。
 
 ## 当前未执行的操作
 
