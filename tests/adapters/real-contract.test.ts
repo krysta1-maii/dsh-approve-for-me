@@ -1,10 +1,11 @@
 /**
- * Phase 0 exit-condition fixture: prove the plugin compiles against the REAL
- * patched-DSH contracts without local facsimiles or `as unknown as` through
- * the DSH seam. The runtime fakes below stop at the boundary the plugin owns.
+ * Phase 3 exit-condition fixture: prove the plugin compiles against the REAL
+ * stock Guarded Continuable contracts (`ctx.managedAgents`) without local
+ * facsimiles or `as unknown as` through the DSH seam. The runtime fakes below
+ * stop at the boundary the plugin owns.
  */
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
-import type { Agent, AgentOptions, AgentSetup } from '@deepseek-ai/dsh-agent'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { MessageId } from '@deepseek-ai/dsh-llm'
@@ -12,11 +13,11 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type {
+  ManagedAgentComposition,
+  ManagedAgentController,
+  ManagedAgentMaterializeInfo,
+  ManagedAgentProvider,
   ManagedProviderRegistration,
-  ManagedSubagentComposition,
-  ManagedSubagentController,
-  ManagedSubagentProvider,
-  SubagentRuntime,
 } from 'dsh-managed-agent'
 import {
   createApprovalAnswerer,
@@ -28,25 +29,24 @@ import {
 } from '../../src/index.js'
 import type { ApprovalDecision } from '../../src/index.js'
 
-describe('real patched-DSH contract fixture', () => {
-  it('augments the published SubagentRuntime with the managed capability', () => {
-    expectTypeOf<SubagentRuntime['registerManagedProvider']>()
-      .parameter(0).toEqualTypeOf<ManagedSubagentProvider>()
-    expectTypeOf<ReturnType<SubagentRuntime['registerManagedProvider']>>()
+describe('real guarded-continuable contract fixture', () => {
+  it('exposes ctx.managedAgents instead of augmenting stock SubagentRuntime', () => {
+    expectTypeOf<Context['managedAgents']['registerProvider']>()
+      .parameter(0).toEqualTypeOf<ManagedAgentProvider>()
+    expectTypeOf<ReturnType<Context['managedAgents']['registerProvider']>>()
       .toEqualTypeOf<ManagedProviderRegistration>()
   })
 
-  it('lets the plugin provider satisfy the real ManagedSubagentProvider', async () => {
-    const provider: ManagedSubagentProvider = createReviewerProvider({
+  it('lets the plugin provider satisfy the real ManagedAgentProvider', () => {
+    const provider: ManagedAgentProvider = createReviewerProvider({
       submitDecision: { submit: vi.fn() },
     })
-    const composition = await provider.materialize({
+    const composition = provider.materialize({
       source: 'startup',
       parentSessionId: SessionId('parent-1'),
       childSessionId: SessionId('reviewer-1'),
       descriptor: {
-        version: 3,
-        mode: 'managed',
+        version: 1,
         provider: 'dsh-approve-for-me/reviewer',
         label: 'Approval Reviewer',
         providerData: snapshotJson(createReviewerProviderData({
@@ -57,9 +57,10 @@ describe('real patched-DSH contract fixture', () => {
         })),
       },
     })
-    expectTypeOf<typeof composition.agentOptions>().toEqualTypeOf<AgentOptions | undefined>()
-    expectTypeOf<typeof composition.setup>().toEqualTypeOf<AgentSetup | undefined>()
+    expectTypeOf<typeof composition>().toEqualTypeOf<ManagedAgentComposition>()
     expect(composition.agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    expect(composition.toolFilter).toEqual({ allow: [] })
+    expect(typeof composition.setup).toBe('function')
   })
 
   it('lets the scoped decision tool satisfy the real ToolDefinition', async () => {
@@ -120,25 +121,46 @@ describe('real patched-DSH contract fixture', () => {
 
   it('holds the controller authority through the real capability interface', () => {
     // Structural verification only: the adapter maps the capability one-to-one.
-    const controller: ManagedSubagentController = {
+    const controller: ManagedAgentController = {
       create: async () => SessionId('reviewer-1'),
       list: async () => [],
+      rotate: async () => SessionId('reviewer-2'),
       deliver: async (): Promise<MessageId> => MessageId('message-1'),
       interrupt: () => {},
     }
     expect(controller).toBeDefined()
     // The exact live parent stays the authority argument, never a session id.
-    type CreateParams = Parameters<ManagedSubagentController['create']>
+    type CreateParams = Parameters<ManagedAgentController['create']>
     expectTypeOf<CreateParams[0]>().toEqualTypeOf<Agent>()
   })
 
-  it('never requires a DSH import to see ctx.subagents on a real Context', () => {
-    // Importing dsh-managed-agent (as every adapter file does) loads the
-    // patched declarations into this program: the compiled fixture below uses
-    // the REAL cordis Context type and must resolve the capability.
-    const register = (ctx: Context): unknown => ctx.subagents.registerManagedProvider(
+  it('loads ctx.managedAgents on a real Context through the Host declarations', () => {
+    const register = (ctx: Context): unknown => ctx.managedAgents.registerProvider(
       createReviewerProvider({ submitDecision: { submit: vi.fn() } }),
     )
     expectTypeOf<typeof register>().parameter(0).toEqualTypeOf<Context>()
+  })
+
+  it('supplies the exact descriptor shape for startup and resume materialization', () => {
+    const provider: ManagedAgentProvider = createReviewerProvider({
+      submitDecision: { submit: vi.fn() },
+    })
+    const info: ManagedAgentMaterializeInfo = {
+      source: 'resume',
+      parentSessionId: SessionId('parent-1'),
+      childSessionId: SessionId('reviewer-1'),
+      descriptor: {
+        version: 1,
+        provider: 'dsh-approve-for-me/reviewer',
+        label: 'Approval Reviewer',
+        providerData: snapshotJson(createReviewerProviderData({
+          generation: 'generation-1',
+          modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+          policyVersion: 'policy-v1',
+          toolsetVersion: 1,
+        })),
+      },
+    }
+    expect(provider.materialize(info).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
   })
 })

@@ -1,16 +1,16 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { ManagedSubagentController } from 'dsh-managed-agent'
+import type { ManagedAgentController } from 'dsh-managed-agent'
 import { snapshotJson } from '../domain/json.js'
 import type { ReviewerTextBlock } from '../domain/protocol.js'
 import type { ManagedReviewerPort } from '../ports/managed-reviewer.js'
 
 /**
- * Adapt the official registration-scoped `ManagedSubagentController` to the
+ * Adapt the official registration-scoped `ManagedAgentController` to the
  * application port. This is the ONLY place `Agent`/`SessionId`/`ContentBlock`
  * meet domain strings; the controller's identity checks stay authoritative.
  */
-export function createManagedReviewerPort(controller: ManagedSubagentController): ManagedReviewerPort<Agent, string> {
+export function createManagedReviewerPort(controller: ManagedAgentController): ManagedReviewerPort<Agent, string> {
   return {
     async create(authority, options) {
       return String(await controller.create(authority.live, {
@@ -28,6 +28,7 @@ export function createManagedReviewerPort(controller: ManagedSubagentController)
         label: child.label,
         ...child.providerData === undefined ? {} : { providerData: child.providerData },
         activity: child.activity,
+        contaminated: child.contaminated,
       }))
     },
     async deliver(authority, childId, content: readonly ReviewerTextBlock[], options) {
@@ -40,6 +41,13 @@ export function createManagedReviewerPort(controller: ManagedSubagentController)
     },
     interrupt(authority, childId) {
       controller.interrupt(authority.live, SessionId(childId))
+    },
+    async rotate(authority, childId, signal) {
+      return String(await controller.rotate(
+        authority.live,
+        SessionId(childId),
+        signal,
+      ))
     },
   }
 }

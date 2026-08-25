@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { assertObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { ManagedSubagentMaterializeInfo, ManagedSubagentProvider } from 'dsh-managed-agent'
+import type { ManagedAgentMaterializeInfo, ManagedAgentProvider } from 'dsh-managed-agent'
 import {
   REVIEWER_DECISION_PARAMETERS,
   REVIEWER_POLICY_VERSION,
@@ -25,14 +25,13 @@ function materializeInfo(overrides: {
   source?: 'startup' | 'resume'
   childSessionId?: string
   providerData?: unknown
-} = {}): ManagedSubagentMaterializeInfo {
+} = {}): ManagedAgentMaterializeInfo {
   return {
     source: overrides.source ?? 'startup',
     parentSessionId: SessionId('parent-1'),
     childSessionId: SessionId(overrides.childSessionId ?? 'reviewer-1'),
     descriptor: {
-      version: 3,
-      mode: 'managed',
+      version: 1,
       provider: 'dsh-approve-for-me/reviewer',
       label: 'Approval Reviewer',
       ...overrides.providerData === undefined
@@ -76,8 +75,8 @@ function agentCtxStub() {
 }
 
 describe('createReviewerProvider', () => {
-  it('is a real ManagedSubagentProvider and shares one composition path for startup and resume', async () => {
-    const provider: ManagedSubagentProvider = createReviewerProvider({ submitDecision: { submit: vi.fn() } })
+  it('is a real ManagedAgentProvider and shares one composition path for startup and resume', async () => {
+    const provider: ManagedAgentProvider = createReviewerProvider({ submitDecision: { submit: vi.fn() } })
     expect(provider.name).toBe('dsh-approve-for-me/reviewer')
     const startup = await provider.materialize(materializeInfo({ source: 'startup' }))
     const resumed = await provider.materialize(materializeInfo({ source: 'resume', childSessionId: 'reviewer-1' }))

@@ -21,11 +21,13 @@ export interface ManagedOwnedReviewer<SessionId> {
   readonly label: string
   readonly providerData?: JsonValue
   readonly activity: 'running' | 'inactive'
+  /** A child whose transcript received unauthorized input is permanently unusable. */
+  readonly contaminated: boolean
 }
 
 /**
  * The narrowest managed-child port the application layer needs. Mirrors the
- * `ManagedSubagentController` capability of `dsh-managed-agent`, minus DSH
+ * `ManagedAgentController` capability of `dsh-managed-agent`, minus DSH
  * types: the DSH adapter maps `Agent`/`SessionId`/`ContentBlock` at the seam.
  */
 export interface ManagedReviewerPort<Parent, SessionId> {
@@ -38,6 +40,12 @@ export interface ManagedReviewerPort<Parent, SessionId> {
     },
   ): Promise<SessionId>
   list(parentSessionId: SessionId, signal?: AbortSignal): Promise<ManagedOwnedReviewer<SessionId>[]>
+  /** Drain a contaminated Reviewer child and reserve a fresh clean one. */
+  rotate(
+    authority: ParentAuthority<Parent, SessionId>,
+    childId: SessionId,
+    signal?: AbortSignal,
+  ): Promise<SessionId>
   deliver(
     authority: ParentAuthority<Parent, SessionId>,
     childId: SessionId,

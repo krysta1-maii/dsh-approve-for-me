@@ -5,7 +5,7 @@
 > Managed Runtime 基线：`dsh-managed-agent` `878bf45`（contract 包现为 `0.1.0-dev.0`）  
 > 本文重点是抽象、组件关系、接口与施工顺序。具体安全加固、错误文案和穷举式 fail-closed 分支属于各阶段的工程验收，不作为架构主线。
 
-> 状态（2026-08-25）：Phase 0–4 已施工完成并提交（真实契约消费、可序列化 Config、应用层重构、真实 Reviewer provider、真实 DSH hooks），`npm run check` 全绿（70 项测试）。Phase 5 的 patched-DSH 运行时集成与 Phase 6 的 policy 产品化尚未执行，验收清单见第 10–11 节与 [integration.md](integration.md)。
+> 状态（2026-08-25）：Phase 0–4 的 patched Managed 契约实现已完成，随后应用迁移（Phase 3）也已切换到标准 `ctx.managedAgents`，当前完整测试为 82 项。部署路线为 stock DSH + Guarded Continuable；本文保留为已实现业务分层和旧施工顺序的历史基线，后续 patched-DSH Phase 5 不再执行。新的跨仓库权威计划见 [`dsh-managed-agent/docs/guarded-continuable-migration-plan.md`](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)，新的运行验收清单见 [integration.md](integration.md)。文中 `registerManagedProvider()` 和 patched fixture 描述属于历史基线，当前事实以 `ctx.managedAgents.registerProvider()` 为准。
 
 ## 1. 施工目标
 
@@ -667,28 +667,13 @@ provider 在 patched DSH fixture 中可以创建和 cold-resume 同一 Reviewer 
 
 真实工具调用能形成 action snapshot，真实 approval ask 能驱动 Reviewer，并由真实 scoped tool 返回结果。
 
-## Phase 5：DSH 集成验证
+## 历史 Phase 5：patched-DSH 集成验证（不再执行）
 
-**最小场景**
+本节原计划在 patched DSH 上验证首次审批、Reviewer 复用、cold resume、exact parent、unload/reload、人工下沉和 Web managed-node。部署路线改为 Guarded Continuable 后，不再建设该 fixture。
 
-1. plugin registration → first approval → create → deliver → decision tool；
-2. 第二次审批复用同一 Reviewer；
-3. idle release 后 cold resume 同一 Session；
-4. 父 Session 恢复后使用新的 exact parent Agent；
-5. plugin unload／reload 后新 registration 发现旧 child；
-6. `auto-then-user` 正确进入下游 answerer；
-7. 官方 Web 树可读、composer 只读、running Stop 可用。
+新的集成验证仍覆盖相同业务场景，但运行基线改为未修改的 stock DSH，并增加 pre-step 输入守卫、全 generation 覆盖、污染轮换和标准 bundle 安装。权威清单见 [integration.md](integration.md)。
 
-**测试分层**
-
-```text
-unit            domain + application ports
-adapter         real DSH types and scoped services
-integration     patched DSH runtime + persistence
-web smoke       existing Host/Web managed-node path
-```
-
-不再以纯结构 mock 的 plugin test 作为真实兼容性的最终证据。
+纯结构 mock 仍不作为真实兼容性的最终证据；最终证据必须来自 stock DSH runtime、persistence、security matrix 和 Web/profile smoke。
 
 ## Phase 6：policy 产品化
 

@@ -31,9 +31,10 @@ export interface ApproveForMeInstallOptions {
 export { Config }
 
 /**
- * Mount the complete DSH business adapter on a patched managed-agent runtime.
- * Composition order matters: channel → provider → registration → adapters →
- * hooks, so the decision tool never waits on a half-initialized manager.
+ * Mount the complete DSH business adapter on the standard Guarded Continuable
+ * `dsh-managed-agent` Host. Composition order matters: channel → provider →
+ * registration → adapters → hooks, so the decision tool never waits on a
+ * half-initialized manager.
  */
 export function installApproveForMe(
   ctx: Context,
@@ -45,7 +46,7 @@ export function installApproveForMe(
   const captures = new DefaultActionCapture<Agent, string>()
   const bridge = createCaptureBridge(createDefaultActionProjector(options.projectPermissions), captures)
 
-  const registration = ctx.subagents.registerManagedProvider(createReviewerProvider({
+  const registration = ctx.managedAgents.registerProvider(createReviewerProvider({
     submitDecision: {
       submit: (payload, actualReviewerSessionId) =>
         channel.submit(payload, { actualReviewerSessionId }),

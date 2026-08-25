@@ -13,7 +13,7 @@ export const name = 'dsh-approve-for-me'
  * Cordis service injects. All four services are REQUIRED: a missing service
  * means this plugin cannot mount, never a silently degraded Reviewer.
  */
-export const inject = ['subagents', 'tools', 'systemPrompt', 'approval'] as const
+export const inject = ['managedAgents', 'tools', 'systemPrompt', 'approval'] as const
 
 /**
  * Serializable plugin configuration (YAML/JSON-loader expressible). Code-level

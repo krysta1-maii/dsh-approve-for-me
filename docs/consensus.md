@@ -1,6 +1,6 @@
 # Approve for Me 最终设计共识
 
-> 状态：2026-08-24 按 `dsh-managed-agent` 提交 `e4fefe5` 修订。本文记录实现和评审不得破坏的产品边界。
+> 状态：2026-08-24 按补丁版 `dsh-managed-agent` 修订；2026-08-25 部署机制改为 Guarded Continuable。审批协议、身份/哈希校验、失败关闭、最小权限和每父 Reviewer 等产品边界继续有效；“官方第三 mode”与 patched API 的实现要求由 [`dsh-managed-agent` 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)取代。
 
 ## 1. 项目定位
 

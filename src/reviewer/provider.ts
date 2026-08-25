@@ -8,9 +8,9 @@ import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
 import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import type {
-  ManagedSubagentComposition,
-  ManagedSubagentMaterializeInfo,
-  ManagedSubagentProvider,
+  ManagedAgentComposition,
+  ManagedAgentMaterializeInfo,
+  ManagedAgentProvider,
 } from 'dsh-managed-agent'
 import { REVIEWER_PROVIDER, parseReviewerProviderData } from '../domain/protocol.js'
 import type { ReviewerModelRoute } from '../domain/protocol.js'
@@ -27,15 +27,16 @@ export interface ReviewerProviderOptions {
 }
 
 /**
- * Real `ManagedSubagentProvider` consumed by `ctx.subagents.registerManagedProvider()`
- * on a patched DSH runtime. One materializer serves BOTH startup and cold
- * resume: same providerData parsing, same policy resolution, same composition.
+ * Real `ManagedAgentProvider` consumed by `ctx.managedAgents.registerProvider()`
+ * on the stock Guarded Continuable `dsh-managed-agent` Host. One materializer
+ * serves BOTH startup and cold resume: same providerData parsing, same policy
+ * resolution, same composition.
  */
-export function createReviewerProvider(options: ReviewerProviderOptions): ManagedSubagentProvider {
+export function createReviewerProvider(options: ReviewerProviderOptions): ManagedAgentProvider {
   const policies = createPolicyRegistry()
   return Object.freeze({
     name: REVIEWER_PROVIDER,
-    materialize(info: ManagedSubagentMaterializeInfo): ManagedSubagentComposition {
+    materialize(info: ManagedAgentMaterializeInfo): ManagedAgentComposition {
       const data = parseReviewerProviderData(info.descriptor.providerData)
       if (data.role !== 'primary') throw new TypeError('Reviewer provider data has an unsupported role')
       const policy = policies.resolve(data.policyVersion)
@@ -44,6 +45,7 @@ export function createReviewerProvider(options: ReviewerProviderOptions): Manage
           provider: data.modelRoute.providerId,
           model: data.modelRoute.modelId,
         },
+        toolFilter: { allow: [] },
         setup: createReviewerSetup(info.childSessionId, data.modelRoute, policy, options.submitDecision),
       }
     },

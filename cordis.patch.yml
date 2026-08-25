@@ -1,0 +1,24 @@
+# dsh-approve-for-me bundle patch.
+#
+# This row activates the Host-side approval Reviewer. The Reviewer model route,
+# generation and policy/toolset versions are deployment-specific, so this bundle
+# intentionally supplies no concrete reviewer.* values. Configure them in the
+# profile's own cordis.patch.yml (or dump-config) before boot; a later layer
+# overrides this row by id and replaces its whole config.
+#
+# Example profile cordis.patch.yml:
+#
+# - id: dsh-approve-for-me
+#   config:
+#     mode: auto
+#     timeoutMs: 30000
+#     reviewer:
+#       generation: primary-v1
+#       provider: <llm-provider-id>
+#       model: <llm-model-id>
+#       policyVersion: policy-v1
+#       toolsetVersion: 1
+
+- insert:
+    - id: dsh-approve-for-me
+      name: dsh-approve-for-me

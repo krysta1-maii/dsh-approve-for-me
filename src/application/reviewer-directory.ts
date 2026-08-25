@@ -37,6 +37,9 @@ export class DefaultReviewerDirectory<Parent, SessionId extends string>
     )
     const matching = children.filter((child) => {
       if (child.provider !== this.reviewerProvider || child.parentSessionId !== authority.sessionId) return false
+      // Contaminated children are permanently unusable and must never be
+      // selected as the current Reviewer, even after a reload.
+      if (child.contaminated) return false
       try {
         const data = parseReviewerProviderData(child.providerData)
         return data.generation === desired.generation

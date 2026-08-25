@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { ManagedProviderRegistration, ManagedSubagentProvider } from 'dsh-managed-agent'
+import type { ManagedAgentProvider, ManagedProviderRegistration } from 'dsh-managed-agent'
 import {
   REVIEWER_PROVIDER,
   SUBMIT_DECISION_TOOL,
@@ -42,11 +42,11 @@ function decisionFor(request: ReturnType<typeof parseApprovalReviewRequest>) {
 
 interface InstallHarness {
   ctx: {
-    subagents: { registerManagedProvider(provider: ManagedSubagentProvider): ManagedProviderRegistration }
+    managedAgents: { registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration }
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
   }
-  registered: ManagedSubagentProvider | undefined
+  registered: ManagedAgentProvider | undefined
   composition: { suppressions: number; restrictions: number; approvalNever: number; sandboxReadOnly: number; resultObservers: number }
   childTool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> } | undefined
   resultObserver: ((exec: unknown, result: unknown) => unknown) | undefined
@@ -72,7 +72,7 @@ function harness(): InstallHarness {
     resultObservers: 0,
   }
   const disposeRegistration = vi.fn(async () => {})
-  let registered: ManagedSubagentProvider | undefined
+  let registered: ManagedAgentProvider | undefined
   let childTool: InstallHarness['childTool']
   let resultObserver: InstallHarness['resultObserver']
   const child: { id: string; session: { id: string; append: (type: string, data: unknown) => void } } = {
@@ -86,25 +86,23 @@ function harness(): InstallHarness {
     },
   }
   const ctx = {
-    subagents: {
-      registerManagedProvider(provider: ManagedSubagentProvider): ManagedProviderRegistration {
+    managedAgents: {
+      registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration {
         registered = provider
         return {
           controller: {
             async create(_parent: unknown, options: { providerData?: unknown; label: string }) {
-              const materialized = registered!.materialize({
+              const compositionResult = registered!.materialize({
                 source: 'startup',
                 parentSessionId: SessionId('parent-1'),
                 childSessionId: SessionId('reviewer-1'),
                 descriptor: {
-                  version: 3,
-                  mode: 'managed',
+                  version: 1,
                   provider: REVIEWER_PROVIDER,
                   label: options.label,
                   providerData: options.providerData as never,
                 },
               })
-              const compositionResult = await materialized
               compositionResult.setup?.({
                 agent: child,
                 systemPrompt: {
@@ -126,6 +124,7 @@ function harness(): InstallHarness {
               return SessionId('reviewer-1')
             },
             async list() { return [] },
+            async rotate() { return SessionId('reviewer-1') },
             async deliver(_parent: unknown, _childId: unknown, content: readonly unknown[]) {
               const raw = (content[0] as { text: string } | undefined)?.text.split('\n').at(-1)
               if (raw === undefined) throw new Error('approval request was not delivered')
@@ -235,7 +234,7 @@ describe('installApproveForMe composition root', () => {
   it('prepends capture and answerer so policy watchers see the action first', () => {
     const calls: string[] = []
     const ctx = {
-      subagents: { registerManagedProvider: () => ({ controller: { create: async () => '', list: async () => [], deliver: async () => 'm', interrupt: () => {} }, dispose: async () => {} }) },
+      managedAgents: { registerProvider: () => ({ controller: { create: async () => SessionId('r'), list: async () => [], rotate: async () => SessionId('r'), deliver: async () => MessageId('m'), interrupt: () => {} }, dispose: async () => {} }) },
       on(event: string, _listener: unknown, options?: { prepend?: boolean }) {
         calls.push(`${event}:${String(options?.prepend ?? false)}`)
         return () => {}
@@ -246,5 +245,18 @@ describe('installApproveForMe composition root', () => {
     expect(calls).toContain('tools/pre-execute:true')
     expect(calls).toContain('approval/request:true')
     expect(calls).toContain('tools/result:false')
+  })
+
+  it('disposes the old registration and can be remounted after unload', async () => {
+    const first = harness()
+    const plugin = installApproveForMe(first.ctx as unknown as Context, config)
+    await plugin.dispose()
+    expect(first.disposeRegistration).toHaveBeenCalledOnce()
+
+    const second = harness()
+    const reloaded = installApproveForMe(second.ctx as unknown as Context, config)
+    expect(second.registered?.name).toBe(REVIEWER_PROVIDER)
+    await reloaded.dispose()
+    expect(second.disposeRegistration).toHaveBeenCalledOnce()
   })
 })

@@ -29,6 +29,7 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
   creates = 0
   deliveries: Delivery[] = []
   interrupts: Array<{ authority: ParentAuthority<Parent, string>; childId: string }> = []
+  rotates: Array<{ authority: ParentAuthority<Parent, string>; childId: string }> = []
   onDeliver?: (delivery: Delivery) => void | Promise<void>
   deliveryError?: Error
 
@@ -44,6 +45,7 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
       label: options.label,
       providerData: snapshotJson(options.providerData),
       activity: 'inactive',
+      contaminated: false,
     })
     return id
   }
@@ -67,6 +69,23 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
 
   interrupt(authority: ParentAuthority<Parent, string>, childId: string): void {
     this.interrupts.push({ authority, childId })
+  }
+
+  async rotate(authority: ParentAuthority<Parent, string>, childId: string): Promise<string> {
+    this.rotates.push({ authority, childId })
+    const index = this.children.findIndex(child => child.id === childId)
+    if (index >= 0) {
+      this.children[index] = { ...this.children[index]!, contaminated: true }
+    }
+    return this.create(authority, {
+      label: 'Approval Reviewer',
+      providerData: createReviewerProviderData({
+        generation: 'generation-1',
+        modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+        policyVersion: 'policy-1',
+        toolsetVersion: 1,
+      }),
+    })
   }
 }
 
@@ -181,7 +200,7 @@ describe('DefaultReviewCoordinator', () => {
     const old = providerData('generation-old')
     port.children.push({
       id: 'old-reviewer', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER,
-      label: 'Approval Reviewer', providerData: snapshotJson(old), activity: 'inactive',
+      label: 'Approval Reviewer', providerData: snapshotJson(old), activity: 'inactive', contaminated: false,
     })
     const { coordinator, submit } = makeCoordinator(port)
     port.onDeliver = ({ childId, request }) => { submit(decision(request), childId) }
@@ -194,8 +213,8 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     const data = providerData()
     port.children.push(
-      { id: 'r1', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive' },
-      { id: 'r2', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive' },
+      { id: 'r1', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
+      { id: 'r2', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
     )
     const { coordinator } = makeCoordinator(port)
     await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
@@ -280,5 +299,66 @@ describe('DefaultReviewCoordinator', () => {
       .rejects.toThrow(/already been armed/)
     expect(port.deliveries).toHaveLength(1)
     expect(port.interrupts).toHaveLength(0)
+  })
+
+  it('never selects a contaminated Reviewer and creates a fresh clean child', async () => {
+    const port = new FakePort()
+    const data = providerData()
+    port.children.push({
+      id: 'bad-contaminated', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER,
+      label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: true,
+    })
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
+    port.onDeliver = ({ childId, request }) => {
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+      .resolves.toMatchObject({ reviewId: 'review-1' })
+    expect(port.creates).toBe(1)
+    expect(port.deliveries).toHaveLength(1)
+    expect(port.deliveries[0]!.childId).not.toBe('bad-contaminated')
+  })
+
+  it('reuses a clean replacement beside a persisted contaminated child after reload', async () => {
+    const port = new FakePort()
+    const data = providerData()
+    port.children.push(
+      { id: 'old-contaminated', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: true },
+      { id: 'clean-replacement', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
+    )
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
+    port.onDeliver = ({ childId, request }) => {
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+      .resolves.toMatchObject({ reviewId: 'review-1' })
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toHaveLength(1)
+    expect(port.deliveries[0]!.childId).toBe('clean-replacement')
+  })
+
+  it('retries once when a newly contaminated child is discovered during delivery', async () => {
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2']
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    const parent = { id: 'parent-1' }
+    let first = true
+    port.onDeliver = async ({ childId, request }) => {
+      if (first) {
+        first = false
+        const index = port.children.findIndex(child => child.id === childId)
+        if (index >= 0) {
+          port.children[index] = { ...port.children[index]!, contaminated: true }
+        }
+        throw new Error(`managed child "${childId}" is contaminated and must be rotated`)
+      }
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+      .resolves.toMatchObject({ reviewId: 'review-2' })
+    expect(port.creates).toBe(2)
+    expect(port.deliveries).toHaveLength(2)
+    expect(port.rotates).toHaveLength(1)
+    expect(port.children.filter(child => child.contaminated)).toHaveLength(1)
   })
 })
