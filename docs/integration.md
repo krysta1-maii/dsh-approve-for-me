@@ -24,14 +24,21 @@ npm run check
 npm pack --dry-run
 ```
 
-两包必须具备：
+两包共同必须具备：
 
 - `name` / `inject` / `Config` / `apply`；
 - `dsh.bundle.patch`；
-- Host 入口与 Client 入口；
 - 完整 `exports` 和构建产物；
 - stock DSH 精确 peer 版本；
 - 不含 patched DSH tarball、源码覆盖或 postinstall patch。
+
+其中 `dsh-managed-agent` 同时提供 Host 与 Client bundle；`dsh-approve-for-me` 只提供 Host bundle，Web 只读展示和 Stop 复用前者的 Client bundle。
+
+本仓库的发布产物还必须确认：
+
+- `package.json` 声明 `license: MIT`，tarball 包含根 `LICENSE`；
+- Reviewer policy、上下文算法、测试与文档均为本项目独立编写；
+- 不包含从 Codex Guardian 复制、翻译、近似改写或 vendor 的代码、提示词、测试、snapshot 与文档表达。
 
 ## 3. Profile 安装
 

@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-25）：应用层已迁移到标准 `ctx.managedAgents` Guarded Continuable 服务，typecheck 与 82 项测试通过；标准 bundle 包装（`dsh.bundle.patch` / `cordis.patch.yml` / `npm pack`）已完成，真实 DSH profile 人工验收尚未执行。
+> 当前代码状态（2026-08-25）：应用层已迁移到标准 `ctx.managedAgents` Guarded Continuable 服务，typecheck 与 82 项测试通过；标准 bundle 包装（`dsh.bundle.patch` / `cordis.patch.yml` / `npm pack`）已完成，真实 DSH profile 人工验收尚未执行。当前 `policy-v1` 是最小保守占位策略，完整 Reviewer 产品能力尚未实现。
 >
 > 目标部署路线是未修改官方包的 stock DSH + `dsh-managed-agent` Host/Client bundle。跨仓库施工计划见 [`dsh-managed-agent/docs/guarded-continuable-migration-plan.md`](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)。
 
@@ -65,12 +65,13 @@ dsh-managed-agent         0.1.0-dev.0
 
 ## 下一阶段
 
-应用迁移（Phase 3）与标准 bundle 包装（Phase 4 包侧部分）已完成。后续为：
+应用迁移与标准 bundle 包装已完成，后续分成两条并行轨道：
 
-**Phase 5**：在真实 stock DSH profile 中安装并验收（首次物化、复用、cold resume、污染轮换、unload/reload、Web 只读与 Stop）。
+1. **运行验收**：在真实 stock DSH profile 中验证首次物化、复用、cold resume、污染轮换、unload／reload、Web 只读与 Stop；权威清单见 [integration.md](integration.md)。
+2. **Reviewer 产品化**：按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 依次建设 Evidence Model、TranscriptSource、有界 full／delta 上下文、工具族动作语义、风险／授权 assessment、完整 policy、有限尝试、拒绝熔断和审计。
 
-完整顺序见 [跨仓库改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)，stock DSH 验收见 [integration.md](integration.md)。
+Reviewer 产品化全部基于 DSH 需求独立设计并使用 MIT 许可证。Codex Guardian 只作为能力覆盖参照，不复制或翻译其代码、提示词、测试、snapshot 与文档表达。
 
 ## 当前未执行的操作
 
-本项目已迁移到 `ctx.managedAgents` 且已具备标准 bundle 元数据，但尚未安装或挂载到任何 DSH profile，也未执行 Phase 5 的真实 profile 与 GUI 验收。Phase 5 完成后才可进行 stock DSH 产品验收。
+本项目尚未安装或挂载到真实 DSH profile，也未执行 profile／GUI 验收；同时，当前 Reviewer 尚不具备父会话证据、完整风险策略和上下文工程。在两条轨道分别完成前，不应把当前版本描述为成熟的自动审批产品。

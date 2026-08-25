@@ -316,7 +316,7 @@ interface ReviewerPolicy {
 
 - policy 版本决定如何解释已有 Reviewer transcript；
 - DSH provider 只负责把 policy 安装到 child scope；
-- 后续 Guardian prompt、full/delta context 或分类规则升级不会侵入 coordinator。
+- 后续独立设计的完整 prompt、full／delta context 或分类规则升级不会侵入 coordinator。
 
 未知 policy version 由 providerData codec／policy registry 拒绝，不由 Managed Runtime 解释。
 
@@ -675,17 +675,18 @@ provider 在 patched DSH fixture 中可以创建和 cold-resume 同一 Reviewer 
 
 纯结构 mock 仍不作为真实兼容性的最终证据；最终证据必须来自 stock DSH runtime、persistence、security matrix 和 Web/profile smoke。
 
-## Phase 6：policy 产品化
+## Phase 6：独立 Reviewer policy 产品化
 
-基础接入稳定后再进行：
+基础接入稳定后，按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 继续：
 
-- Guardian policy 的来源归属与版本固定；
-- prompt policy registry；
-- full／delta Reviewer context；
-- token budget、截断和有限 retry；
+- DSH 原生 Evidence Model 与 TranscriptSource；
+- 独立撰写、版本化的 prompt policy registry；
+- 基于稳定消息标识的 full／delta Reviewer context；
+- 独立预算、可见截断和固定 deadline 内的有限 retry；
+- 工具族动作语义、风险／授权 assessment 和拒绝熔断；
 - 可选的脱敏业务审计 projection。
 
-这一阶段不改变 Managed Controller 或 DSH 基础层接口。
+这一阶段不改变 Managed Controller 或 DSH 基础层接口，也不复制、翻译或近似改写 Codex Guardian 的实现与文本。
 
 ## 9. 里程碑依赖关系
 
@@ -695,8 +696,8 @@ M0 Managed contracts consumable
       └── M2 Application boundary refactor
            ├── M3 Real Reviewer provider
            └── M4 Real approval/tool adapters
-                └── M5 Patched-DSH integration
-                     └── M6 Guardian policy productization
+                └── M5 Stock DSH integration acceptance
+                     └── M6 Independent Reviewer productization
 ```
 
 M3 和 M4 可以在 M2 后并行；M5 必须在两者完成后进行。
@@ -721,15 +722,12 @@ M3 和 M4 可以在 M2 后并行；M5 必须在两者完成后进行。
 - [ ] Web 是否复用官方 managed child tree，而非建立第二套会话 UI？
 - [x] plugin unload／HMR 是否由一个 effect 明确拥有全部 disposer？
 
-## 11. 建议立即执行的下一批任务
+## 11. 当前继续施工入口
 
-按依赖顺序，下一批提交应当是：
+本历史计划中的 contracts、packaging、application、provider 和 hook adapter 已完成，patched-DSH integration 已由 stock DSH Guarded Continuable 路线取代。后续不再按旧提交清单施工：
 
-1. **contracts commit**：使 `dsh-managed-agent` contract 可被本仓库真实依赖；
-2. **packaging commit**：增加 DSH peers/dev dependencies、Schemastery Config 和 Cordis `inject`；
-3. **application refactor commit**：拆出 DecisionChannel／ReviewerDirectory／ReviewCoordinator；
-4. **provider adapter commit**：真实 Managed provider、AgentSetup、model selection 和 decision tool；
-5. **hook adapter commit**：真实 ToolExecution capture 与 approval answerer；
-6. **integration commit**：patched DSH fixture、persistence/cold-resume/HMR/Web smoke。
+1. Reviewer 产品能力以 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 为权威顺序；
+2. stock DSH 运行与 Web 验收以 [integration.md](integration.md) 为权威清单；
+3. 跨仓库基础设施变更以 `dsh-managed-agent` 的 Guarded Continuable 计划为准。
 
-首个施工目标不是继续补强当前结构 mock，而是让 `dsh-approve-for-me` 成为 `dsh-managed-agent` 和 DSH 真实公共契约的编译期消费者。只有这一点完成，后续领域实现和工程纪律才落在正确的基础上。
+当前首个产品化里程碑是 Evidence Model 与 TranscriptSource；所有后续策略、上下文和评测都必须维持现有身份关联和 fail-closed 不变量。

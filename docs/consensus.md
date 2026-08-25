@@ -1,6 +1,6 @@
 # Approve for Me 最终设计共识
 
-> 状态：2026-08-24 按补丁版 `dsh-managed-agent` 修订；2026-08-25 部署机制改为 Guarded Continuable。审批协议、身份/哈希校验、失败关闭、最小权限和每父 Reviewer 等产品边界继续有效；“官方第三 mode”与 patched API 的实现要求由 [`dsh-managed-agent` 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)取代。
+> 状态：2026-08-24 建立业务边界；2026-08-25 部署机制改为 stock DSH 上的 Guarded Continuable，并确定 Reviewer 后续采用独立 MIT 实现。审批协议、身份／哈希校验、失败关闭、最小权限和每父 Reviewer 等产品边界继续有效；早期“官方第三 mode”与 patched API 描述均由 [`dsh-managed-agent` 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)取代。
 
 ## 1. 项目定位
 
@@ -10,30 +10,25 @@
 
 ## 2. 基础设施边界
 
-最终基础架构不是早期设想的 `ctx.managedAgents` 工作流服务。`dsh-managed-agent` 将在官方 `ctx.subagents` capability seam 增加：
-
-```text
-one-shot | continuable | managed
-```
-
-本插件注册稳定 provider：
+最终基础架构是 `dsh-managed-agent` 在 stock DSH 官方 `continuable` child 上提供的 Guarded Continuable Host 服务。本插件只通过标准 Cordis service 注册稳定 provider：
 
 ```text
 dsh-approve-for-me/reviewer
 ```
 
-注册返回进程内、不可序列化的 Controller capability：
+`ctx.managedAgents.registerProvider()` 返回进程内、不可序列化且 registration-scoped 的 Controller capability：
 
 ```text
 create(parent, options)
 list(parentSessionId)
+rotate(parent, childId)
 deliver(parent, childId, ContentBlock[])
 interrupt(parent, childId)
 ```
 
-基础层负责官方 managed descriptor、父子 Session 谱系、provider capability 授权、exact live parent／direct child 校验、create／same-Session resume／inbox admission、persistence／flush、Activation release／teardown，以及官方树和只读 Web 语义。
+基础层负责 provider ownership、父子 Session 谱系、exact live parent／direct child 校验、受控 create／same-Session resume／inbox admission、持久 catalog、污染标记与轮换、Activation release，以及官方子代理树和只读 Web 语义。
 
-基础层明确不负责 Approval schema、一父一实例、request id、result、deadline、retry、业务 generation、失败语义或人工回退。以上规则全部属于本仓库。
+基础层明确不负责 Approval schema、一父一实例、request id、业务 result、deadline、审查尝试、风险策略、业务 generation、失败映射或人工回退。以上规则全部属于本仓库。
 
 ## 3. 角色与 authority
 
@@ -53,7 +48,7 @@ Manager 是本插件对 Controller 的应用层 wrapper，不是 authority 本�
 
 ### Approval Reviewer
 
-Reviewer 是 `origin: 'subagent'`、`mode: 'managed'` 的持久 child Session。其 Activation 可以在 idle 后释放；后续审批通过同一 child cold-resume，继续保留兼容 transcript。
+Reviewer 是由 `ctx.managedAgents` 独占管理、底层使用官方 `continuable` wire mode 的持久 child Session。其 Activation 可以在 idle 后释放；后续审批通过同一 child cold-resume，继续保留兼容 transcript。产品界面可以标识为 Managed Reviewer，但不得把该语义误写成官方新增的 `managed` mode。
 
 ### Human answerer
 
@@ -157,7 +152,7 @@ ensure Reviewer
 
 ## 13. Reviewer composition
 
-未来 provider `materialize()` 在 unpublished child setup 中安装：
+当前 provider `materialize()` 在受管 child setup 中安装：
 
 - 独立 provider／model／reasoning effort；
 - complete Reviewer system prompt；
@@ -175,11 +170,11 @@ ensure Reviewer
 
 Managed capability 防止普通产品通道和其他 provider 操作 child；它不防恶意同进程代码。
 
-## 15. Codex Guardian 移植
+## 15. 独立实现与外部参照边界
 
-后续提示词与上下文管理尽量参考 Guardian 的 policy template、风险分类、证据信任、用户授权等级、exact action JSON、full→delta transcript、独立 token budget、截断标记、deadline、有限重试和拒绝熔断。
+后续 Reviewer 产品能力由本项目基于 DSH 的消息来源、Session 历史、工具协议和威胁模型独立设计。Codex Guardian 只作为外部能力清单参照，用于提醒证据信任、用户授权、精确动作、full／delta 上下文、独立预算、截断、固定 deadline、有限重试和拒绝熔断等通用问题；它不定义本项目的类型、算法、默认参数或策略文本。
 
-Codex Guardian 使用 Apache-2.0。复制或改编前必须记录上游仓库与 commit，区分上游 policy 和 DSH adapter，保留许可证与第三方归属。
+本项目不得复制、翻译或近似改写 Codex 的代码、policy／prompt、schema、测试、snapshot、注释或文档表达，也不得用外部项目的 prompt snapshot 作为本项目 golden test。所有实现从空白文本和本项目规格出发，使用 MIT 许可证。完整组成部分和实施顺序见 [Approval Reviewer 独立实现路线](reviewer-roadmap.md)。
 
 ## 16. 验收标准
 
@@ -210,4 +205,4 @@ Codex Guardian 使用 Apache-2.0。复制或改编前必须记录上游仓库与
 - 把 MessageId、Agent idle 或自由文本当作业务结果；
 - 在 route 失效时静默切换模型；
 - 在缺失、非法或不确定结果时自动放行；
-- 在未处理归属前直接复制 Codex Guardian 内容。
+- 复制、翻译或近似改写 Codex Guardian 的代码、提示词、测试、snapshot 或文档表达。

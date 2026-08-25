@@ -4,7 +4,7 @@
 
 > 当前代码状态（2026-08-25）：领域协议、应用层和标准 `ctx.managedAgents` Guarded Continuable 接入已实现，当前测试为 82 项；已补齐标准 DSH bundle 包装（`dsh.bundle.patch` + `cordis.patch.yml`），等待在真实 DSH profile 中人工测试与验收。
 >
-> 当前迁移状态：应用迁移（Phase 3）与标准 bundle 包装（Phase 4 包侧部分）已完成；Phase 5（真实 profile 集成、污染/冷启动/Web 验收）仍待人工执行。
+> 当前 Reviewer 状态：审批执行骨架和最小保守 `policy-v1` 已实现，但父会话证据、上下文预算、完整风险／授权策略、有限重试和拒绝熔断尚待逐步填充。项目采用独立 MIT 实现；Codex Guardian 仅作为设计参照，不复制或翻译其代码、提示词、测试与文档表达。
 
 ## 项目目标
 
@@ -19,6 +19,7 @@ ctx.managedAgents.registerProvider()
 └── controller
     ├── create(parent, options)
     ├── list(parentSessionId)
+    ├── rotate(parent, childId)
     ├── deliver(parent, childId, content)
     └── interrupt(parent, childId)
 ```
@@ -52,7 +53,7 @@ src/
 │   ├── managed-reviewer.ts     # 最窄 managed port + ParentAuthority
 │   └── action-projector.ts     # ActionProjector / ActionCapture
 ├── reviewer/
-│   ├── policy.ts               # v1 prompt、decision schema、policy registry
+│   ├── policy.ts               # 最小保守 v1 prompt、decision schema、policy registry
 │   ├── provider.ts             # 真实 ManagedAgentProvider + AgentSetup/toolFilter
 │   └── decision-tool.ts        # 真实 ToolDefinition 的两阶段结果工具
 └── dsh/
@@ -91,6 +92,18 @@ ToolDefinition.execute()         校验真实调用者 → 暂存 candidate → 
 - Managed catalog 暴露持久 `contaminated` 标志；Reviewer directory 永久跳过受污染 child；
 - deliver 阶段发现新污染时，先调用 Controller `rotate()` 排空旧 child 并预留干净替代，再在串行 lane 内重试一次；
 - 重载后同一逻辑 Reviewer 会从持久 catalog 中找到新的干净 generation，旧 child 仍由 Host 守卫拒绝授权。
+
+## 下一阶段：填充 Reviewer 产品能力
+
+当前代码首先完成了身份、动作快照、结果关联、生命周期和失败关闭等安全骨架；`policy-v1` 只是最小保守占位策略。下一阶段按依赖顺序独立实现：
+
+1. DSH `MessageSource` 证据信任模型与父 Session transcript port；
+2. 上下文选择、独立预算、可见截断和基于稳定消息标识的 full／delta cursor；
+3. shell、filesystem、network、MCP 和 permission request 等工具族动作语义；
+4. 项目自有的风险分类、用户授权 assessment 和完整 policy；
+5. 单一 deadline 内的有限审查尝试、拒绝熔断、可选只读调查与脱敏审计。
+
+完整组件、退出条件和实施顺序见 [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)。所有内容从 DSH 的需求与威胁模型独立推导；外部项目只用于能力覆盖比较，不作为源码或文本素材。
 
 ## 依赖边界
 
@@ -140,7 +153,7 @@ bundle 层只负责插入 `dsh-approve-for-me` 插件行；**Reviewer 配置是�
 
 ```bash
 npm run check                 # 本仓库自检：typecheck + 82 项测试 + build
-npm pack --dry-run            # 确认 tarball 包含 lib / cordis.patch.yml / docs
+npm pack --dry-run            # 确认 tarball 包含 lib / cordis.patch.yml / LICENSE / docs
 dsh --profile web --dump-config
 dsh --profile web
 ```
@@ -161,9 +174,12 @@ npm run check
 - [跨仓库 Guarded Continuable 无补丁改造计划](../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)
 - [项目共识与设计边界](docs/consensus.md)
 - [实现状态与后续接入](docs/implementation.md)
+- [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)
 - [Stock DSH 集成验证清单](docs/integration.md)
 - [历史施工计划与当前业务分层](docs/construction-plan.md)
 
-## 许可证与上游归属
+## 许可证与外部参照
 
-项目自身许可证尚未确定，当前包标记为 `private`／`UNLICENSED`。DSH 使用 MIT 许可证，计划参考的 Codex Guardian 使用 Apache-2.0。直接复制或改编 Guardian 的提示词与代码时，必须记录上游 commit，保留 Apache-2.0 许可证及第三方归属，并将原样上游 policy 与 DSH adapter 分层存放。
+本项目原创代码与文档使用 [MIT License](LICENSE)。OpenAI Codex Guardian 是审批 Reviewer 设计时的外部参照之一；本项目不包含、复制、翻译或近似改写其代码、提示词、测试、snapshot 或文档表达，因此不把 Codex 内容作为本仓库的第三方组成部分分发。
+
+参照只用于检查通用安全能力是否遗漏，例如证据信任、有界上下文、结构化结果、固定 deadline、有限重试、失败关闭和拒绝熔断。具体领域模型、算法、默认参数、策略文本和测试均须基于 DSH 独立设计。该边界的详细纪律见 [Reviewer 路线图](docs/reviewer-roadmap.md)。
