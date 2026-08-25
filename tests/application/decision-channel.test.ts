@@ -148,6 +148,34 @@ describe('DefaultDecisionChannel', () => {
     const pending = channel.arm(request())
     channel.cancel('review-1')
     await expect(pending).rejects.toMatchObject({ code: 'cancelled' })
-    await expect(channel.arm(request())).rejects.toThrow(/already been armed/)
+    expect(() => channel.arm(request())).toThrow(/already been armed/)
+  })
+
+  it('throws synchronously for a duplicate pending id', () => {
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    channel.arm(request())
+    expect(() => channel.arm(request())).toThrow(/already been armed/)
+  })
+
+  it('throws synchronously for an already-aborted or expired arm and tombstones it', () => {
+    const clock = new FakeClock()
+    const channel = new DefaultDecisionChannel(clock)
+    const abort = new AbortController()
+    abort.abort()
+    expect(() => channel.arm(request(), abort.signal))
+      .toThrow(expect.objectContaining<Partial<ReviewProtocolError>>({ code: 'aborted' }))
+    // The tombstone is recorded: a later result for that id is late, never accepted.
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' }))
+      .toEqual({ status: 'late', reviewId: 'review-1' })
+    const expired = request({ reviewId: 'review-2', issuedAt: 100, deadlineAt: 50 })
+    expect(() => channel.arm(expired))
+      .toThrow(expect.objectContaining<Partial<ReviewProtocolError>>({ code: 'timed-out' }))
+  })
+
+  it('throws synchronously when the channel is disposed', () => {
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    channel.dispose()
+    expect(() => channel.arm(request()))
+      .toThrow(expect.objectContaining<Partial<ReviewProtocolError>>({ code: 'disposed' }))
   })
 })

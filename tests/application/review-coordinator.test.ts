@@ -251,4 +251,34 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.interrupts).toEqual([{ authority: authority(parent), childId: 'parent-1-reviewer-1' }])
     void submit
   })
+
+  it('never creates or delivers for an already-aborted review', async () => {
+    const port = new FakePort()
+    const { coordinator } = makeCoordinator(port)
+    const abort = new AbortController()
+    abort.abort()
+    await expect(coordinator.review({
+      authority: authority({ id: 'parent-1' }),
+      action: action(),
+      signal: abort.signal,
+    })).rejects.toMatchObject({ code: 'aborted' })
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toHaveLength(0)
+    expect(port.interrupts).toHaveLength(0)
+  })
+
+  it('does not deliver a review that never entered the channel', async () => {
+    const port = new FakePort()
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
+    const parent = { id: 'parent-1' }
+    port.onDeliver = ({ childId, request }) => { expect(submit(decision(request), childId).status).toBe('accepted') }
+    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+      .resolves.toMatchObject({ reviewId: 'review-1' })
+    // The same review id can never be armed again: the second review rejects
+    // without a second delivery and without interrupting the idle child.
+    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+      .rejects.toThrow(/already been armed/)
+    expect(port.deliveries).toHaveLength(1)
+    expect(port.interrupts).toHaveLength(0)
+  })
 })

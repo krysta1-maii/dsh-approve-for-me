@@ -49,6 +49,14 @@ const systemClock: ReviewClock = {
  * the tool, so identity is never taken from model payload alone.
  */
 export interface DecisionChannel {
+  /**
+   * Arm a one-shot review. Throws SYNCHRONOUSLY — before returning — when the
+   * request can never be pending: the channel is disposed, the review id is
+   * already pending or settled, the signal is already aborted, or the deadline
+   * has already passed. A review that never entered the channel is never
+   * delivered. The returned promise only settles through `submit`, `cancel`,
+   * `dispose`, timeout, or an abort that arrives after arming.
+   */
   arm(request: ApprovalReviewRequest, signal?: AbortSignal): Promise<ApprovalDecision>
   submit(payload: unknown, context: DecisionSubmissionContext): SubmitDecisionResult
   cancel(
@@ -92,18 +100,20 @@ export class DefaultDecisionChannel implements DecisionChannel {
   }
 
   arm(request: ApprovalReviewRequest, signal?: AbortSignal): Promise<ApprovalDecision> {
-    if (this.disposed) return Promise.reject(new ReviewProtocolError('disposed', 'decision channel is disposed'))
+    if (this.disposed) {
+      throw new ReviewProtocolError('disposed', 'decision channel is disposed')
+    }
     if (this.pending.has(request.reviewId) || this.terminal.has(request.reviewId)) {
-      return Promise.reject(new TypeError(`review ${request.reviewId} has already been armed`))
+      throw new TypeError(`review ${request.reviewId} has already been armed`)
     }
     if (signal?.aborted) {
       this.remember(request.reviewId, 'aborted')
-      return Promise.reject(new ReviewProtocolError('aborted', `review ${request.reviewId} was aborted before delivery`))
+      throw new ReviewProtocolError('aborted', `review ${request.reviewId} was aborted before delivery`)
     }
     const delay = request.deadlineAt - this.clock.now()
     if (delay <= 0) {
       this.remember(request.reviewId, 'timed-out')
-      return Promise.reject(new ReviewProtocolError('timed-out', `review ${request.reviewId} reached its deadline`))
+      throw new ReviewProtocolError('timed-out', `review ${request.reviewId} reached its deadline`)
     }
     return new Promise<ApprovalDecision>((resolve, reject) => {
       const timer = this.clock.setTimeout(() => {

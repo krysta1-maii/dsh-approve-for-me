@@ -102,4 +102,26 @@ describe('createCaptureBridge', () => {
     bridge.observeResult(execution)
     expect(store.lookup(owner, 'call-1', 'bash')).toBeUndefined()
   })
+
+  it('skips capture instead of breaking the tool call for unsnapshottable arguments', async () => {
+    const store = new DefaultActionCapture<Agent, string>()
+    const bridge = createCaptureBridge(createDefaultActionProjector(), store)
+    const owner = fakeAgent('parent-1')
+    const execution = fakeExecution(owner, { arguments: { command: undefined } })
+    // The action cannot survive the lossless-JSON boundary: the tool call
+    // must still proceed and the approval ask must fail closed without it.
+    await expect(bridge.preExecute(execution, allow)).resolves.toEqual({ kind: 'allow' })
+    expect(store.lookup(owner, 'call-1', 'bash')).toBeUndefined()
+    bridge.observeResult(execution)
+  })
+
+  it('propagates unexpected projector failures instead of hiding them', async () => {
+    const store = new DefaultActionCapture<Agent, string>()
+    const projector: ActionProjector<ToolExecution> = {
+      project: () => { throw new Error('projector exploded') },
+    }
+    const bridge = createCaptureBridge(projector, store)
+    await expect(bridge.preExecute(fakeExecution(fakeAgent('parent-1')), allow))
+      .rejects.toThrow('projector exploded')
+  })
 })

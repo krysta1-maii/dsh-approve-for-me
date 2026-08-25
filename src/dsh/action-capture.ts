@@ -1,5 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import { JsonSnapshotError } from '../domain/json.js'
 import { createActionSnapshot } from '../domain/protocol.js'
 import type { RequestedPermission } from '../domain/protocol.js'
 import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
@@ -29,6 +30,13 @@ export function createDefaultActionProjector(
  * Real `tools/pre-execute` / `tools/result` bridge. Pre-execute runs with
  * `{ prepend: true }` so the complete action is in the capture store before
  * any policy listener asks for approval.
+ *
+ * Capture is best-effort: an action that cannot be snapshotted (arguments
+ * that do not survive lossless JSON, an oversized permission set, a throwing
+ * data projector) degrades by SKIPPING the capture, never by breaking the
+ * tool call itself. The approval ask then fails closed without a snapshot
+ * (`auto` → unavailable, `auto-then-user` → next()). Unexpected projector
+ * errors still propagate loudly so programming bugs stay visible.
  */
 export interface CaptureBridge {
   preExecute(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision>
@@ -43,7 +51,11 @@ export function createCaptureBridge(
     async preExecute(exec, next) {
       const owner = exec.agent
       if (owner !== undefined) {
-        capture.remember(owner, String(exec.callId), createActionSnapshot(projector.project(exec)))
+        try {
+          capture.remember(owner, String(exec.callId), createActionSnapshot(projector.project(exec)))
+        } catch (error: unknown) {
+          if (!(error instanceof JsonSnapshotError) && !(error instanceof TypeError)) throw error
+        }
       }
       return next()
     },

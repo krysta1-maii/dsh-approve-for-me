@@ -68,6 +68,11 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     readonly signal?: AbortSignal
   }): Promise<ApprovalDecision> {
     const action = parseActionSnapshot(input.action)
+    if (input.signal?.aborted) {
+      // An already-aborted review never enters the lane: no child ensure, no
+      // deliver, no interrupt.
+      return Promise.reject(new ReviewProtocolError('aborted', 'review was aborted before it started'))
+    }
     return this.options.lane.run(input.authority.sessionId, async () => {
       const childId = await this.options.directory.ensure(
         input.authority,
@@ -85,6 +90,9 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
         issuedAt,
         deadlineAt: issuedAt + this.options.timeoutMs,
       })
+      // `arm` throws synchronously when the request can never be pending
+      // (disposed channel, duplicate id, abort racing past the early check,
+      // expired deadline): such a review is never delivered to the child.
       const result = this.options.channel.arm(request, input.signal)
       // A very fast scoped tool may settle before deliver()'s acceptance promise
       // resumes this task. Attach containment immediately while preserving the
