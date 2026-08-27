@@ -4,7 +4,7 @@
 
 > 当前代码状态（2026-08-25）：领域协议、应用层和标准 `ctx.managedAgents` Guarded Continuable 接入已实现，当前测试为 82 项；已补齐标准 DSH bundle 包装（`dsh.bundle.patch` + `cordis.patch.yml`），等待在真实 DSH profile 中人工测试与验收。
 >
-> 当前 Reviewer 状态：审批执行骨架和最小保守 `policy-v1` 已实现，但父会话证据、上下文预算、完整风险／授权策略、有限重试和拒绝熔断尚待逐步填充。项目采用独立 MIT 实现；Codex Guardian 仅作为设计参照，不复制或翻译其代码、提示词、测试与文档表达。
+> 当前 Reviewer 状态：审批执行骨架和最小保守 `policy-v1` 已实现；父 Session + sidecar 驱动的五段式实验卷宗已形成接口规范，子代理采用 root-principal／delegation-envelope 归因并排除 direct child-origin output，但 compiler 代码、完整风险／授权策略、有限重试和拒绝熔断尚待逐步实现。项目采用独立 MIT 实现；Codex Guardian 仅作为设计参照，不复制或翻译其代码、提示词、测试与文档表达。
 
 ## 项目目标
 
@@ -97,13 +97,13 @@ ToolDefinition.execute()         校验真实调用者 → 暂存 candidate → 
 
 当前代码首先完成了身份、动作快照、结果关联、生命周期和失败关闭等安全骨架；`policy-v1` 只是最小保守占位策略。下一阶段按依赖顺序独立实现：
 
-1. DSH `MessageSource` 证据信任模型与父 Session transcript port；
-2. 上下文选择、独立预算、可见截断和基于稳定消息标识的 full／delta cursor；
-3. shell、filesystem、network、MCP 和 permission request 等工具族动作语义；
-4. 项目自有的风险分类、用户授权 assessment 和完整 policy；
-5. 单一 deadline 内的有限审查尝试、拒绝熔断、可选只读调查与脱敏审计。
+1. DSH Session log／Storage Domain sidecar facts source 与冻结快照；
+2. 环境、项目指令、用户—主 Agent 交付链与精确委托包络、当前 turn 工具状态和审批动作组成的五段式卷宗；
+3. 以完整 full dossier 为基线的大小、延迟、溢出率和裁决倾向评测；
+4. shell、filesystem、network、MCP 和 permission request 等工具族动作语义；
+5. 项目自有的风险分类、用户授权 assessment、完整 policy、有限尝试和拒绝熔断。
 
-完整组件、退出条件和实施顺序见 [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)。所有内容从 DSH 的需求与威胁模型独立推导；外部项目只用于能力覆盖比较，不作为源码或文本素材。
+卷宗的候选接口、提取不变量、sidecar 边界和测试条件见 [Guardian 案件卷宗接口与编译规范](docs/guardian-dossier.md)；完整组件和实施顺序见 [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)。所有内容从 DSH 的需求与威胁模型独立推导；外部项目只用于能力覆盖比较，不作为源码或文本素材。
 
 ## 依赖边界
 
@@ -175,6 +175,7 @@ npm run check
 - [项目共识与设计边界](docs/consensus.md)
 - [实现状态与后续接入](docs/implementation.md)
 - [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)
+- [Guardian 案件卷宗接口与编译规范](docs/guardian-dossier.md)
 - [Stock DSH 集成验证清单](docs/integration.md)
 - [历史施工计划与当前业务分层](docs/construction-plan.md)
 

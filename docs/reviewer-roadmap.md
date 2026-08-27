@@ -1,6 +1,6 @@
 # Approval Reviewer 独立实现路线
 
-> 状态：2026-08-25 确立。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图。
+> 状态：2026-08-25 确立；2026-08-27 将父会话材料路线收敛为 DSH Session log + Storage Domain sidecar 驱动的实验性案件卷宗，并确定 principal／delegation-envelope 子代理归因。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图；卷宗接口以 [Guardian 案件卷宗规范](guardian-dossier.md) 为准。
 
 ## 1. 实现原则
 
@@ -30,82 +30,56 @@
 | per-parent 串行 | 已实现 | 保持不变 |
 | 污染隔离／rotate | 已实现 | 真实恢复与重载验收 |
 | Reviewer system prompt | 最小占位 | 独立设计完整策略 |
-| 父会话上下文 | 未实现 | 建立证据模型与 ContextBuilder |
-| 风险与授权判断 | 只有输出字段 | 建立明确分类和判定规则 |
-| token budget／截断 | 未实现 | 建立 DSH 原生预算算法 |
-| full／delta 上下文 | 未实现 | 建立 message-id cursor |
+| 父会话案件卷宗 | 规范草案及主／子代理归因已确立、代码未实现 | 实现 Session／sidecar facts source、delegation projector 与五段式 compiler |
+| 风险与授权判断 | 只有输出字段 | 在卷宗实现后独立建立 policy 分类和判定规则 |
+| token budget／截断 | v1 规定完整或失败关闭 | 先测量完整卷宗，再以新版本定义裁剪算法 |
+| full／delta transport | 未实现、非 v1 前置 | 根据完整卷宗实验决定 cursor 方案 |
 | 模型／解析重试 | 未实现 | 在单一 deadline 内有限重试 |
 | 拒绝熔断 | 未实现 | 建立 per-parent-turn 熔断状态 |
-| Reviewer 调查工具 | 未实现 | 先定义必要性与最小只读能力 |
+| Reviewer 调查工具 | v1 明确不提供 | 仅在卷宗评测证明必要后重新立项 |
 | 业务审计／指标 | 未实现 | 先定义脱敏事件和保留策略 |
 
 ## 3. Reviewer 组成部分
 
-### 3.1 Evidence Model
+### 3.1 Dossier Fact Boundary
 
-建立 DSH 消息和事件来源到证据信任级别的确定性映射。信任级别由宿主事实产生，模型不能通过文本自报可信。
+父 DSH Session log 直接作为主体对话与执行历史的规范事实来源；编译器不再建立一套静态 trust／authorization 分类来预判消息语义。DSH 正式来源、role、event seq 和 surface 状态原样保留，是否表达授权由 Guardian policy 结合上下文判断。
 
-建议的领域概念：
+子代理采用 principal／delegation-envelope 模型：v1 ready dossier 只支持无父 Session 的主／根 Agent requester；意外触发审批的 delegated／custom child 失败关闭。owned 子代理及后代只延伸主 Agent 已发出的事务意图，不创造用户授权。卷宗收录主体侧初始委托、follow-up、workflow／Ralph 和 interrupt 请求，但不遍历 child Session，也不把 report、closing output、reasoning 或工具结果正文保留／投递给 Guardian。主 Agent 后续自己产生的文本和动作仍由主 Agent 承担。
 
-```ts
-type EvidenceTrust =
-  | 'user-authoritative'
-  | 'developer-authoritative'
-  | 'system-fact'
-  | 'untrusted-agent'
-  | 'untrusted-tool'
-```
+Session log 未持久化的执行期结构化事实只进入官方 Storage Domain sidecar。DSH 公共 invariant 机制能够支持已声明的插件 Session events，但本项目 v1 为保持父 Session 的卸载／独立恢复边界，不新增 `approve-for-me/*` 事件；未来变更必须单独版本化。
 
-需要明确：
+退出条件：根 requester、Session 生命周期身份、callId、event seq 与 action hash 关联可验证；enabled tools 有闭集、版本化的 delegation／ordinary 分类，projector 与 safe receipt 不泄漏 child output；sidecar 缺失或冲突失败关闭，同时父 Session 始终可独立恢复。
 
-- 哪些 DSH `MessageSource` 可以证明用户授权；
-- assistant、tool result、技能说明和外部内容只能作为事实证据，不能自行扩大授权；
-- root session、子代理和恢复后的消息如何关联；
-- 编辑、回滚、压缩或历史版本变化如何使旧证据失效。
+### 3.2 Parent Session Fact Source
 
-退出条件：存在纯领域测试，证明伪造文本不能提升 trust，且所有未知来源保守归类。
+在应用层定义最窄、DSH-neutral 的 `ParentSessionFactSource` 和 `ExecutionFactRepository` port，由 DSH adapter 冻结审批时刻的 Session revision，并从 Session log + sidecar 生成稳定 source snapshot。Policy 和 dossier compiler 不直接依赖 DSH event 类型。
 
-### 3.2 Parent Transcript Source
+source snapshot 至少携带：根 Session 生命周期身份、event seq、turn／step、纳入消息的来源与内容、excluded-content records、request header／context、闭集工具分类、主体委托请求、从 execution sidecar 冷恢复的 durable safe receipts、工具调用关联、审批审计以及最小执行状态。adapter 在 snapshot 对象形成前按 versioned source policy 丢弃 direct child-origin／tool-result 正文；底层日志 record 可以被反序列化，但正文不在 snapshot 中保留。
 
-在应用层定义最窄 `TranscriptSource` port，由 DSH adapter 读取父 Session 历史并输出稳定的领域 entry。Policy 和 ContextBuilder 不直接依赖 DSH event 类型。
+退出条件：同一冻结 Session 与 sidecar 在 live 和可重建读取路径上产生相同 source snapshot；错误 Session 生命周期、孤立 sidecar 和动作不匹配均不能编译 ready dossier。
 
-entry 至少携带：稳定消息标识、顺序、来源、角色、文本或结构化工具摘要、工具调用关联和历史版本。
+### 3.3 High-recall Dossier and Budget
 
-退出条件：同一持久 Session 在 live、cold resume 和 history reload 后产生相同的规范化 entry 序列。
+首期固定采用 [Guardian 案件卷宗规范](guardian-dossier.md) 的五段结构：
 
-### 3.3 Context Selection and Budget
+1. 完整 DSH 环境信息；
+2. 当前生效的 AGENTS.md／CLAUDE.md 指令；
+3. 全部直接用户消息、既往正常 turn 最终交付，以及主 Agent 精确委托请求组成的主体意图链；
+4. 当前 turn 的完整工具请求及最小执行状态；
+5. 当前待审批动作、权限增量和 justification。
 
-独立设计上下文选择算法，优先保留：
+编译器不做语义相关性筛选。历史工具结果正文、stdout／stderr、diff、reasoning 和 direct child-origin payload 不进入卷宗；主 Agent 后续自己转述的内容仍属于主轨迹。主体发出的 delegation request 则以精确参数、类型化 safe receipt 和最小 outcome 进入。v1 只能“完整交付”或因硬预算溢出／闭集工具分类、event projection 或 delegation projector 不完整而失败关闭／下沉人工，不得静默裁剪。
 
-1. 当前用户目标和最近的明确授权／冲突授权；
-2. 与待审动作目标、路径、主机、权限和副作用相关的消息；
-3. 成对的工具调用与结果；
-4. 最近的必要 assistant 推理摘要；
-5. 省略和截断的结构化元数据。
+退出条件：编译确定性、当前动作不可裁剪、无工具／direct child-origin 结果正文泄漏、异常 turn 不产生虚假交付；闭集 classification catalog fingerprint、source projection version、safe receipt、投影顺序和当前 turn 双射可校验；compiler 记录各分区大小、编译延迟和溢出率，下游 Reviewer／coordinator 再按 dossierHash 联表裁决分布。
 
-消息、工具证据、动作和审批 reason 使用独立、可测试的预算。默认值必须由 DSH 模型窗口、实际消息分布和安全评测确定，不照搬外部项目常量。
+### 3.4 Full／Delta Transport
 
-退出条件：算法确定性、预算不超限、首尾 UTF-8 安全、截断可见，且工具输出不能挤掉全部用户授权证据。
+逻辑 dossier 始终是绑定冻结 revision 的完整快照。首期先采用 full delivery 测量真实成本，不把 full／delta cursor 作为卷宗 compiler 的前置条件。
 
-### 3.4 Full／Delta Cursor
+若实验表明持久 Reviewer 重复接收完整材料不可接受，再单独设计 transport cursor；delta 必须能够确定性重建同一逻辑 dossier，历史重写、cursor 缺失、policy／dossier version 变化时必须回退 full。
 
-Reviewer 首次看到完整的有界上下文；后续请求在历史版本连续时只发送新增证据。Cursor 使用 DSH 稳定消息标识和授权版本，不使用外部实现的 entry-count 约定。
-
-建议概念：
-
-```ts
-interface ReviewContextCursor {
-  readonly parentSessionId: string
-  readonly lastIncludedMessageId?: string
-  readonly historyRevision: string
-  readonly authorizationRevision: number
-  readonly policyVersion: string
-}
-```
-
-历史重写、cursor 缺失、policy 变化或授权版本倒退时必须回退到 full。
-
-退出条件：full、delta、重写回退和 cold-resume 都有确定性测试。
+退出条件：只有在 full 基线指标形成后才确定；任何 transport 优化都不得改变 Guardian 逻辑上看到的案件事实。
 
 ### 3.5 Tool-family Action Semantics
 
@@ -148,18 +122,18 @@ interface AuthorizationAssessment {
   readonly level: 'explicit' | 'implicit' | 'absent' | 'conflicting' | 'unknown'
   readonly targetCovered: boolean
   readonly sideEffectsCovered: boolean
-  readonly evidenceIds: readonly string[]
+  readonly sourceRefs: readonly string[]
   readonly rationale: string
 }
 ```
 
 需要区分“用户要求达到某个目标”与“用户明确授权某个高风险手段”。紧急程度、assistant 自述和外部内容都不能单独提升授权。
 
-退出条件：授权 assessment 可追溯到保留的可信 evidence id，缺失或冲突时不会生成自动 allow。
+退出条件：授权 assessment 可追溯到卷宗中保留的 source refs，缺失或冲突时不会生成自动 allow。
 
 ### 3.8 Policy and Decision Contract
 
-完整 policy 由本项目从空白文本独立撰写，至少包含：角色边界、证据信任、风险规则、授权规则、不确定性处理、调查限制和唯一结构化输出要求。
+完整 policy 由本项目从空白文本独立撰写，至少包含：角色边界、卷宗来源与角色解释、风险规则、授权规则、不确定性处理、调查限制和唯一结构化输出要求。
 
 现有外层 decision identity 继续负责 `reviewId`、parent／Reviewer、generation、action hash 和 deadline。业务 assessment 与防重放 envelope 分离，避免模型字段变化破坏关联协议。
 
@@ -181,13 +155,13 @@ interface AuthorizationAssessment {
 
 退出条件：重复、轻微改写、间接工具和跨工具族绕过都有测试；熔断本身不能误映射为 allow。
 
-### 3.11 Read-only Investigation
+### 3.11 Optional Investigation
 
-首个完整 policy 可以在没有调查工具的情况下保守运行。若评测证明本地事实会实质改变 allow／deny，才增加目的受限的只读工具，而不是开放通用工具继承。
+v1 Guardian 是纯卷宗裁决者，不提供读取文件、shell、网络、Session 查询或其他 Agent 工具。只有五段式完整卷宗的真实评测证明某类本地事实会实质改善审批质量，才重新立项目的受限调查能力，而不是开放通用工具继承。
 
-任何调查工具必须：无写入、默认无网络、有输入／输出上限、结果标记为 untrusted evidence，并遵守 Reviewer deadline。
+未来任何调查工具必须：无写入、默认无网络、有输入／输出上限、保留明确来源，并遵守 Reviewer deadline。
 
-退出条件：逐个工具完成 capability、数据暴露和旁路审计。
+退出条件：v1 无实现任务；未来立项时逐个工具完成 capability、数据暴露和旁路审计。
 
 ### 3.12 Audit and Metrics
 
@@ -199,15 +173,15 @@ interface AuthorizationAssessment {
 
 ```text
 R0 独立实现原则、MIT 许可和路线图
- └── R1 Evidence Model + TranscriptSource
-      └── R2 Context Selection/Budget + Full/Delta Cursor
+ └── R1 Session/Sidecar Fact Sources
+      └── R2 Five-section Dossier Compiler + Full Baseline Metrics
            ├── R3 Tool-family Action Projectors ───────────┐
            └── R4 Risk Taxonomy + Authorization Assessment ┤
                                                            └── R5 Complete Policy + Decision Assessment
                                                                 ├── R6 Finite Attempts ───────────────┐
                                                                 ├── R7 Rejection Circuit Breaker ─────┤
-                                                                └── R8 Optional Read-only Investigation ┤
-                                                                                                         └── R9 Audit/Metrics + Security Evaluation
+                                                                └── R8 Optional Transport/Investigation ┤
+                                                                                                        └── R9 Audit/Metrics + Security Evaluation
 ```
 
 R3 与 R4 都是 R5 的前置条件；R6、R7 与 R8 收敛后再完成 R9。R1–R5 是 Reviewer 能够进行有依据审批的主路径。R6–R9 不能用来掩盖主策略不完整；每个里程碑都必须保持当前 fail-closed 性质。

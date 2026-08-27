@@ -68,7 +68,7 @@ dsh-managed-agent         0.1.0-dev.0
 应用迁移与标准 bundle 包装已完成，后续分成两条并行轨道：
 
 1. **运行验收**：在真实 stock DSH profile 中验证首次物化、复用、cold resume、污染轮换、unload／reload、Web 只读与 Stop；权威清单见 [integration.md](integration.md)。
-2. **Reviewer 产品化**：按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 依次建设 Evidence Model、TranscriptSource、有界 full／delta 上下文、工具族动作语义、风险／授权 assessment、完整 policy、有限尝试、拒绝熔断和审计。
+2. **Reviewer 产品化**：先按 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 实现 Session／sidecar facts source、五段式完整卷宗、root-principal delegation ledger／direct child-origin output 过滤和基线指标，再按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 建设工具族动作语义、风险／授权 assessment、完整 policy、有限尝试、拒绝熔断和审计。
 
 Reviewer 产品化全部基于 DSH 需求独立设计并使用 MIT 许可证。Codex Guardian 只作为能力覆盖参照，不复制或翻译其代码、提示词、测试、snapshot 与文档表达。
 

@@ -162,7 +162,7 @@ ensure Reviewer
 - approval policy `never`；
 - sandbox mode `read-only`。
 
-不得继承 Parent transcript；所需上下文由 approval hook 最小化后放进 deliver payload。Provider setup 不得保留 unpublished child Agent，也不得调用 send／followup／steer／inject 绕过 Controller。
+不得继承 Parent transcript；所需事实由 approval hook 按 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 从父 Session log 与 Storage Domain sidecar 编译成版本化 deliver payload。卷宗采用 principal／delegation-envelope 模型：v1 只接受无父 Session 且 header／runtime effective delegation depth 为 0 的主／根 Agent requester，owned 子代理及后代只延伸主 Agent 的事务意图，不创造授权；enabled tools 必须闭集分类。Reviewer 只接收主 Agent 轨迹、精确委托和 content-free safe receipts，不遍历 child Session，也不接收 direct child-origin report、closing output 或工具结果正文。Provider setup 不得保留 unpublished child Agent，也不得调用 send／followup／steer／inject 绕过 Controller。
 
 ## 14. 可实现安全边界
 
@@ -172,7 +172,7 @@ Managed capability 防止普通产品通道和其他 provider 操作 child；它
 
 ## 15. 独立实现与外部参照边界
 
-后续 Reviewer 产品能力由本项目基于 DSH 的消息来源、Session 历史、工具协议和威胁模型独立设计。Codex Guardian 只作为外部能力清单参照，用于提醒证据信任、用户授权、精确动作、full／delta 上下文、独立预算、截断、固定 deadline、有限重试和拒绝熔断等通用问题；它不定义本项目的类型、算法、默认参数或策略文本。
+后续 Reviewer 产品能力由本项目基于 DSH 的消息来源、Session 历史、工具协议和威胁模型独立设计。当前卷宗以 DSH Session log 为规范事实来源，不由宿主预判消息授权语义。Codex Guardian 只作为外部能力清单参照，用于提醒用户授权、精确动作、有界上下文、固定 deadline、有限重试和拒绝熔断等通用问题；它不定义本项目的类型、算法、默认参数或策略文本。
 
 本项目不得复制、翻译或近似改写 Codex 的代码、policy／prompt、schema、测试、snapshot、注释或文档表达，也不得用外部项目的 prompt snapshot 作为本项目 golden test。所有实现从空白文本和本项目规格出发，使用 MIT 许可证。完整组成部分和实施顺序见 [Approval Reviewer 独立实现路线](reviewer-roadmap.md)。
 

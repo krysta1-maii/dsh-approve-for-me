@@ -679,10 +679,10 @@ provider 在 patched DSH fixture 中可以创建和 cold-resume 同一 Reviewer 
 
 基础接入稳定后，按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 继续：
 
-- DSH 原生 Evidence Model 与 TranscriptSource；
+- DSH Session log／Storage Domain sidecar fact sources；
+- [五段式 Guardian 案件卷宗](guardian-dossier.md)、root-principal delegation ledger／direct child-origin output 过滤与 full baseline 指标；
 - 独立撰写、版本化的 prompt policy registry；
-- 基于稳定消息标识的 full／delta Reviewer context；
-- 独立预算、可见截断和固定 deadline 内的有限 retry；
+- 由真实指标决定的后续预算／full-delta transport；
 - 工具族动作语义、风险／授权 assessment 和拒绝熔断；
 - 可选的脱敏业务审计 projection。
 
@@ -730,4 +730,4 @@ M3 和 M4 可以在 M2 后并行；M5 必须在两者完成后进行。
 2. stock DSH 运行与 Web 验收以 [integration.md](integration.md) 为权威清单；
 3. 跨仓库基础设施变更以 `dsh-managed-agent` 的 Guarded Continuable 计划为准。
 
-当前首个产品化里程碑是 Evidence Model 与 TranscriptSource；所有后续策略、上下文和评测都必须维持现有身份关联和 fail-closed 不变量。
+当前首个产品化里程碑是 Session／sidecar fact sources 与五段式 dossier compiler；所有后续策略、transport 和评测都必须维持现有身份关联和 fail-closed 不变量。
