@@ -47,9 +47,15 @@ export {
   validateToolTrajectorySection,
 } from './domain/dossier.js'
 export type {
+  AgentDeliveryV1,
   ApprovalReviewPacketCodecV1,
   ApprovalSnapshotRecordV1,
   CodeDispatchRequestRefV1,
+  DirectUserMessageV1,
+  InteractionSectionV1,
+  InteractionTurnV1,
+  PrincipalDelegationLedgerV1,
+  TurnEndSummaryV1,
   DelegationReceiptFactRecordV1,
   DossierCompilationResultV1,
   DossierMetricsV1,

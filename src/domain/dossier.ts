@@ -468,3 +468,46 @@ export interface GuardianDossierCompiler {
     readonly signal?: AbortSignal
   }): DossierCompilationResultV1
 }
+
+export interface DirectUserMessageV1 {
+  readonly event: EventRefV1
+  readonly messageId: string
+  readonly content: readonly JsonValue[]
+  readonly surfaceState: 'visible' | 'superseded'
+}
+
+export interface AgentDeliveryV1 {
+  readonly event: EventRefV1
+  readonly messageId: string
+  readonly textBlocks: readonly string[]
+}
+
+export type TurnEndSummaryV1 =
+  | { readonly kind: 'completed' }
+  | { readonly kind: 'aborted' }
+  | { readonly kind: 'blocked' }
+  | { readonly kind: 'error'; readonly code?: string }
+  | { readonly kind: 'max-tokens' }
+  | { readonly kind: 'interrupted' }
+  | { readonly kind: 'extension'; readonly reason: JsonValue }
+
+export interface InteractionTurnV1 {
+  readonly turn: number
+  readonly directUserMessages: readonly DirectUserMessageV1[]
+  readonly delivery?: AgentDeliveryV1
+  readonly end?: TurnEndSummaryV1
+}
+
+export interface PrincipalDelegationLedgerV1 {
+  readonly model: 'principal-extension-v1'
+  readonly principalSessionId: string
+  readonly descendantsGrantAuthority: false
+  readonly childOutputPolicy: 'exclude-direct-origin-v1'
+  readonly classificationCatalog: DelegationToolClassificationCatalogV1
+  readonly entries: readonly PrincipalDelegationEntryV1[]
+}
+
+export interface InteractionSectionV1 {
+  readonly turns: readonly InteractionTurnV1[]
+  readonly delegations: PrincipalDelegationLedgerV1
+}
