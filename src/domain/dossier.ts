@@ -35,7 +35,7 @@ export interface GuardianDossierV1 {
   readonly completeness: JsonValue
 }
 
-declare const sourceVerifiedDossierV1Brand: unique symbol
+const sourceVerifiedDossierV1Brand: unique symbol = Symbol('dsh-approve-for-me/source-verified-dossier-v1')
 
 /** Module-private compiler brand; never serialized or recoverable from JSON. */
 export interface SourceVerifiedDossierV1 {
@@ -107,6 +107,16 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
 
 export function recomputeDossierHash(dossier: GuardianDossierV1): string {
   return hashGuardianDossier(dossier)
+}
+
+/**
+ * Create a SourceVerifiedDossierV1 in this package's compiler boundary. The
+ * brand is still module-scoped at the type level; this function exists so the
+ * application compiler can seal a fully validated dossier.
+ */
+export function sealSourceVerifiedDossier(dossier: GuardianDossierV1): SourceVerifiedDossierV1 {
+  const dossierHash = hashGuardianDossier(dossier)
+  return Object.freeze({ dossier, dossierHash, [sourceVerifiedDossierV1Brand]: true }) as SourceVerifiedDossierV1
 }
 
 export interface InstructionMessageV1 {

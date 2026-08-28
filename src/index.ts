@@ -42,6 +42,7 @@ export type {
 export {
   assertDossierShape,
   recomputeDossierHash,
+  sealSourceVerifiedDossier,
   validateDelegationToolCatalog,
   validateToolTrajectorySection,
 } from './domain/dossier.js'
@@ -253,6 +254,7 @@ export type {
   CaseCaptureSink,
   InMemoryCaseCaptureStats,
 } from './application/case-capture.js'
+export { DefaultDossierCompiler } from './application/dossier-compiler.js'
 export type {
   DecisionRecordStorageBackend,
   DecisionRecordStore,
