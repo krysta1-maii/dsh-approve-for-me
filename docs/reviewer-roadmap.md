@@ -1,6 +1,6 @@
 # Approval Reviewer 独立实现路线
 
-> 状态：2026-08-25 确立；2026-08-27 将父会话材料路线收敛为 DSH Session log + Storage Domain sidecar 驱动的实验性案件卷宗，并确定 principal／delegation-envelope 子代理归因；2026-08-28 宿主行为以 [宿主接口与生命周期契约](host-contract.md) 初步定稿。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图；卷宗接口以 [Guardian 案件卷宗规范](guardian-dossier.md) 为准。
+> 状态：2026-08-25 确立；2026-08-27 将父会话材料路线收敛为 DSH Session log + Storage Domain sidecar 驱动的实验性案件卷宗，并确定 principal／delegation-envelope 子代理归因；2026-08-28 宿主行为以 [宿主接口与生命周期契约](host-contract.md) v2（机器决策槽）定稿。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图；卷宗接口以 [Guardian 案件卷宗规范](guardian-dossier.md) 为准。
 
 ## 1. 实现原则
 

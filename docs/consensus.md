@@ -6,7 +6,7 @@
 
 `dsh-approve-for-me` 是 DSH 工具副作用发生前的受管自动审批插件，也是 companion `dsh-managed-agent` 的首个业务应用。历史工作名 `dsh-approval-for-me` 已废弃。
 
-插件向 Host Profile 的 terminal approval composer 提供隔离、可审计的 Guardian policy；它不是后台绕过器或事后审计器。自动放行只可能来自完整通过 schema、身份、动作和事实校验的确定性结果。具体行为由[宿主契约](host-contract.md)定义。
+插件通过 patched `dsh-user-approval` 的 `registerMachinePolicy()` 机器决策槽提供隔离、可审计的 Guardian policy；它不是后台绕过器或事后审计器。自动放行只可能来自完整通过 schema、身份、动作和事实校验的确定性结果。具体行为由[宿主契约](host-contract.md)定义。
 
 ## 2. 基础设施与 authority
 
@@ -16,11 +16,9 @@ DSH `approval/request` 中的 exact live `req.agent` 是当前控制 authority�
 
 ## 3. 部署与审批组合
 
-v1 保持官方 `@deepseek-ai/dsh-*` 包不变，由锁定版本的 stock DSH、companion managed-agent、本插件、companion Host Profile 和 profile-owned thin composer adapter 共同交付；完整边界见[文档地图的部署说明](README.md#当前部署边界)。
+v2 只 patch 官方 `@deepseek-ai/dsh-user-approval`（新增 `requestId` 与 `registerMachinePolicy()` 机器决策槽），由锁定版本的 stock DSH、fork tarball、独立仓库的 `dsh-managed-agent` 与本插件共同交付；完整边界见[文档地图的部署说明](README.md#当前部署边界)。
 
-Host Profile 拥有 Host-plane、进程稳定的 exclusive 审批拓扑。Agent Preset 虽是可包含特权插件的 agent-scoped Cordis composition，却不能拥有该全局拓扑或向 Host consumers 发布所需人工桥，因此不能替代 Host Profile。
-
-普通 sibling listener 顺序不是 policy priority。Profile 只提供一个自动 policy slot，并锁定 Agent Preset catalog、禁用可变 preset roots；Profile-owned mutation gate 在 listener 变更公开前拒绝非法注册，并通过可撤销 registration 通知拓扑失效，保证 preset composition 不插入审批链；人工恢复由 adapter 在每次 dispatch 内从当前 continuation 构造并消费 request-scoped port，核心 policy 不接触 `next()`。DSH 的权威结果来自父 Session 匹配的 `approval/decided`，不是 composer 的返回提议。接口、映射和生命周期均以[宿主契约](host-contract.md)为准。
+机器决策在 `never` 之后、`approval/request` waterfall 之前执行，拥有与 listener 注册顺序无关的确定性优先级；本体插件返回 `'delegate'` 时，请求继续走官方 `api-remotes → client/ui-approval` 人工瀑布。普通 sibling listener 顺序仍不是策略优先级机制，但自动裁决路径已不依赖它。已废弃的 companion Host Profile、mutation gate 与 topology attestation 方案仅见[历史归档](archive/README.md)。
 
 ## 4. Guardian 事实边界
 
@@ -44,4 +42,4 @@ Reviewer policy、卷宗算法、schema、测试和文档均从 DSH 的需求与
 
 ## 7. 已废弃方向
 
-官方第三审批 mode、patched DSH API、普通 sibling-listener priority、私有 Session JSON／未知 event、默认保存完整 packet，以及跨 reload 恢复旧 pending approval 均不属于现行方案；历史材料仅见 [`archive/`](archive/README.md)。
+官方第三审批 mode、普通 sibling-listener priority、companion Host Profile／thin composer adapter／mutation gate／topology attestation、私有 Session JSON／未知 event、默认保存完整 packet，以及跨 reload 恢复旧 pending approval 均不属于现行方案；历史材料仅见 [`archive/`](archive/README.md)。官方包的最小 patch 是现行方案的一部分，其范围只限 `dsh-user-approval` 的 `requestId` 与 `registerMachinePolicy()`。

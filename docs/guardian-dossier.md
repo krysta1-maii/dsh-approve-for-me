@@ -1,6 +1,6 @@
 # Guardian 案件卷宗接口与编译规范
 
-> 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；对应代码尚未实现，文中的 TypeScript 是待实现契约，不是当前包已经导出的 API。
+> 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存，并跟进宿主 v2：`ApprovalRequest.requestId`（官方包 patch）成为 asked 绑定的首要键。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；对应代码尚未实现，文中的 TypeScript 是待实现契约，不是当前包已经导出的 API。
 >
 > 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。宿主组合、失败映射、Review Run 与生命周期见 [宿主接口与生命周期契约](host-contract.md)；Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。仓库文档的权威顺序见 [文档地图](README.md)。
 
@@ -116,9 +116,9 @@ DSH 工具注册表目前没有通用的“该工具会创建 Agent”语义标�
 → tools/pre-execute 捕获 ActionSnapshot + versioned projector identity
 → 工具申请临时扩大的 sandbox 权限
 → DSH 记录带内部 id 的 approval/asked
-→ DSH approval service 调用 profile terminal composer／本插件 policy
+→ patched ApprovalService 先调用机器策略（本插件 policy），'delegate' 时进入 approval/request waterfall
 → adapter 从 request.agent 绑定 exact Agent/Session authority
-→ 用 open turn + callId + toolName + reason 唯一关联尚未 decided 的 approval/asked
+→ 用 request.requestId（patched 字段）定位 approval/asked，再以 open turn + callId + toolName + reason 复核
 → 以该 approval/asked.seq 冻结 throughSeq，并解析该 ask 的 environment
 → 在审批前持久化 execution projection + immutable approval snapshot
 → 读取 Session log + 校验 sidecar
@@ -134,7 +134,7 @@ DSH 工具注册表目前没有通用的“该工具会创建 Agent”语义标�
 → DSH 原生工具执行器决定是否执行动作
 ```
 
-`ApprovalRequest` 本身不公开 `approval/asked.id` 或 event seq，因此不能直接声称已经绑定。关联算法必须在同一个 open turn 中按 callId、toolName 和 reason 查找与 live request 完全一致、尚无 `approval/decided` 配对的 ask；必须得到唯一候选，随后把候选的 id、seq 和时间写入卷宗。零个或多个候选均失败关闭。v1 还要求 live request 带 callId；无 callId 的通用 permission ask 下沉人工或返回 unavailable。
+`ApprovalRequest` 在 v2 携带 patch 新增的 `requestId`（等于 `approval/asked.id`）。关联算法必须首先按 `requestId` 找到唯一 `approval/asked` 事件，再以 open turn + callId + toolName + reason 交叉复核，并验证该 ask 尚无 `approval/decided` 配对；`requestId` 缺失（未 patch 的旧包）或按 `requestId` 找不到唯一候选时失败关闭。随后把候选的 id、seq 和时间写入卷宗。v1 还要求 live request 带 callId；无 callId 的通用 permission ask 下沉人工或返回 unavailable。
 
 若父 Session 的有效 policy 为 `never`，DSH 会记录 `approval/asked`，直接记录 `approval/decided: rejected`，且不会派发 `approval/request` answerer；因此不会编译 Guardian dossier。该行为与 Reviewer child 固定为 `never` 是两个独立事实。
 

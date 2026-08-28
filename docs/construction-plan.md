@@ -1,18 +1,19 @@
 # dsh-approve-for-me 当前施工计划
 
-> 状态：2026-08-28。本文从当前代码基线出发安排后续实现，不再保留 patched-DSH 施工方案。旧计划已归档至 [`archive/construction-plan-2026-08-25.md`](archive/construction-plan-2026-08-25.md)。文档职责和权威顺序见 [文档地图](README.md)。
+> 状态：2026-08-28，宿主方案 v2（机器决策槽）。本文从“插件本体 + 官方 patch”的仓库形态出发安排后续实现；不再保留 companion Host Profile／thin composer adapter 方案。旧计划与旧宿主契约已归档/被替代，文档职责和权威顺序见 [文档地图](README.md)。
 
 ## 1. 施工目标
 
-将当前“协议与运行骨架”建设为可在受控 DSH Web Profile 中验收的自动审批产品，同时保持以下边界：
+将当前“协议与运行骨架”建设为可在 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 中验收的自动审批产品：
 
-- 不修改官方 `@deepseek-ai/dsh-*` 插件族；
-- 通过 `dsh-managed-agent` 的 `ctx.managedAgents` 管理隔离 Reviewer；
-- 由配套 Host Profile 组合唯一自动 policy 和 stock Web 人工审批；
-- 只有 source-verified 卷宗、合法 Reviewer 结果和 durable 决策事实可以产生 `allowed-once`；
-- 身份、hash、generation、事实完整性和协议冲突始终失败关闭。
+- 官方只 patch `@deepseek-ai/dsh-user-approval`：`requestId` + `registerMachinePolicy()`；
+- 本体插件注册唯一机器决策槽，机器裁决拥有与 listener 顺序无关的确定性优先级；
+- `trustEnvelope` 快路径 + deny breaker/allow-cache 让长程任务尽量无人值守；
+- 只有 source-verified 卷宗、合法 Guardian 结果和 durable 决策事实可以产生 `allowed-once`；
+- 身份、hash、generation、事实完整性和协议冲突始终失败关闭；
+- `dsh-managed-agent` 保持独立仓库，作为依赖插件提供 Guarded Continuable reviewer child。
 
-完整语义分别由 [宿主契约](host-contract.md) 与 [卷宗规范](guardian-dossier.md) 定义，本文不重复其接口。
+完整语义以 [宿主契约](host-contract.md) 与 [卷宗规范](guardian-dossier.md) 为准，本文不重复接口。
 
 ## 2. 当前基线
 
@@ -23,158 +24,98 @@
 - 一次性 decision channel、deadline、abort、tombstone；
 - per-parent lane 与 Managed Reviewer create／reuse／污染轮换；
 - Reviewer composition、唯一 scoped decision tool、`approval=never`、`sandbox=read-only`；
-- `tools/pre-execute` 动作捕获骨架；
-- 标准 DSH bundle 包装；
-- 宿主 v1 和 Guardian 卷宗 v1 候选接口。
+- `tools/pre-execute` 动作捕获骨架与标准 DSH bundle 包装；
+- **patch 包结构**：`patch/dsh-user-approval/` 的 overlay、upstream.json、build/verify 脚本、机器决策槽测试；
+- **`src/approval-gate/` 端口骨架**：catalog、trust-envelope、breaker、sealed-decision、machine-policy。
 
 ### 尚未完成
 
-- 配套 Host Profile 与稳定的 thin approval-composer adapter；
-- 当前 sibling approval answerer 向 `ApprovalPolicyContributionV1` 的迁移；
+- 0.1.2-alpha.1 迁移（本体与依赖插件的 peer/类型面）；
+- 本体 `registerMachinePolicy` 适配器与决策管线实现；
+- trustEnvelope、deny breaker、allow-cache；
 - source-backed dossier compiler 和 Storage Domain fact adapters；
-- 完整错误分类、双 attempt、精确拒绝熔断；
 - 最小决策记录与 opt-in full case capture；
 - 完整风险／授权 policy；
 - 真实 Profile、Web、cold resume、HMR 和卸载验收。
 
 当前代码事实的逐文件清单见 [implementation.md](implementation.md)。
 
-## 3. v1 部署组成
-
-v1 将以下内容视为一个不可拆分的受支持部署：
+## 3. v2 部署组成
 
 ```text
-未修改的 stock DSH packages（锁定兼容版本）
-+ dsh-managed-agent Host/Client bundle
-+ dsh-approve-for-me Guardian policy bundle
-+ companion Host Profile
-+ profile-owned thin approval-composer adapter
+stock DSH 0.1.2-alpha.1（不修改）
++ dsh-user-approval fork tarball（本仓库 patch/ 产出）
++ dsh-managed-agent（独立仓库，依赖插件）
++ dsh-approve-for-me（本仓库，插件本体）
 ```
 
-### 3.1 Host Profile，不是 Agent Preset
-
-Host Profile 负责 Host-plane Cordis 插件图、审批 listener 拓扑、稳定 adapter 生命周期和版本锁定。Agent Preset 是 agent-scoped Cordis composition，虽可包含特权插件，但不能拥有或向 Host consumers 发布这里要求的进程稳定 exclusive 审批拓扑，因此不是该前置设施的替代品。
-
-### 3.2 不修改官方插件族的兼容桥
-
-DSH `0.1.1-rc.2` 的 Web 人工审批仍是 `dsh-host-apiproxy` 内部 sibling listener，没有公开 callable human service。v1 不读取其 private pending registry，也不复制 Web RPC；配套 Profile 提供一个稳定 adapter：
-
-1. adapter 作为 Profile 自有组件，不随 Guardian policy HMR 卸载；
-2. adapter 持有唯一自动 policy slot；
-3. policy 返回 `delegate-human` 时，adapter 将当前请求的 continuation 包装成 request-scoped `HumanApprovalPort`；
-4. Profile 固定 adapter 与 stock Web human listener 的拓扑，禁止其他自动 approval sibling 插入；
-5. 该兼容桥只在锁定版本和真实 Profile 验收后成立，不推广为 DSH 通用 listener-priority 契约。
-
-未来若 DSH 正式公开 terminal composer／human port，Profile adapter 可以替换，Guardian policy、卷宗和应用层接口不变。
+官方 patch 只有两处新增，未注册机器策略时行为与上游一致；fork tarball 保留原名/版本并用 `dshApprovalPatch` 标记第三方身份。构建与校验见 `patch/dsh-user-approval/README.md`。
 
 ## 4. 实施阶段
 
-### H1：Companion Profile 与 composer adapter
+### P0：0.1.2 基线迁移
 
-交付：
+- 本体与 `dsh-managed-agent` 的 peer deps/类型面迁到 0.1.2-alpha.1（`CallId→ToolCallId`、`tools/ptc-dispatch-log`、scoped `this` 等）；
+- 在 patched fork 上运行 `approval-machine-policy.spec.ts`。
 
-- Host Profile 配置／bundle；
-- 稳定 `TerminalApprovalComposerPortV1` 实现；
-- request-scoped `HumanApprovalPortV1` 兼容桥；
-- exclusive policy slot、重复注册失败和显式 deployment default；
-- DSH 版本、Host listener 图与 Agent Preset catalog 的 topology attestation；
-- 禁用可变／用户 preset roots 与 preset HMR，allowlist 审计确保 preset 不注册 approval listener；
-- Profile-owned 原子 topology mutation gate 与同步 `onTopologyInvalidated` callback；
-- adapter 独立于 Guardian HMR 的生命周期测试。
+退出条件：两仓库在 0.1.2 上 typecheck/tests 全绿；patch 的 CI 版本门禁生效。
 
-退出条件：`auto` 和 `auto-then-user` 的所有路径均由受控 Profile 决定；核心插件不再直接注册 sibling approval answerer。任意未知 Profile 默认不宣称受支持。
+### P1：机器决策槽接入
 
-### H2：宿主 policy 与生命周期迁移
+- `src/approval-gate/machine-policy.ts` 的 DSH adapter：把 patched `MachineApprovalPolicy` 映射到应用端口；
+- `apply()` 注册 `registerMachinePolicy()`，disposer 归 Cordis effect；
+- `approval-answerer` 迁移为 machine policy 内的映射器（allow/deny/delegate），不再作为安全边界。
 
-交付：
+退出条件：机器决策先于任何 prepend answerer；`never` 优先；duplicate id 拒绝；异常 fail-closed。
 
-- `approval-answerer.ts` 改造成 `ApprovalPolicyContributionV1` adapter；
-- `starting → ready`、`starting | ready → failed`、`starting | ready | failed → draining → disposed` 状态机；
-- 完整错误分类与模式映射；
-- pending approval 不跨 reload；
-- 插件 disposer 不等待 profile-owned 人工作答；
-- Storage Domain handle 的 open／drain／close ownership。
+### P2：裁决管线产品化
 
-退出条件：宿主契约第 8、10、14 节的分支和 race 测试全部通过。
+- classifier（闭集 catalog）→ trustEnvelope 快路径 → deny breaker/allow-cache → Guardian 裁决 → 模式映射；
+- 自动 allow 前 durable 最小记录；attempt/deadline/串行沿用现有骨架。
+
+退出条件：包络内动作 0 人工；包络外走 Guardian；身份/完整性冲突永不进入 delegate。
 
 ### D1：事实源与卷宗 compiler
 
-交付：
-
-- parent Session fact source；
-- action projection、approval snapshot、safe receipt 的 Storage Domain sidecar；
-- root-principal／delegation-envelope ledger；
-- direct child-origin output 的 source-boundary 排除；
-- 五段式 immutable dossier 与 source-verified brand；
-- 完整性、预算和基线指标。
+- parent Session fact source + Storage Domain sidecar（`requestId` 精确绑定 asked）；
+- root-principal／delegation-envelope 归因与 direct child-origin 排除；
+- 五段式 immutable dossier + source-verified brand + 硬预算。
 
 退出条件：卷宗规范第 16 节测试成立；缺失、漂移或损坏事实不能产生 ready dossier。
 
-### H3：Review Run、attempt 与精确熔断
-
-交付：
-
-- 不可变 `reviewRunId` 与每 attempt 唯一 `reviewId`；
-- 单一总 deadline、最多两个业务 attempts；
-- 污染恢复与业务 attempt 分离审计；
-- 只对同 parent lifecycle／turn／user frontier／`actionHash` 的 Guardian deny 熔断。
-
-退出条件：安全判断不重试，迟到／旧 generation 结果无副作用；语义等价和跨工具关系不进入 v1 验收。
-
 ### H4：决策事实与案例留存
 
-交付：
+- `review_records` 最小记录、durability gate；
+- `caseCapture.mode: full` 的 canonical artifact、quota／TTL／GC；
+- host-private 访问、parent deletion cascade、脱敏导出。
 
-- `review_records` 最小决策记录；
-- 自动 allow 前的 durability gate；
-- `caseCapture.mode: full` 的 canonical artifact；
-- deterministic quota／TTL／GC／single-writer reconcile；
-- host-private 访问、parent deletion cascade 与显式脱敏导出；
-- telemetry 与安全事实分离。
-
-退出条件：默认不保存完整 packet；案例或 telemetry 写入失败不改变既有 deny／fallback，且绝不能绕过 allow 的最小记录门槛。
+退出条件：默认不保存完整 packet；案例或 telemetry 失败不改变 deny／fallback，且不能绕过 allow 的最小记录门槛。
 
 ### RP：Reviewer 产品能力主线
 
-沿用 [Reviewer 独立实现路线](reviewer-roadmap.md) 的 R1–R9 里程碑；本节只表示整条产品主线，不重新编号。依次完成：
-
-1. tool-family action semantics；
-2. risk taxonomy；
-3. user authorization assessment；
-4. 完整 policy 与 decision assessment；
-5. 审计指标和安全评测。
-
-full/delta transport、调查工具和语义等价熔断仍是可选后续项，不阻塞 v1。
+沿用 [Reviewer 独立实现路线](reviewer-roadmap.md) 的 R1–R9：tool-family action semantics → risk taxonomy → user authorization assessment → 完整 policy → 审计指标。
 
 ### I1：真实集成验收
 
-按 [integration.md](integration.md) 在锁定的 stock DSH + companion Profile 上验证：
-
-- 首次物化、复用、cold resume；
-- 自动／人工映射和 Abort 竞速；
-- 全输入守卫；
-- HMR、卸载、污染轮换；
-- Storage Domain durability 与删除规则；
-- Web 只读 Reviewer、历史和 Stop；
-- pack、安装、dump-config 与重启。
+按 [integration.md](integration.md) 在 patched `dsh-user-approval` + stock DSH 0.1.2 + `dsh-managed-agent` 上验证：首次物化、复用、cold resume、自动/人工映射、Abort 竞速、输入守卫、HMR、卸载、Storage Domain durability、Web 审批与 Stop、长程 soak（包络内 0 人工、0 误放行）。
 
 ## 5. 依赖关系
 
 ```text
-H1 Companion Profile ──→ H2 Host policy/lifecycle ──┐
-                                                    ├─→ H3 Attempts/breaker ─→ H4 Records/cases ─→ I1
-D1 Fact sources/dossier ────────────────────────────┘
-                    └─→ RP Reviewer product line ──────────────────────────────┘
+P0 0.1.2 迁移 ──→ P1 机器决策槽 ──→ P2 裁决管线 ──┐
+                                                 ├─→ H4 记录/案例 ──→ I1
+D1 事实源/卷宗 compiler ──────────────────────────┘
+        └─→ RP Reviewer 产品主线 ────────────────────┘
 ```
 
-H1 与 D1 可以并行。H3 必须同时建立在可用的 composer 和 source-verified dossier 上。RP 直接引用 [Reviewer 路线图](reviewer-roadmap.md) 的 R1–R9，不另造同名阶段；I1 的最终产品结论还要求其中 R1–R5 的上下文、风险／授权与完整 policy 完成，不能用宿主运行正确掩盖 Reviewer 语义尚未成熟。
+P1 与 D1 可以并行；P2 需要可用的机器决策槽与事实源；I1 的最终产品结论还要求 R1–R5 完成，不能用宿主运行正确掩盖 Reviewer 语义尚未成熟。
 
 ## 6. 每阶段完成纪律
 
 每个阶段至少需要：
 
 1. 版本化接口与不变量；
-2. 对官方 DSH API 的真实类型适配；
+2. 对 patched DSH API 的真实类型适配；
 3. 正常、失败和对抗性测试；
 4. `npm run check` 与文档代码块／链接检查；
 5. 更新 `implementation.md` 的已实现事实；
@@ -183,4 +124,4 @@ H1 与 D1 可以并行。H3 必须同时建立在可用的 composer 和 source-v
 
 ## 7. 当前施工入口
 
-下一步从 **H1 Companion Profile 与 composer adapter** 开始，同时可以并行启动 **D1 Fact sources/dossier**。在 H1 完成前，现有 `dsh plugin --profile web add` 只能用于骨架开发，不构成产品级 `auto-then-user` 部署。
+下一步从 **P0 0.1.2 基线迁移** 开始：先在依赖插件仓库和本仓库把 peer/类型面迁到 0.1.2-alpha.1，并让 `patch/dsh-user-approval` 的 fork 构建与测试进入 CI；随后进入 P1。`dsh plugin --profile web add` 当前只用于骨架开发，不构成产品级部署。
