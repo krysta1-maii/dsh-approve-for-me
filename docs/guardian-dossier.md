@@ -2,7 +2,7 @@
 
 > 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；对应代码尚未实现，文中的 TypeScript 是待实现契约，不是当前包已经导出的 API。
 >
-> 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。宿主组合、失败映射、Review Run 与生命周期见 [宿主接口与生命周期契约](host-contract.md)；Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。
+> 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。宿主组合、失败映射、Review Run 与生命周期见 [宿主接口与生命周期契约](host-contract.md)；Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。仓库文档的权威顺序见 [文档地图](README.md)。
 
 ## 1. 目标
 
@@ -116,17 +116,18 @@ DSH 工具注册表目前没有通用的“该工具会创建 Agent”语义标�
 → tools/pre-execute 捕获 ActionSnapshot + versioned projector identity
 → 工具申请临时扩大的 sandbox 权限
 → DSH 记录带内部 id 的 approval/asked
-→ DSH approval service 调用本插件的 live approval/request answerer
+→ DSH approval service 调用 profile terminal composer／本插件 policy
 → adapter 从 request.agent 绑定 exact Agent/Session authority
 → 用 open turn + callId + toolName + reason 唯一关联尚未 decided 的 approval/asked
 → 以该 approval/asked.seq 冻结 throughSeq，并解析该 ask 的 environment
 → 在审批前持久化 execution projection + immutable approval snapshot
 → 读取 Session log + 校验 sidecar
-→ 查找／首次创建／恢复 Managed Guardian
-→ 创建绑定 Reviewer identity／deadline 的 ApprovalReviewRequest
-→ 用唯一 constructor 编译并封装完整 ApprovalReviewPacketV1
+→ compiler 生成 SourceVerifiedDossierV1 + metrics
+→ 查找／首次创建／恢复 Managed Guardian，并选定本 attempt identity
+→ 创建绑定 reviewId／Reviewer identity／deadline 的 ApprovalReviewRequest
+→ packet codec 用该 request + verified dossier 封装 ApprovalReviewPacketV1
 → arm decision channel
-→ 经 Controller 私有通道投递 ApprovalReviewPacketV1
+→ 经 Controller 私有通道投递该 attempt 的 ApprovalReviewPacketV1
 → Guardian 通过唯一结构化决策工具返回结果
 → 宿主校验 identity／generation／actionHash／deadline
 → 映射为 DSH approval outcome
@@ -225,7 +226,7 @@ dsh-approve-for-me/guardian-dossier/v1\0
 2. 唯一关联 request event／approval ask，验证 toolName、callId、reason、turn／step、`throughSeq`、execution projection、immutable approval snapshot 和 confinement；
 3. 验证 effective tools、closed-world classification、event projection／argument semantics version，以及 durable receipt 与 request／result event 的绑定；
 4. 从全部冻结 source attempts 计算完整 historical delegation set，逐项反查 event ref，并验证 current-turn set 与第四段严格双射，拒绝 missing／extra／duplicate；
-5. 只有完成上述外部验证后才调用内部 `createApprovalReviewPacketV1()`。实现应以 module-private brand／不可伪造 constructor input 表示“source-verified dossier”，该 brand 不序列化，也不能由 parser 从 packet 恢复。
+5. 只有完成上述外部验证后才返回带 module-private brand 的 `SourceVerifiedDossierV1`。attempt 的 Reviewer／`reviewId` 确定后，packet codec 才能接受该 verified dossier 与 `ApprovalReviewRequest` 构造 packet；brand 不序列化，也不能由 parser 从 packet 恢复。
 
 **Packet constructor／parser** 只保证序列化对象的内部规范一致性：
 
@@ -236,7 +237,7 @@ dsh-approve-for-me/guardian-dossier/v1\0
 5. 仅对 packet 同时携带的当前 turn attempts 与 ledger entries重算严格双射，验证所有 entry／receipt 的内部 descriptor 约束；
 6. 重新计算 `dossierHash`。
 
-packet-only parser 无法证明历史 entry 真来自父 Session，也无法证明 ledger 对 source prefix 完整；其返回值必须标记为 `internal-consistency-only`，不能重新获得 compiler 的 source-verified brand。Controller 只投递本进程 source-backed compiler 直接产生的 packet；若未来允许跨进程接收 packet 后恢复 source assurance，必须增加外部可验证的 source-prefix commitment／proof 和相应 verifier input。任何层级的不一致都拒绝，不把冲突字段交给 Guardian 自行选择。
+packet-only parser 无法证明历史 entry 真来自父 Session，也无法证明 ledger 对 source prefix 完整；其返回值必须标记为 `internal-consistency-only`，不能重新获得 compiler 的 source-verified brand。Controller 只投递本进程 packet codec 从当前 source-backed compiler 结果和当前 attempt request 直接构造的 packet；若未来允许跨进程接收 packet 后恢复 source assurance，必须增加外部可验证的 source-prefix commitment／proof 和相应 verifier input。任何层级的不一致都拒绝，不把冲突字段交给 Guardian 自行选择。
 
 ## 6. 第一段：环境信息
 
@@ -883,8 +884,8 @@ interface GuardianDossierCompilerDependencies {
 }
 
 interface GuardianDossierCompiler {
+  /** Pure dossier compilation; per-attempt request/packet construction happens later. */
   compile(input: {
-    readonly request: ApprovalReviewRequest
     readonly facts: ParentSessionFactSnapshotV1
     readonly signal?: AbortSignal
   }): DossierCompilationResultV1
@@ -893,7 +894,7 @@ interface GuardianDossierCompiler {
 type DossierCompilationResultV1 =
   | {
       readonly kind: 'ready'
-      readonly packet: ApprovalReviewPacketV1
+      readonly verified: SourceVerifiedDossierV1
       readonly metrics: DossierMetricsV1
     }
   | {
@@ -1019,7 +1020,7 @@ interface ApprovalSnapshotRecordV1 {
 ### 12.1 Storage Domain 规则
 
 - 实现阶段必须显式依赖并注入 DSH `storageDomain` service；未组合该官方服务时插件不得回退到私有 JSON 文件，自动审批保持不可用／下沉人工；
-- 使用 `ctx.storageDomain.open(...)`、`defineDomain(...)`、`domainTable(...)` 和 Zod record schema；打开者拥有返回的 Domain handle，插件 dispose 在安全关键队列 drain 后必须幂等关闭，HMR 不得泄漏 ownership；
+- 使用 `defineDomain(...)`、`domainTable(...)` 和 Zod record schema，并一致地通过 Storage hub projection `ctx.storage.domain.open(...)` 或等价注入别名 `ctx.storageDomain.open(...)` 打开；`ctx.storage.domain` 是 facility 属性而非可调用函数；打开者拥有返回的 Domain handle，插件 dispose 在安全关键队列 drain 后必须幂等关闭，HMR 不得泄漏 ownership；
 - domain／table／unit 名必须匹配 `^[a-z][a-z0-9_]*$`；候选 domain 名为 `approve_for_me`，format version 为 `1`；dossier fact source 使用 `executions` 与 `approval_snapshots`，审计／调试留存另使用不参与编译的 `review_records` 与 `case_artifacts`；
 - Storage Domain table key 是单个字符串，不是假想的多列主键。execution key 使用 `e1_` + `base64url(UTF8(canonicalJson([sessionId, sessionFormatVersion, createdAt, cwd ?? null, callId, requestEventSeq])))`；approval key 使用 `a1_` + `base64url(UTF8(canonicalJson([sessionId, sessionFormatVersion, createdAt, cwd ?? null, approvalRequestId, approvalAskedSeq])))`；JSON 数组结构和可逆 base64url 避免字段拼接碰撞；
 - 只保存 lossless JSON。`tools/pre-execute` 先在进程内保留不可变 action projection；遇到 approval ask 时必须立即持久化 pending execution record，无审批的调用可在 durable result join 时直接创建 terminal record；

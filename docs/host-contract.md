@@ -2,7 +2,7 @@
 
 > 状态：2026-08-28，**宿主设计 v1 初步定稿／候选实现契约**。
 >
-> 本文定义 `dsh-approve-for-me` 在 DSH Host 中的组合接口、审批映射、Review Run、生命周期、持久化和失败关闭边界。当前仓库尚未实现本文全部接口；已实现骨架与待迁移项见 [implementation.md](implementation.md)。Guardian 材料本身由 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md)定义。
+> 本文定义 `dsh-approve-for-me` 在 DSH Host 中的组合接口、审批映射、Review Run、生命周期、持久化和失败关闭边界。当前仓库尚未实现本文全部接口；已实现骨架与待迁移项见 [implementation.md](implementation.md)。Guardian 材料本身由 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 定义，文档权威顺序见 [文档地图](README.md)。
 
 ## 1. 定稿范围与未决前置条件
 
@@ -19,7 +19,7 @@
 9. 默认只保存最小决策记录，完整 Guardian 案例必须显式 opt-in；
 10. Reviewer route、generation、policy 和 toolset 显式固定，不继承主 Agent，也不静默切换。
 
-唯一尚未落地、但接口边界已经确定的外部前置条件是 **terminal approval composer／human port**：DSH `0.1.1-rc.2` 的 Web 人工审批位于 `dsh-host-apiproxy` private sibling listener 中，没有公开可调用的 `HumanApprovalPort`。真实 Web profile 必须先由正式 Host/profile seam 提供本契约所需组合能力；本插件不得读取 private pending registry、复制 Web wire protocol 或继续用 `{ prepend: true } + next()` 冒充产品级优先级。
+v1 的部署结论是：**不修改官方 `@deepseek-ai/dsh-*` 插件族，但必须配套一个受控 Host Profile 和 profile-owned thin approval-composer adapter。** Agent Preset 虽然是可包含特权插件的 agent-scoped Cordis composition，却不能拥有这里要求的 Host-plane、进程稳定、exclusive 审批拓扑和人工桥；因此不能替代 Host Profile。Preset 插件仍可能注册 agent-scoped `approval/request` listener 并在 composer 前截断或在其 continuation 下游插入，所以受支持 Profile 还必须禁用可变／用户 preset roots，并对全部启用 preset 做版本锁定与 listener allowlist 审计，保证没有 preset approval listener。DSH `0.1.1-rc.2` 的 Web 人工审批位于 `dsh-host-apiproxy` private sibling listener 中，没有公开可调用的 `HumanApprovalPort`；配套 adapter 在锁定且验收过的 listener 拓扑内，于每次 dispatch 内把当前请求的 continuation 包装为 request-scoped human port。核心插件不得读取 private pending registry、复制 Web wire protocol，或假设自己安装到任意 profile 后都能依靠 sibling 顺序获得相同语义。
 
 ## 2. DSH 执行位置
 
@@ -120,7 +120,7 @@ interface NormalizedApproveForMeHostConfigV1 {
 - toolset version 已知；
 - configuration fingerprint 可复算；
 - case quota／TTL 满足卷宗规范；
-- `auto-then-user` 已取得 terminal composer 和 `HumanApprovalPort`；
+- 已取得 profile-owned terminal composer，并验证 `ApprovalTopologyAttestationV1` 的 DSH 版本、fingerprint、禁用可变 preset roots 及 `presetApprovalListeners: 'none'`；`auto-then-user` 还要求 composer 静态声明 `supportsHumanDelegation: true`；request-scoped `HumanApprovalPort` 只能在未来每次 listener dispatch 内创建，挂载时不存在；
 - policy／decision schema／tool classification catalog 可解析且版本兼容。
 
 DSH model selection 当前不验证 provider/model catalog 存在性。语法合法但不存在或暂不可用的 route 在 materialize／request 阶段成为 Reviewer 能力故障；不得静默改用其他模型。
@@ -129,7 +129,7 @@ DSH model selection 当前不验证 provider/model catalog 存在性。语法合
 
 ### 5.1 外部组合端口
 
-composer 是 profile 中唯一直接向 DSH `approval/request` 返回 answerer proposal 的 terminal answerer。插件只占用一个全局自动 policy slot；DSH 竞速后记录的 `approval/decided` 才是权威 outcome。
+composer 是 profile 中唯一拥有自动审批策略的入口。插件只占用一个全局自动 policy slot；人工能力由 composer 注入的 `HumanApprovalPort` 表示，DSH 竞速后记录的 `approval/decided` 才是权威 outcome。若使用第 5.3 节的兼容 adapter，stock Web human listener 仍是下游传输实现，但不拥有第二个自动 policy。
 
 ```ts
 type AsyncDisposer = () => void | Promise<void>
@@ -147,9 +147,40 @@ interface ApprovalPolicyContributionV1 {
   decide(request: ApprovalRequest): Promise<ApprovalPluginDispositionV1>
 }
 
+interface ApprovalTopologyAttestationV1 {
+  readonly version: 1
+  readonly dshVersion: '0.1.1-rc.2'
+  /** 绑定 Profile manifest、listener graph、preset catalog 与相关 package resolution。 */
+  readonly topologyFingerprint: string
+  readonly mutablePresetRootsDisabled: true
+  readonly presetApprovalListeners: 'none'
+}
+
+type TopologyInvalidationReasonV1 =
+  | 'profile-manifest-changed'
+  | 'preset-catalog-changed'
+  | 'listener-registration-attempted'
+  | 'package-resolution-changed'
+  | 'attestation-drift'
+
+interface ApprovalTopologyLifecycleHooksV1 {
+  /**
+   * 调用时必须在返回 Promise 前同步把 runtime gate 从 ready/starting 切到 failed；
+   * Promise 驱动完整 dispose，并只在 policy contribution 已撤销后 resolve。
+   */
+  onTopologyInvalidated(reason: TopologyInvalidationReasonV1): Promise<void>
+}
+
 interface TerminalApprovalComposerPortV1 {
+  /** Profile 对固定 Host 与 Agent Preset listener 拓扑的版本化证明。 */
+  readonly topologyAttestation: ApprovalTopologyAttestationV1
+  /** Profile 对其固定下游拓扑的静态能力声明；不是 mount-time human port。 */
+  readonly supportsHumanDelegation: boolean
   /** v1 只有一个全局自动 policy slot；重复注册必须失败且与加载顺序无关。 */
-  registerExclusivePolicy(policy: ApprovalPolicyContributionV1): AsyncDisposer
+  registerExclusivePolicy(
+    policy: ApprovalPolicyContributionV1,
+    lifecycle: ApprovalTopologyLifecycleHooksV1,
+  ): AsyncDisposer
 }
 
 interface HumanApprovalPortV1 {
@@ -157,6 +188,8 @@ interface HumanApprovalPortV1 {
   answer(request: ApprovalRequest): Promise<ApprovalOutcome>
 }
 ```
+
+`registerExclusivePolicy()` 必须在同一个 Profile mutation gate 临界区内重新验证 attestation 并原子安装 policy + lifecycle hook：验证失败时不产生 registration；成功返回 disposer 之前不得触发 invalidation callback。之后的受控拓扑变更才能按第 5.3 节撤销该运行期 capability。
 
 v1 不定义 request ownership router，也不试图从 DSH `ApprovalRequest` 不存在的 kind/provider 字段推断范围。自动 policy 挂载期间，每个 request 都进入该 contribution；缺失 callId／capture／能力／存储时按第 8 节显式映射，不能临时“放弃 ownership”落入另一个自动 policy。第二个自动 contribution 在注册期无条件失败。插件卸载并撤销 slot 后，composer 才恢复 profile 的显式 deployment default。未来若需要多个自动 policy，必须新增基于真实 request 字段的闭集声明式 routing contract，不能引入任意 predicate。
 
@@ -189,20 +222,31 @@ interface HostApprovalResolutionV1 {
 
 DSH `ApprovalService.decide()` 会把 terminal answerer promise 与 request abort signal 竞速；因此 composer 提议 `allowed-once` 的同时，权威 `approval/decided` 仍可能是 `cancelled`。插件最小记录只保存其在返回前已知的 `pluginDisposition`，不把 `composerOutcome` 或人工结果复制成“最终 DSH outcome”；最终值必须在事后从匹配的 `approval/decided` Session event 读取。
 
-### 5.3 当前 DSH 前置缺口
+### 5.3 Companion Host Profile 兼容层
 
-`dsh-host-apiproxy` 的 Web answerer 当前不是可注入 service。v1 接受的实现路径只有：
+`dsh-host-apiproxy` 的 Web answerer 当前不是可注入 service。为了不修改官方插件族，v1 将 **companion Host Profile + thin composer adapter** 作为正式配套设施：
 
-1. DSH／Host 正式暴露 callable human approval port；或
-2. profile-owned composer 同时拥有正式的人工作答能力。
+1. Profile 锁定已核验的 DSH 版本和全局 approval listener 图；
+2. Profile 禁用运行期可变／用户 preset roots 及 preset HMR，按 fingerprint allowlist 固定全部启用的 Agent Preset composition，并审计其插件不得注册 `approval/request` listener；所有受支持的 Profile／preset／listener mutation API 必须经过 Profile-owned 原子 gate，非法注册在进入 Cordis listener graph 前被拒绝；
+3. adapter 由 Profile 持有，生命周期独立于可 HMR 的 Guardian policy；
+4. adapter 注册受控的前置 approval listener，并独占 `registerExclusivePolicy()` slot；
+5. 在一次 listener 调用内，adapter 把 DSH 借出的 `next` continuation 包装成 request-scoped `HumanApprovalPort.answer(request)`；只有 policy 返回 `delegate-human` 才调用它；
+6. 下游只能是该 Profile 已知的 stock Web human listener，不允许 Host sibling 或 preset-scoped listener 插入；
+7. policy 未挂载时，adapter 采用 Profile 明确声明的 deployment default，不猜测默认行为。
 
-在此之前：
+Topology attestation 必须覆盖 mount 与运行期。Profile mutation gate 在发布任何 preset／listener 变更前重新验证：非法变更直接拒绝且不可见；会使现有 attestation 失效的受控变更必须调用 registration 提供的 `onTopologyInvalidated(reason)`；callback 在返回 Promise 前同步使 policy runtime 原子进入 `failed` 并停止自动 review，其 Promise 驱动完整 dispose，只有在 policy contribution 已撤销后 resolve。mutation gate 必须等待该 Promise，之后才可发布变更。实现不得在等待 dispose 时持有会被 contribution withdrawal 再次获取的非重入 mutex；应先暂存 mutation／预留 topology epoch，以内部 withdrawal 路径完成撤销，同时维持“未发布”屏障。gate 之外任意恶意同进程代码直接操作 Cordis listener graph 不在 v1 受支持安全边界内；若部署不能封闭这类旁路，就不能生成有效 attestation 或宣称支持本产品。
 
-- 不得抓取 host-apiproxy 内部 pending map；
-- 不得复制其 RPC framing；
-- 不得声称 sibling prepend 顺序等于 policy chain；
-- `auto-then-user` 必须拒绝挂载；
-- 两种 mode 都不能标记为已通过 stock Web profile 产品验收。
+这是**受控 Profile 的版本化兼容桥**，不是对 DSH 普通 sibling listener 顺序的通用保证。核心插件既不接触 `next()`，也不持有 mount-time／global human port；`HumanApprovalPortV1` 是 adapter 在单次 dispatch 内部使用的临时对象。任意第三方 Profile 只有提供等价的 `TerminalApprovalComposerPortV1`、如实声明人工下沉能力并通过本契约验收后才受支持。运行时 continuation 缺失、抛错或返回非法值一律映射为 `unavailable`，不能回退到另一次审批调用。
+
+明确禁止：
+
+- 抓取 host-apiproxy 内部 pending map；
+- 复制其 RPC framing；
+- 仅凭插件安装顺序宣称任意 Profile 具备 policy priority；
+- 允许未锁定的 Agent Preset，或让任一 preset composition 注册普通／prepended `approval/request` listener；
+- 让 thin adapter 与 Guardian policy 同时卸载，从而使人工 pending 或新请求落入未定义间隙。
+
+在 companion Profile／adapter 实现并通过真实 Web 验收前，`auto-then-user` 仍必须拒绝挂载，两种 mode 都不能标记为产品验收完成。未来 DSH 若正式公开 callable human port，只替换 Profile adapter，不改变本插件应用层契约。
 
 ## 6. 宿主应用端口
 
@@ -227,7 +271,11 @@ interface GuardianDossierCompilerPortV1 {
     readonly captured: CapturedApprovalActionV1
     readonly deadlineAt: number
   }): Promise<
-    | { readonly kind: 'ready'; readonly verified: SourceVerifiedDossierV1 }
+    | {
+        readonly kind: 'ready'
+        readonly verified: SourceVerifiedDossierV1
+        readonly metrics: DossierMetricsV1
+      }
     | { readonly kind: 'incomplete'; readonly reason: DossierIncompleteReasonV1 }
   >
 }
@@ -279,7 +327,9 @@ interface HostTelemetryPortV1 {
 }
 ```
 
-DSH adapter 必须用 `defineDomain(...)`／`domainTable(...)` 定义 versioned `approve_for_me` spec，再通过 `await ctx.storageDomain.open(spec)` 取得 owned Domain handle，并向应用层投影上述窄 repositories／lifecycle port。不得调用不存在的 `ctx.storage.domain(...)`、维护私有 JSON 文件，或向 parent／Reviewer Session 追加本项目未注册的外部 event。打开者负责在安全关键队列 drain 后幂等 `close()` handle。
+`DossierMetricsV1` 与 verified dossier 同次返回，供宿主基线测量和脱敏 telemetry 使用；它不进入 packet、不能成为 source fact，也不能改变已由编译结果确定的 ready／incomplete 语义。
+
+DSH adapter 必须用 `defineDomain(...)`／`domainTable(...)` 定义 versioned `approve_for_me` spec，再一致地通过 `await ctx.storage.domain.open(spec)`（Storage hub projection）或等价注入别名 `await ctx.storageDomain.open(spec)` 取得 owned Domain handle，并向应用层投影上述窄 repositories／lifecycle port。`ctx.storage.domain` 是 `DomainFacility` 属性，禁止把它误调用成 `ctx.storage.domain(...)`；也不得维护私有 JSON 文件，或向 parent／Reviewer Session 追加本项目未注册的外部 event。打开者负责在安全关键队列 drain 后幂等 `close()` handle。
 
 ## 7. Review Run 与 attempt identity
 
@@ -511,21 +561,37 @@ interface ApproveForMeHostRuntimeV1 {
 | `ready` | 正常自动 policy | 正常自动 policy |
 | `draining` | `unavailable` | `delegate-human` |
 | `failed` | `unavailable` | `delegate-human` |
-| `disposed` | contribution 已撤销；composer 使用部署默认 terminal | contribution 已撤销 |
+| `disposed` | contribution 已撤销；composer 使用 Profile deployment default | contribution 已撤销；composer 使用 Profile deployment default |
+
+合法转换只有：
+
+```text
+starting → ready
+starting → failed
+ready → failed
+starting | ready | failed → draining → disposed
+```
+
+`failed` 表示 gate 注册后出现了使正确自动裁决不再可能的启动故障或运行期 fatal invariant breach。fatal 通知必须同步原子切换 state、停止接收新的自动 review 并作废 pending result channels；随后由单一异步 cleanup task best-effort 撤销已安装的 provider／capture hooks、interrupt Reviewer、drain 已入队安全关键写入及关闭已打开的 Storage Domain handle；**policy gate 保持注册**，所以新请求仍按上表明确失败或有限下沉，而不会意外落回 deployment default。Topology invalidation 路径还必须立即调用幂等 `dispose()`，依次经过 `failed → draining → disposed`；在 contribution 最终撤销前，Profile mutation gate 持续阻止拓扑变更公开。`draining → failed` 非法；dispose 期间的清理错误必须聚合报告，但不得重新开放自动裁决。
+
+`dispose()` 可从 `starting`、`ready` 或 `failed` 调用并统一经过 `draining`；从 `failed` 调用时重复清理和 close 必须幂等。`start()` 失败后 runtime 仍由 companion Cordis effect 持有并必须 dispose，不能因启动 promise 失败遗失 gate disposer。
 
 挂载顺序：
 
 ```text
 validate config + artifacts
-→ obtain terminal composer (+ human port when required)
-→ register state-aware policy gate as starting
+→ verify locked Profile/preset topology attestation
+→ obtain terminal composer and validate supportsHumanDelegation when required
+→ register state-aware policy gate + synchronous topology-invalidation hook as starting; immediately bind its disposer to the owning effect
 → open Storage Domain / reconcile case quota
 → register Managed Reviewer provider
 → install action/fact capture hooks
 → state = ready
 ```
 
-卸载／HMR 顺序：
+其中不存在挂载期 `HumanApprovalPort`：adapter 只在未来某次 `approval/request` listener 调用内从该 dispatch 的 `next` 构造并消费它。
+
+卸载／HMR顺序：
 
 ```text
 state = draining（gate 仍注册）
@@ -640,12 +706,14 @@ Telemetry：
 
 ## 14. Cordis composition root
 
+该 composition root 由 companion Host Profile 提供。Host Profile 负责 Host-plane Cordis 服务和进程稳定的 listener 生命周期。Agent Preset 是 agent-scoped Cordis composition，虽然可以包含特权插件，但其 scope 与发布约束不能拥有或向 Host consumers 提供这里的 exclusive 全局审批拓扑，因此不能替代 companion Profile。
+
 目标安装接口：
 
 ```ts
 interface InstallApproveForMeOptionsV1 {
+  /** 包含 topology attestation 与静态 supportsHumanDelegation；不包含 request-scoped human port。 */
   readonly terminalComposer: TerminalApprovalComposerPortV1
-  readonly humanApproval?: HumanApprovalPortV1
   readonly projectPermissions?: unknown
   readonly telemetry?: HostTelemetryPortV1
 }
@@ -665,7 +733,7 @@ function installApproveForMeV1(
 实现可继续以 Cordis `apply()`／`ctx.effect()` 为外壳，但必须满足：
 
 - config 先验证，非法配置不产生半挂载 provider；
-- composer/human port 是代码级 capability，不序列化；
+- composer、topology attestation、mutation gate 与 invalidation hook 是代码级 capability，不序列化；request-scoped human port 不进入安装接口；
 - effect disposer 遵循第 10 节顺序；
 - 运行期 Adapter 不向 Domain 层泄漏 Cordis／DSH 类型；
 - 当前 `approval-answerer.ts` 应迁移为 `ApprovalPolicyContributionV1` adapter，而不是继续注册独立 global sibling answerer。
@@ -684,7 +752,7 @@ function installApproveForMeV1(
 
 尚待实现：
 
-1. profile terminal composer seam 与 callable `HumanApprovalPort`；
+1. companion Host Profile 与稳定 thin composer adapter（含 request-scoped `HumanApprovalPort` 兼容桥）；
 2. state-aware policy gate 和严格 drain 顺序；
 3. source-backed dossier compiler／Storage Domain fact adapters；
 4. 两次业务 attempts 与闭集错误分类；
@@ -698,8 +766,8 @@ function installApproveForMeV1(
 
 实现至少必须证明：
 
-1. profile 只有一个 terminal composer／全局自动 policy slot；第二个 contribution 无论插件加载顺序都注册失败；
-2. `auto-then-user` 使用 exact borrowed request 调用一次显式 human port；
+1. companion Host Profile 固定已核验的 DSH 版本、Host listener 图和 Agent Preset catalog，禁用可变 preset roots；普通与 prepended preset-scoped approval listener 的注册在公开前被 mutation gate 拒绝；受控拓扑失效先触发 `onTopologyInvalidated`，在其 Promise 返回前同步进入 failed，并等待该 Promise 完成 dispose／撤销 contribution 后才发布变更；通过 attestation 后只有一个自动 policy slot，第二个 contribution 无论加载顺序都注册失败；
+2. thin adapter 独立于 Guardian HMR，挂载期只暴露真实的 `supportsHumanDelegation` 声明；`auto-then-user` 在每次 dispatch 内使用 exact borrowed request 调用一次 request-scoped human port；
 3. 所有映射矩阵分支都得到固定 outcome，任何未知值 fail closed；
 4. identity／hash／generation／source conflict 永不进入人工可放行路径；
 5. 一个 run 最多两个业务 attempts、一个总 deadline、每 attempt 唯一 `reviewId`，且 packet request 与实际 Reviewer Session 精确一致；
@@ -710,9 +778,9 @@ function installApproveForMeV1(
 10. 自动 allow 在安全 facts 和最小记录 durable 前不生效；
 11. case capture 默认关闭，quota／TTL／GC 确定，失败不改变审批；
 12. composer／abort 竞速以 `approval/decided` 为权威，record/artifact 不伪造 final outcome；
-13. starting／draining／dispose／abort／reload race 全部有对抗测试，delegated 人工 pending 不阻塞插件 unload；
+13. starting／failed／draining／dispose／abort／reload race 全部有对抗测试，包括 startup 与 runtime fatal 进入 failed、gate 保持注册，以及 `dispose(failed) → draining → disposed`；delegated 人工 pending 不阻塞插件 unload；
 14. Storage Domain handle 在安全队列 drain 后幂等关闭，HMR 不泄漏 ownership；
-15. stock DSH profile、cold resume、HMR、Web human port 和卸载流程通过真实验收。
+15. 未修改的 stock DSH packages + companion Host Profile 在 cold resume、HMR、Web human bridge 和卸载流程中通过真实验收；任意未知 Profile 不自动继承该结论。
 
 ## 17. 版本演进
 
@@ -724,7 +792,7 @@ function installApproveForMeV1(
 - 引入语义等价熔断；
 - 允许 pending 跨 reload 恢复；
 - 改变 record/case retention 生命周期；
-- 从 sibling ordering 恢复隐式 policy priority；
+- 把 companion Profile 的受控 continuation bridge 扩大成任意 sibling ordering 的隐式 policy priority；
 - 让 Reviewer route 自动 fallback。
 
 v1 实现不得以“优化”为名静默改变这些安全语义。

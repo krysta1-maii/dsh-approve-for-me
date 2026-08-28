@@ -1,731 +1,186 @@
-# dsh-approve-for-me 施工计划
+# dsh-approve-for-me 当前施工计划
 
-> 制定基线：2026-08-24  
-> DSH 基线：`0.1.1-rc.2` / `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`  
-> Managed Runtime 基线：`dsh-managed-agent` `878bf45`（contract 包现为 `0.1.0-dev.0`）  
-> 本文重点是抽象、组件关系、接口与施工顺序。具体安全加固、错误文案和穷举式 fail-closed 分支属于各阶段的工程验收，不作为架构主线。
-
-> 状态（2026-08-25）：Phase 0–4 的 patched Managed 契约实现已完成，随后应用迁移（Phase 3）也已切换到标准 `ctx.managedAgents`，当前完整测试为 82 项。部署路线为 stock DSH + Guarded Continuable；本文保留为已实现业务分层和旧施工顺序的历史基线，后续 patched-DSH Phase 5 不再执行。新的跨仓库权威计划见 [`dsh-managed-agent/docs/guarded-continuable-migration-plan.md`](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)，新的运行验收清单见 [integration.md](integration.md)。文中 `registerManagedProvider()` 和 patched fixture 描述属于历史基线，当前事实以 `ctx.managedAgents.registerProvider()` 为准。2026-08-27 进一步确认 DSH sibling waterfall 顺序不是 policy priority：本文早期 prepended answerer + `next()` 方案已废弃，最终宿主须采用 profile 单一 terminal approval composer／显式 `HumanApprovalPort`。
+> 状态：2026-08-28。本文从当前代码基线出发安排后续实现，不再保留 patched-DSH 施工方案。旧计划已归档至 [`archive/construction-plan-2026-08-25.md`](archive/construction-plan-2026-08-25.md)。文档职责和权威顺序见 [文档地图](README.md)。
 
 ## 1. 施工目标
 
-本项目要实现的不是一个独立 Agent Runtime，而是一个 DSH 业务插件：
+将当前“协议与运行骨架”建设为可在受控 DSH Web Profile 中验收的自动审批产品，同时保持以下边界：
 
-1. 向 profile 的单一 terminal approval composer 注册自动 Reviewer policy；
-2. 为每个父 Session 按插件策略管理一个持久 Reviewer child；
-3. 通过 `dsh-managed-agent` 提供的 `ctx.managedAgents.registerProvider()` 控制 Reviewer；
-4. 通过 Reviewer scope 内的结构化工具取得审批结果；
-5. 继续使用 DSH 原生 Agent、Session、模型路由、工具系统、审批审计、持久化和 Web 子代理树。
+- 不修改官方 `@deepseek-ai/dsh-*` 插件族；
+- 通过 `dsh-managed-agent` 的 `ctx.managedAgents` 管理隔离 Reviewer；
+- 由配套 Host Profile 组合唯一自动 policy 和 stock Web 人工审批；
+- 只有 source-verified 卷宗、合法 Reviewer 结果和 durable 决策事实可以产生 `allowed-once`；
+- 身份、hash、generation、事实完整性和协议冲突始终失败关闭。
 
-施工完成后的职责边界必须保持为：
+完整语义分别由 [宿主契约](host-contract.md) 与 [卷宗规范](guardian-dossier.md) 定义，本文不重复其接口。
 
-```text
-DSH / dsh-managed-agent                  dsh-approve-for-me
-──────────────────────────────────────  ────────────────────────────────
-Agent / Session / inbox                 审批请求与决定协议
-managed descriptor                     一父 Session 一个 Reviewer 策略
-provider registration capability       Reviewer 配置代际
-create / list / deliver / interrupt     同父审批串行
-cold resume / persistence              请求—结果关联与 deadline
-官方 subagent tree / read-only Web      动作快照、policy 与结果映射
-terminal approval composer             自动 policy 与显式人工 port 组合
-```
+## 2. 当前基线
 
-## 2. 当前代码结论
+### 已完成
 
-### 2.1 可以保留的核心
+- companion `dsh-managed-agent` 的 `ctx.managedAgents.registerProvider()` 接入；
+- providerData、ActionSnapshot、`actionHash` 与 ApprovalDecision 协议；
+- 一次性 decision channel、deadline、abort、tombstone；
+- per-parent lane 与 Managed Reviewer create／reuse／污染轮换；
+- Reviewer composition、唯一 scoped decision tool、`approval=never`、`sandbox=read-only`；
+- `tools/pre-execute` 动作捕获骨架；
+- 标准 DSH bundle 包装；
+- 宿主 v1 和 Guardian 卷宗 v1 候选接口。
 
-当前实现已经形成正确的应用层骨架：
+### 尚未完成
 
-- `json.ts`：lossless JSON 和 canonical JSON；
-- `protocol.ts`：providerData、动作快照、审批请求、审批决定和 hash；
-- `broker.ts`：一次性结果关联；
-- `capture.ts`：工具调用与审批请求关联；
-- `manager.ts`：Reviewer 查找／创建、per-parent 串行和 deliver；
-- `answerer.ts`：审批结果到 DSH outcome 的映射。
+- 配套 Host Profile 与稳定的 thin approval-composer adapter；
+- 当前 sibling approval answerer 向 `ApprovalPolicyContributionV1` 的迁移；
+- source-backed dossier compiler 和 Storage Domain fact adapters；
+- 完整错误分类、双 attempt、精确拒绝熔断；
+- 最小决策记录与 opt-in full case capture；
+- 完整风险／授权 policy；
+- 真实 Profile、Web、cold resume、HMR 和卸载验收。
 
-这些模块的主要问题不是业务方向，而是部分职责仍然混合，以及 DSH adapter 尚未使用真实 DSH 类型。
+当前代码事实的逐文件清单见 [implementation.md](implementation.md)。
 
-### 2.2 必须重做的接入层
+## 3. v1 部署组成
 
-当前未提交的 `src/plugin.ts` 是“结构模拟 adapter”，不是已经证明可接入 DSH 的 adapter：
-
-- 本项目没有 DSH 或 `dsh-managed-agent` 依赖；
-- 本地重复声明了 Controller、registration、materialize、Agent、tool 和 event 类型；
-- `as ManagedReviewerController` 隐藏了类型漂移；
-- materialize 信息缺少真实的 `source`、`parentSessionId` 和完整 descriptor；
-- 本地工具执行接口缺少真实 `ToolExecution` 的 `signal`、`rootCallId`、`token` 等事实；
-- `effort` 进入配置指纹，却没有通过 DSH model selection 应用；
-- Reviewer setup 闭包保留 child Agent，违背 managed provider 的 composition 边界；
-- `requestedPermissions` 函数混入 Cordis 配置，无法由 YAML／JSON loader 表达；
-- 当前 `systemPrompt`、approval 和 sandbox 调用形态与 DSH 真实 API 不完全一致；
-- decision tool 在 tool body 内直接兑现结果，没有等待 DSH `tools/result` 成为成功终态，也没有结束 Reviewer 当前 turn。
-
-因此，现有 39 项测试证明领域核心和结构 mock 自洽，但不能证明真实 DSH 兼容。Stock DSH `0.1.1-rc.2` 本身也没有 `registerManagedProvider()`；真实运行目标必须是应用 sibling 补丁后的 DSH，或未来正式包含该 API 的 DSH 版本。
-
-## 3. 总体架构
-
-目标架构分成五层：
+v1 将以下内容视为一个不可拆分的受支持部署：
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ Cordis Composition Root                                      │
-│ Config / apply / effect ownership / lifecycle                │
-└──────────────┬───────────────────────────────────────────────┘
-               │ wires
-┌──────────────▼───────────────────────────────────────────────┐
-│ DSH Adapters                                                 │
-│ approval hook | tool capture | managed provider | result tool│
-└──────────────┬──────────────────────────────┬────────────────┘
-               │                              │
-┌──────────────▼─────────────────┐  ┌────────▼─────────────────┐
-│ Approval Application Layer    │  │ Reviewer Composition      │
-│ coordinator / directory / lane│  │ model / prompt / tools    │
-└──────────────┬─────────────────┘  └────────┬─────────────────┘
-               │                              │ submit
-┌──────────────▼──────────────────────────────▼────────────────┐
-│ Decision Channel                                             │
-│ arm / await / submit / correlate                             │
-└──────────────┬───────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────┐
-│ Domain Protocol                                              │
-│ providerData / action / request / decision / codecs / hash   │
-└──────────────────────────────────────────────────────────────┘
+未修改的 stock DSH packages（锁定兼容版本）
++ dsh-managed-agent Host/Client bundle
++ dsh-approve-for-me Guardian policy bundle
++ companion Host Profile
++ profile-owned thin approval-composer adapter
 ```
 
-### 3.1 依赖方向
+### 3.1 Host Profile，不是 Agent Preset
 
-依赖只能向下：
+Host Profile 负责 Host-plane Cordis 插件图、审批 listener 拓扑、稳定 adapter 生命周期和版本锁定。Agent Preset 是 agent-scoped Cordis composition，虽可包含特权插件，但不能拥有或向 Host consumers 发布这里要求的进程稳定 exclusive 审批拓扑，因此不是该前置设施的替代品。
+
+### 3.2 不修改官方插件族的兼容桥
+
+DSH `0.1.1-rc.2` 的 Web 人工审批仍是 `dsh-host-apiproxy` 内部 sibling listener，没有公开 callable human service。v1 不读取其 private pending registry，也不复制 Web RPC；配套 Profile 提供一个稳定 adapter：
+
+1. adapter 作为 Profile 自有组件，不随 Guardian policy HMR 卸载；
+2. adapter 持有唯一自动 policy slot；
+3. policy 返回 `delegate-human` 时，adapter 将当前请求的 continuation 包装成 request-scoped `HumanApprovalPort`；
+4. Profile 固定 adapter 与 stock Web human listener 的拓扑，禁止其他自动 approval sibling 插入；
+5. 该兼容桥只在锁定版本和真实 Profile 验收后成立，不推广为 DSH 通用 listener-priority 契约。
+
+未来若 DSH 正式公开 terminal composer／human port，Profile adapter 可以替换，Guardian policy、卷宗和应用层接口不变。
+
+## 4. 实施阶段
+
+### H1：Companion Profile 与 composer adapter
+
+交付：
+
+- Host Profile 配置／bundle；
+- 稳定 `TerminalApprovalComposerPortV1` 实现；
+- request-scoped `HumanApprovalPortV1` 兼容桥；
+- exclusive policy slot、重复注册失败和显式 deployment default；
+- DSH 版本、Host listener 图与 Agent Preset catalog 的 topology attestation；
+- 禁用可变／用户 preset roots 与 preset HMR，allowlist 审计确保 preset 不注册 approval listener；
+- Profile-owned 原子 topology mutation gate 与同步 `onTopologyInvalidated` callback；
+- adapter 独立于 Guardian HMR 的生命周期测试。
+
+退出条件：`auto` 和 `auto-then-user` 的所有路径均由受控 Profile 决定；核心插件不再直接注册 sibling approval answerer。任意未知 Profile 默认不宣称受支持。
+
+### H2：宿主 policy 与生命周期迁移
+
+交付：
+
+- `approval-answerer.ts` 改造成 `ApprovalPolicyContributionV1` adapter；
+- `starting → ready`、`starting | ready → failed`、`starting | ready | failed → draining → disposed` 状态机；
+- 完整错误分类与模式映射；
+- pending approval 不跨 reload；
+- 插件 disposer 不等待 profile-owned 人工作答；
+- Storage Domain handle 的 open／drain／close ownership。
+
+退出条件：宿主契约第 8、10、14 节的分支和 race 测试全部通过。
+
+### D1：事实源与卷宗 compiler
+
+交付：
+
+- parent Session fact source；
+- action projection、approval snapshot、safe receipt 的 Storage Domain sidecar；
+- root-principal／delegation-envelope ledger；
+- direct child-origin output 的 source-boundary 排除；
+- 五段式 immutable dossier 与 source-verified brand；
+- 完整性、预算和基线指标。
+
+退出条件：卷宗规范第 16 节测试成立；缺失、漂移或损坏事实不能产生 ready dossier。
+
+### H3：Review Run、attempt 与精确熔断
+
+交付：
+
+- 不可变 `reviewRunId` 与每 attempt 唯一 `reviewId`；
+- 单一总 deadline、最多两个业务 attempts；
+- 污染恢复与业务 attempt 分离审计；
+- 只对同 parent lifecycle／turn／user frontier／`actionHash` 的 Guardian deny 熔断。
+
+退出条件：安全判断不重试，迟到／旧 generation 结果无副作用；语义等价和跨工具关系不进入 v1 验收。
+
+### H4：决策事实与案例留存
+
+交付：
+
+- `review_records` 最小决策记录；
+- 自动 allow 前的 durability gate；
+- `caseCapture.mode: full` 的 canonical artifact；
+- deterministic quota／TTL／GC／single-writer reconcile；
+- host-private 访问、parent deletion cascade 与显式脱敏导出；
+- telemetry 与安全事实分离。
+
+退出条件：默认不保存完整 packet；案例或 telemetry 写入失败不改变既有 deny／fallback，且绝不能绕过 allow 的最小记录门槛。
+
+### RP：Reviewer 产品能力主线
+
+沿用 [Reviewer 独立实现路线](reviewer-roadmap.md) 的 R1–R9 里程碑；本节只表示整条产品主线，不重新编号。依次完成：
+
+1. tool-family action semantics；
+2. risk taxonomy；
+3. user authorization assessment；
+4. 完整 policy 与 decision assessment；
+5. 审计指标和安全评测。
+
+full/delta transport、调查工具和语义等价熔断仍是可选后续项，不阻塞 v1。
+
+### I1：真实集成验收
+
+按 [integration.md](integration.md) 在锁定的 stock DSH + companion Profile 上验证：
+
+- 首次物化、复用、cold resume；
+- 自动／人工映射和 Abort 竞速；
+- 全输入守卫；
+- HMR、卸载、污染轮换；
+- Storage Domain durability 与删除规则；
+- Web 只读 Reviewer、历史和 Stop；
+- pack、安装、dump-config 与重启。
+
+## 5. 依赖关系
 
 ```text
-plugin composition
-    → DSH adapters
-        → application services
-            → ports + domain protocol
+H1 Companion Profile ──→ H2 Host policy/lifecycle ──┐
+                                                    ├─→ H3 Attempts/breaker ─→ H4 Records/cases ─→ I1
+D1 Fact sources/dossier ────────────────────────────┘
+                    └─→ RP Reviewer product line ──────────────────────────────┘
 ```
 
-领域层不得 import Cordis、DSH Agent、ToolRuntime 或 SubagentRuntime。DSH adapter 可以 import 领域层；反向依赖禁止。
+H1 与 D1 可以并行。H3 必须同时建立在可用的 composer 和 source-verified dossier 上。RP 直接引用 [Reviewer 路线图](reviewer-roadmap.md) 的 R1–R9，不另造同名阶段；I1 的最终产品结论还要求其中 R1–R5 的上下文、风险／授权与完整 policy 完成，不能用宿主运行正确掩盖 Reviewer 语义尚未成熟。
 
-## 4. 组件划分
+## 6. 每阶段完成纪律
 
-建议将代码整理为以下结构。文件名可以微调，但职责边界应保持：
+每个阶段至少需要：
 
-```text
-src/
-├── index.ts
-├── plugin.ts                    # Cordis composition root
-├── config.ts                    # 可序列化 Config schema 与归一化
-├── domain/
-│   ├── json.ts
-│   └── protocol.ts              # providerData/action/request/decision
-├── application/
-│   ├── review-coordinator.ts    # 一次审批的完整 orchestration
-│   ├── reviewer-directory.ts    # find-or-create 与代际选择
-│   ├── serial-lanes.ts          # per-parent 串行
-│   └── decision-channel.ts      # broker 与 pending result
-├── ports/
-│   ├── managed-reviewer.ts      # 应用层需要的最窄 managed port
-│   └── action-projector.ts      # ToolExecution → ActionSnapshot 输入
-├── reviewer/
-│   ├── policy.ts                # prompt、请求呈现、decision schema
-│   ├── provider.ts              # ManagedSubagentProvider
-│   └── decision-tool.ts         # 真实 DSH ToolDefinition
-└── dsh/
-    ├── managed-controller.ts    # 官方 Controller → 应用 port
-    ├── action-capture.ts        # tools/pre-execute + tools/result
-    └── approval-answerer.ts     # 当前 sibling answerer；待迁移为 terminal policy adapter
-```
+1. 版本化接口与不变量；
+2. 对官方 DSH API 的真实类型适配；
+3. 正常、失败和对抗性测试；
+4. `npm run check` 与文档代码块／链接检查；
+5. 更新 `implementation.md` 的已实现事实；
+6. 若契约变化，先更新对应权威文档，再更新共识摘要；
+7. 一次边界清楚的 Git 提交。
 
-不建议把每个纯函数机械拆成文件；上述划分表达的是模块边界，而不是追求文件数量。
+## 7. 当前施工入口
 
-### 4.1 `config.ts`
-
-只包含 loader 可表达的数据：
-
-```ts
-interface Config {
-  mode?: 'auto' | 'auto-then-user'
-  timeoutMs?: number
-  reviewer: {
-    generation: string
-    provider: string
-    model: string
-    reasoningEffort?: string
-    policyVersion: string
-    toolsetVersion: 1
-  }
-}
-```
-
-需要同时导出：
-
-```ts
-export const name = 'dsh-approve-for-me'
-export const inject = ['subagents', 'tools', 'systemPrompt', 'approval']
-export const Config: z<Config>
-export interface Config {}
-export function normalizeConfig(config: Config): NormalizedConfig
-```
-
-`requestedPermissions(execution) => ...` 不能放在 Config 中。它是代码级投影策略，应成为内部实现或注入的 port。
-
-### 4.2 Domain Protocol
-
-`protocol.ts` 只表达稳定业务协议：
-
-- `ReviewerProviderDataV1`；
-- `ActionSnapshotV1`；
-- `ApprovalReviewRequestV1`；
-- `ApprovalDecisionV1`；
-- runtime codecs；
-- canonical hash；
-- decision 到应用结果的纯映射。
-
-这里不出现：
-
-- `Agent`；
-- `Context`；
-- `ManagedSubagentController`；
-- `ToolDefinition`；
-- `ApprovalRequest`（DSH 类型）。
-
-建议把当前 `ReviewerModelRoute.effort` 重命名为与 DSH 一致的 `reasoningEffort`。它既然参与 configuration fingerprint，就必须真实参与 composition。
-
-### 4.3 `DecisionChannel`
-
-当前 broker 被 `ReviewerSessionManager` 私有持有，导致 managed provider 的 decision tool 必须等 manager 构造完毕后才能建立。应把它提升为独立组件：
-
-```ts
-interface DecisionChannel {
-  arm(request: ApprovalReviewRequest, signal?: AbortSignal): Promise<ApprovalDecision>
-  submit(payload: unknown, actualReviewerSessionId: ReviewerSessionId): SubmitResult
-  cancel(reviewId: ReviewId, reason: ReviewFailure): void
-  dispose(): void
-}
-```
-
-组合顺序变成：
-
-```text
-1. 创建 DecisionChannel
-2. 创建 ReviewerProvider，向它注入 DecisionSink
-3. registerManagedProvider(ReviewerProvider)
-4. 用 registration.controller 创建 ReviewCoordinator
-5. 注册 DSH hooks
-```
-
-这样可以消除 `let manager: ... | undefined` 的初始化环，也不需要 Reviewer provider 闭包捕获 manager 或 child Agent。
-
-### 4.4 `ReviewerDirectory`
-
-负责插件自己的实例策略：
-
-```ts
-interface ReviewerDirectory<Parent, SessionId> {
-  ensure(
-    authority: ParentAuthority<Parent, SessionId>,
-    preset: ReviewerProviderDataV1,
-    signal?: AbortSignal,
-  ): Promise<ReviewerRef<SessionId>>
-}
-```
-
-职责仅包括：
-
-- 调用 provider-owned `list()`；
-- 解析每个 child 的 providerData；
-- 按 role、generation 和 fingerprint 选实例；
-- 不存在时 `create()`；
-- 返回 `ReviewerRef`。
-
-它不负责审批 request、deadline 或 decision。
-
-### 4.5 `ReviewCoordinator`
-
-负责一次审批的应用流程：
-
-```ts
-interface ReviewCoordinator<Parent, SessionId> {
-  review(input: {
-    authority: ParentAuthority<Parent, SessionId>
-    action: ActionSnapshot
-    callId?: string
-    reason?: string
-    signal?: AbortSignal
-  }): Promise<ApprovalDecision>
-}
-```
-
-其内部流程：
-
-```text
-per-parent lane
-  → directory.ensure()
-  → build ApprovalReviewRequest
-  → decisionChannel.arm()
-  → managed port deliver()
-  → await decision
-  → 必要时 interrupt()
-  → 返回领域 Decision
-```
-
-父身份应由 DSH adapter 一次性构造：
-
-```ts
-interface ParentAuthority<Parent, SessionId> {
-  readonly live: Parent
-  readonly sessionId: SessionId
-}
-```
-
-禁止继续让调用方分别传入 `parent Agent` 和任意 `parentSessionId` 字符串。
-
-### 4.6 `ActionProjector`
-
-动作捕获分成两个概念：
-
-```ts
-interface ActionProjector<Execution> {
-  project(execution: Execution): ActionSnapshotInput
-}
-
-interface ActionCapture<Owner, CallId> {
-  remember(owner: Owner, callId: CallId, action: ActionSnapshot): void
-  lookup(owner: Owner, callId: CallId, toolName: string): ActionSnapshot | undefined
-  release(owner: Owner, callId: CallId): void
-}
-```
-
-首期由 DSH adapter 提供一个固定 projector：保留 tool name、完整 arguments，并从 DSH 已知事实投影 requested permissions。以后若不同工具族需要扩展，应扩展 projector／projector registry，不应向 YAML Config 塞函数。
-
-### 4.7 `ReviewerPolicy`
-
-Reviewer 的业务 policy 与 DSH composition 分离：
-
-```ts
-interface ReviewerPolicy {
-  readonly version: string
-  readonly systemPrompt: string
-  readonly decisionParameters: JsonSchema
-  buildRequestContent(request: ApprovalReviewRequest): ContentBlock[]
-}
-```
-
-首期只有一个 `v1` 实例即可；接口的价值是明确：
-
-- policy 版本决定如何解释已有 Reviewer transcript；
-- DSH provider 只负责把 policy 安装到 child scope；
-- 后续独立设计的完整 prompt、full／delta context 或分类规则升级不会侵入 coordinator。
-
-未知 policy version 由 providerData codec／policy registry 拒绝，不由 Managed Runtime 解释。
-
-## 5. 与 DSH 的确切交互面
-
-本插件只依赖以下 DSH seam，不直接操作 AgentRegistry、Session persistence 或 Web：
-
-| 目的 | DSH seam | 本项目组件 |
-|---|---|---|
-| 注册 Reviewer 类型 | `ctx.subagents.registerManagedProvider()` | `reviewer/provider.ts` |
-| 创建／查找／投递／中断 | registration-scoped Controller | `dsh/managed-controller.ts` |
-| 构造 child world | `ManagedSubagentComposition.agentOptions/setup` | `reviewer/provider.ts` |
-| 固定模型 | `AgentOptions` + `installModelSelection()` | Reviewer setup |
-| 完整 prompt | `agentCtx.systemPrompt.section({ complete: true })` | Reviewer setup |
-| 抑制 runtime context | `agentCtx.systemPrompt.suppressRuntimeContext()` | Reviewer setup |
-| 隐藏全局工具 | `agentCtx.tools.restrict({ allow: [] })` | Reviewer setup |
-| 安装结果工具 | `agentCtx.tools.register(ToolDefinition)` | `reviewer/decision-tool.ts` |
-| 审批策略 | DSH approval session policy | Reviewer setup |
-| sandbox 策略 | DSH sandbox session policy | Reviewer setup／部署组合 |
-| 捕获动作 | `tools/pre-execute` | `dsh/action-capture.ts` |
-| 释放捕获 | `tools/result` | `dsh/action-capture.ts` |
-| 自动 policy | profile terminal approval composer | `dsh/approval-answerer.ts` 待迁移 |
-| 生命周期 | Cordis effect disposer | `plugin.ts` |
-
-### 5.1 Managed provider
-
-必须直接实现真实契约：
-
-```ts
-interface ManagedSubagentProvider {
-  name: string
-  materialize(info: ManagedSubagentMaterializeInfo):
-    ManagedSubagentComposition | Promise<ManagedSubagentComposition>
-}
-```
-
-`materialize()` 每次 startup／resume：
-
-1. runtime-parse `info.descriptor.providerData`；
-2. 从 policy registry 解析对应 policy；
-3. 返回明确的 `agentOptions`；
-4. 返回真实 `AgentSetup`。
-
-不得定义第二套 `DshReviewerAgentContext`。
-
-### 5.2 Agent setup
-
-DSH 的真实签名是：
-
-```ts
-type AgentSetup = (
-  agentCtx: Context,
-) => AgentSetupCommit | Promise<AgentSetupCommit | void> | void
-```
-
-Reviewer setup 应使用真实服务：
-
-```text
-installModelSelection(agentCtx, selection)
-agentCtx.systemPrompt.section({ ..., complete: true })
-agentCtx.systemPrompt.suppressRuntimeContext()
-agentCtx.tools.restrict({ allow: [] })
-agentCtx.tools.register(decisionTool)
-用初始化 API 设置 child Session policy：
-setApprovalPolicy(agentCtx.agent!.session, 'never')
-setSandboxMode(agentCtx.agent!.session, 'read-only')
-```
-
-这些服务是本插件 composition 的必需依赖，不应通过可选链静默跳过。缺失服务属于插件无法挂载，而不是降级成 composition 不完整的 Reviewer。
-
-### 5.3 Decision tool
-
-真实工具必须实现 DSH `ToolDefinition`，接收 `ToolRunContext`：
-
-```ts
-function createDecisionTool(
-  expectedChildSessionId: SessionId,
-  sink: DecisionSink,
-): ToolDefinition
-```
-
-关键边界：
-
-- setup 只保存 `info.childSessionId`；
-- 不保存 unpublished `agentCtx.agent`；
-- execute 必须从真实 `exec.agent` 取得实际调用者；
-- 实际调用者缺失或与 expected child 不一致时不提交；
-- tool body 只校验并按真实 `ToolExecution` 暂存 candidate，同时调用 `exec.concludeTurn()`；
-- child-scoped `tools/result` 观察同一 execution 的最终结果，只有成功终态才调用 `sink.submit()`，随后无条件清理 staged candidate；
-- 结果工具不直接返回 DSH approval outcome。
-
-这形成一个清晰的两阶段输出端口：
-
-```text
-ToolDefinition.execute()          解析／暂存领域 Decision
-        ↓
-DSH tools pipeline               post-execute／finalize
-        ↓
-child-scoped tools/result        向 DecisionSink 权威提交
-```
-
-### 5.4 Model selection
-
-`agentOptions.provider/model` 负责创建时路由；同时使用：
-
-```ts
-installModelSelection(agentCtx, {
-  current: {
-    provider,
-    model,
-    reasoningEffort,
-  },
-  assembled: undefined,
-})
-```
-
-这样 provider、model 和 reasoning effort 同时作用于 prompt variables 与 `agent/request`。不允许配置指纹与真实运行 composition 不一致。
-
-### 5.5 Terminal approval policy
-
-DSH adapter 接收真实 `ApprovalRequest`：
-
-```text
-req.agent      精确 live parent authority
-req.toolName   与 capture 复核
-req.callId     capture key
-req.reason     进入业务请求
-req.signal     贯穿 review／人工 port
-```
-
-adapter 负责从 `req.agent.id` 构造唯一 `ParentAuthority`，然后调用 `ReviewCoordinator`。应用层不接触 Cordis sibling waterfall。profile 只注册一个 terminal approval composer；本插件向 composer 提供 `ApproveForMePolicy`，`auto-then-user` 的人工恢复由 composer 显式调用 `HumanApprovalPort.answer(req)`。
-
-`tools/pre-execute` capture 仍可使用 `{ prepend: true }`，保证其他 pre-execute policy 发起 approval ask 前动作已进入 capture。`approval/request` 不得依赖 `{ prepend: true }` 与 `next()` 形成自动→人工优先级；DSH 明确不保证 sibling listener 顺序是 policy priority。`auto-then-user` 缺少 terminal broker／人工 port 时不得挂载。
-
-### 5.6 Web 与 Host
-
-首期不增加项目私有 Host route 或 Web 状态源：
-
-- Reviewer 通过 managed mode 自动进入官方 subagent tree；
-- transcript、history 和 export 使用 DSH 原生能力；
-- managed composer 和 Stop 由 `dsh-managed-agent` 补丁提供；
-- approval 业务结果不进入 managed Runtime 的公共 projection。
-
-如果以后要显示审批摘要，应由独立、脱敏的插件 UI projection 提供，而不是让 Managed Runtime 理解 ApprovalDecision。
-
-## 6. 包和类型边界
-
-### 6.1 依赖策略
-
-本项目应把 DSH 包作为 exact peer dependencies，并在 devDependencies 中安装同版本用于编译／测试，至少包括：
-
-- `@deepseek-ai/cordis`；
-- `@deepseek-ai/schemastery`；
-- `@deepseek-ai/dsh-agent`；
-- `@deepseek-ai/dsh-llm`；
-- `@deepseek-ai/dsh-session`；
-- `@deepseek-ai/dsh-subagent`；
-- `@deepseek-ai/dsh-system-prompt`；
-- `@deepseek-ai/dsh-tools`；
-- `@deepseek-ai/dsh-user-approval`；
-- `@deepseek-ai/dsh-sandbox-policy`。
-
-不能把这些服务包作为本插件的私有重复 Runtime 安装进 Host。
-
-### 6.2 `dsh-managed-agent` 的前置工作
-
-当前 sibling 包是 `private: true`、`0.0.0`，还不能作为稳定跨仓库依赖。进入真实 adapter 施工前，二选一：
-
-1. 推荐：把 sibling 的 contract package 做成可 pack／可发布包，并锁定 commit／版本；
-2. 临时：使用明确的 workspace／git dependency，同时在 CI 中应用其补丁并从 patched DSH packages 编译。
-
-无论采用哪种方式，本项目都不得继续复制 Managed Controller 类型。若官方未打补丁的 `@deepseek-ai/dsh-subagent` 类型还没有 `registerManagedProvider()`，sibling contract package 应提供明确的 runtime extension／module augmentation，而不是由本项目自行伪造整个 Context。
-
-### 6.3 公共导出
-
-根包建议只公开：
-
-```text
-name
-inject
-Config（schema + type）
-apply
-稳定的领域协议类型／codec
-可选的 policy 或 action projector 扩展接口
-```
-
-不再公开：
-
-```text
-DshApproveForMeContext
-DshManagedController
-DshManagedRegistration
-DshReviewerAgentContext
-DshScopedDecisionTool
-DshToolExecution
-```
-
-这些本地 facsimile 应删除。
-
-## 7. 启动、审批和恢复时序
-
-### 7.1 插件启动
-
-```text
-Cordis loader
-  → validate Config
-  → normalize Reviewer preset
-  → create DecisionChannel
-  → create ManagedSubagentProvider(policy registry + decision sink)
-  → ctx.subagents.registerManagedProvider(provider)
-  → wrap registration.controller as ManagedReviewerPort
-  → create ReviewerDirectory + ReviewCoordinator
-  → register tool capture hooks
-  → register approval answerer
-```
-
-### 7.2 一次审批
-
-```text
-tools/pre-execute
-  → ActionProjector
-  → ActionCapture.remember(exact Agent + callId)
-
-approval/request
-  → locate captured action
-  → ParentAuthority(req.agent, req.agent.id)
-  → ReviewCoordinator.review()
-      → per-parent lane
-      → ReviewerDirectory.ensure()
-          → controller.list()
-          → optional controller.create()
-      → DecisionChannel.arm()
-      → controller.deliver(ContentBlock[])
-      → await decision tool submission
-  → terminal composer maps policy disposition
-      → direct DSH ApprovalOutcome
-      → or explicit HumanApprovalPort.answer(req)
-
-tools/result
-  → ActionCapture.release()
-```
-
-### 7.3 Reviewer startup／cold resume
-
-```text
-Managed Runtime
-  → provider.materialize(info)
-  → parse providerData + resolve policy
-  → return agentOptions + AgentSetup
-  → DSH creates/resumes unpublished Agent
-  → AgentSetup installs model/prompt/tools/policies
-  → Runtime publishes Activation
-  → controller.deliver() enters official inbox
-```
-
-同一 provider 实例的 startup 和 resume 必须走同一个 composition factory，不允许 resume 使用另一套“简化 setup”。
-
-### 7.4 插件卸载／HMR
-
-一个 Cordis effect 拥有整套安装：
-
-```text
-stop approval answerer
-→ stop capture listeners
-→ dispose DecisionChannel
-→ await registration.dispose()
-```
-
-重载后重新注册同名 provider，获得新 Controller；旧 Controller 不缓存、不复用。持久 Reviewer Session 由下次 `list()` 和 `deliver()` 重新发现／恢复。
-
-## 8. 分阶段施工
-
-## Phase 0：锁定可消费的基础契约  ✅ 已施工(2026-08-25)
-
-**工作**
-
-- 决定 sibling contract 的 workspace／git／publish 形式；
-- 固定 managed patch commit 和 DSH baseline；
-- 准备一个应用补丁后的 DSH fixture；
-- 让本项目能直接 import 真实 Managed、Agent、Tool、Approval 类型。
-
-**交付**
-
-- 可重复安装的依赖边界；
-- `tsc` 能看见真实 `registerManagedProvider()`；
-- 删除“先本地声明、以后再替换”的路线。
-
-**退出条件**
-
-一个最小 compile fixture 可以注册 provider、取得 Controller，并实现真实 `AgentSetup` 和 `ToolDefinition`，没有 `as unknown as` 贯穿 seam。
-
-## Phase 1：配置与包入口  ✅ 已施工(2026-08-25)
-
-**工作**
-
-- 新增 `Config` Schemastery schema；
-- 导出 `name`、`inject`、`Config`、`apply`；
-- 分离 serializable Config 与 `ActionProjector`；
-- 增加 exact peer/dev dependencies；
-- 收窄根包 exports。
-
-**退出条件**
-
-插件可由普通 DSH loader 配置加载；非法配置在注册 provider 前被拒绝。
-
-## Phase 2：应用层重构  ✅ 已施工(2026-08-25)
-
-**工作**
-
-- 从 manager 中拆出 `DecisionChannel`；
-- 拆出 `ReviewerDirectory`；
-- 让 `ReviewCoordinator` 使用 `ParentAuthority`；
-- 去除重复的 parent Agent／session id 参数；
-- 将 per-parent lane 保持在应用层；
-- 迁移现有 protocol、broker、manager、answerer 单测。
-
-**退出条件**
-
-应用层不 import DSH，且可用 fake ports 完整测试一次审批流程。
-
-## Phase 3：真实 Reviewer provider  ✅ 已施工(2026-08-25)
-
-**工作**
-
-- 直接实现 `ManagedSubagentProvider`；
-- providerData 和 policy registry 完成 startup／resume materialization；
-- 使用真实 `AgentOptions` 和 `AgentSetup`；
-- 安装 complete prompt、runtime-context suppression、tool restriction 和 decision tool；
-- 使用 `installModelSelection()` 应用 reasoning effort；
-- 去除 child Agent 闭包保留。
-
-**退出条件**
-
-provider 在 patched DSH fixture 中可以创建和 cold-resume 同一 Reviewer Session，composition 两次一致。
-
-## Phase 4：真实 DSH hooks  ✅ 已施工(2026-08-25)
-
-**工作**
-
-- 使用真实 `ToolExecution` 实现 capture adapter；
-- 使用真实 `ApprovalRequest`／`ApprovalOutcome` 实现 answerer；
-- 通过显式 Managed Controller adapter 接入应用 port；
-- 删除全部本地 `Dsh*` facsimile 和 controller cast。
-
-**退出条件**
-
-真实工具调用能形成 action snapshot，真实 approval ask 能驱动 Reviewer，并由真实 scoped tool 返回结果。
-
-## 历史 Phase 5：patched-DSH 集成验证（不再执行）
-
-本节原计划在 patched DSH 上验证首次审批、Reviewer 复用、cold resume、exact parent、unload/reload、人工下沉和 Web managed-node。部署路线改为 Guarded Continuable 后，不再建设该 fixture。
-
-新的集成验证仍覆盖相同业务场景，但运行基线改为未修改的 stock DSH，并增加 pre-step 输入守卫、全 generation 覆盖、污染轮换和标准 bundle 安装。权威清单见 [integration.md](integration.md)。
-
-纯结构 mock 仍不作为真实兼容性的最终证据；最终证据必须来自 stock DSH runtime、persistence、security matrix 和 Web/profile smoke。
-
-## Phase 6：独立 Reviewer policy 产品化
-
-基础接入稳定后，按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 继续：
-
-- DSH Session log／Storage Domain sidecar fact sources；
-- [五段式 Guardian 案件卷宗](guardian-dossier.md)、root-principal delegation ledger／direct child-origin output 过滤与 full baseline 指标；
-- 独立撰写、版本化的 prompt policy registry；
-- 由真实指标决定的后续预算／full-delta transport；
-- 工具族动作语义、风险／授权 assessment 和拒绝熔断；
-- 可选的脱敏业务审计 projection。
-
-这一阶段不改变 Managed Controller 或 DSH 基础层接口，也不复制、翻译或近似改写 Codex Guardian 的实现与文本。
-
-## 9. 里程碑依赖关系
-
-```text
-M0 Managed contracts consumable
- └── M1 Real plugin entry + Config
-      └── M2 Application boundary refactor
-           ├── M3 Real Reviewer provider
-           └── M4 Real approval/tool adapters
-                └── M5 Stock DSH integration acceptance
-                     └── M6 Independent Reviewer productization
-```
-
-M3 和 M4 可以在 M2 后并行；M5 必须在两者完成后进行。
-
-## 10. 架构验收清单
-
-施工评审首先检查以下问题，而不是先检查零散错误分支：
-
-- [x] 是否只有 DSH 维护 Agent／Session／inbox／persistence？
-- [x] 是否只有 `dsh-managed-agent` 维护 managed lifecycle 和 Controller authority？
-- [x] 是否只有本项目理解 ApprovalRequest／ApprovalDecision？
-- [x] Config 是否完全可序列化并有 runtime schema？
-- [x] 是否直接消费真实 DSH／Managed 类型，没有本地 facsimile？
-- [x] Reviewer composition 是否由一个 materializer 同时服务 startup 和 resume？
-- [x] model、reasoning effort、prompt、tools 和 policy 是否来自同一个持久 preset？
-- [x] decision tool 是否只依赖 SessionId 和 DecisionSink，不保留 Agent？
-- [x] decision 是否经过 tool body 暂存并在成功的 `tools/result` 才提交？
-- [ ] capture 是否先于 approval ask 完成，且 profile 是否只有一个显式组合自动 policy／人工 port 的 terminal approval answerer？
-- [x] parent identity 是否从 exact live Agent 一次性派生？
-- [x] `MessageId` 是否只被当作 inbox acceptance？
-- [x] Reviewer singleton、串行和 decision correlation 是否仍属于应用层？
-- [ ] Web 是否复用官方 managed child tree，而非建立第二套会话 UI？
-- [x] plugin unload／HMR 是否由一个 effect 明确拥有全部 disposer？
-
-## 11. 当前继续施工入口
-
-本历史计划中的 contracts、packaging、application、provider 和 hook adapter 已完成，patched-DSH integration 已由 stock DSH Guarded Continuable 路线取代。后续不再按旧提交清单施工：
-
-1. Reviewer 产品能力以 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 为权威顺序；
-2. stock DSH 运行与 Web 验收以 [integration.md](integration.md) 为权威清单；
-3. 跨仓库基础设施变更以 `dsh-managed-agent` 的 Guarded Continuable 计划为准。
-
-当前首个产品化里程碑是 Session／sidecar fact sources 与五段式 dossier compiler；所有后续策略、transport 和评测都必须维持现有身份关联和 fail-closed 不变量。
+下一步从 **H1 Companion Profile 与 composer adapter** 开始，同时可以并行启动 **D1 Fact sources/dossier**。在 H1 完成前，现有 `dsh plugin --profile web add` 只能用于骨架开发，不构成产品级 `auto-then-user` 部署。

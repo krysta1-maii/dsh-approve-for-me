@@ -23,7 +23,7 @@
 
 | 组成部分 | 当前状态 | 下一步 |
 |---|---|---|
-| Managed Reviewer 生命周期 | 已实现 | 真实 profile 验收 |
+| Managed child create／reuse／rotate 骨架 | 已实现；cold-resume／Profile／HMR 尚未实证 | 真实 Profile 与重载验收；Host/plugin lifecycle 与 draining 仍未实现 |
 | ActionSnapshot／hash | 已实现通用 v1 | 增加工具族语义投影 |
 | request／decision identity | 已实现 | 保持协议兼容并扩充 assessment |
 | DecisionChannel／deadline | 已实现 | 增加审查尝试层和持久审计边界 |
@@ -194,7 +194,7 @@ R0 独立实现原则、MIT 许可和路线图
 
 R3 与 R4 都是 R5 的前置条件；R6、R7 与 R8 收敛后再完成 R9。R1–R5 是 Reviewer 能够进行有依据审批的主路径。R6–R9 不能用来掩盖主策略不完整；每个里程碑都必须保持当前 fail-closed 性质。
 
-真实 stock DSH profile 验收可与 R1–R5 并行推进，但须先完成 profile-owned terminal approval composer seam；DSH 0.1.1-rc.2 的 private Web sibling listener 不能冒充 callable human port。在上下文、policy 和风险评测完成前，插件仍只应视为协议与运行骨架，不应宣称具备成熟的自动审批能力。
+未修改的 stock DSH packages + companion Host Profile 验收可与 R1–R5 并行推进，但须先完成稳定 thin composer adapter。DSH 0.1.1-rc.2 的 private Web sibling listener 只允许在该锁定 Profile 中由 adapter 包装成 request-scoped human port；核心 policy 和任意未知 Profile 不得直接依赖其顺序。在上下文、policy 和风险评测完成前，插件仍只应视为协议与运行骨架，不应宣称具备成熟的自动审批能力。
 
 ## 5. 每个里程碑的提交纪律
 

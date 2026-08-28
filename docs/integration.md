@@ -1,17 +1,18 @@
-# Stock DSH Guarded Continuable 集成验证清单
+# Stock DSH + Companion Profile 集成验证清单
 
-> 状态：2026-08-25，目标路线验收计划；业务插件应用迁移（Phase 3）与标准 bundle 包装（Phase 4 包侧）已完成，真实 profile 人工验收（Phase 5）尚未完成。
+> 状态：2026-08-28，目标验收计划。companion `dsh-managed-agent` 服务接入与 bundle 包装已完成；companion Host Profile、thin composer adapter 及真实 Profile／Web 验收尚未完成。
 >
-> 跨仓库施工顺序以 [`dsh-managed-agent` Guarded Continuable 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)为准，宿主组合与失败语义以 [宿主接口与生命周期契约](host-contract.md) 为准。本文取代旧的 patched-DSH Phase 5 清单；在 Phase 5 完成前仍不能直接用于 stock DSH 产品验收。
+> 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准，施工顺序见 [当前施工计划](construction-plan.md)。本文只定义验收，不定义新接口。
 
 ## 1. 集成硬约束
 
-1. 使用未修改的官方 `@deepseek-ai/dsh-*` 包和 profile；不得应用 managed patch、fork 或 `patch-package`。
-2. `dsh-managed-agent` 必须作为标准 Host/Client bundle 安装并提供 `ctx.managedAgents`。
-3. `dsh-approve-for-me` 必须通过 `ctx.managedAgents.registerProvider()` 注册 Reviewer，不再调用 patched `ctx.subagents.registerManagedProvider()`。
-4. Session persistence 必须启用，Managed catalog/providerData 使用插件自己的持久化边界，不向 Session 写外部未知 event。
-5. profile 必须组合单一 terminal approval answerer／broker；`auto-then-user` 还必须显式提供 `HumanApprovalPort`，不得依赖 sibling listener 顺序。DSH 0.1.1-rc.2 `dsh-host-apiproxy` 的 private Web listener 不是该 port；真实验收前须由正式 host/profile seam 暴露或组合人工能力。
-6. 未授权输入、污染、超时、模型错误、工具错误和存储错误全部失败关闭。
+1. 使用未修改且锁定兼容版本的官方 `@deepseek-ai/dsh-*` packages；不得应用 managed patch、fork 或 `patch-package`。
+2. 使用本项目配套的 Host Profile，而不是假设任意 stock Profile 都满足审批拓扑；Agent Preset 不能替代 Host Profile。
+3. companion `dsh-managed-agent` 必须作为 Host/Client bundle 安装并提供其自有的 `ctx.managedAgents` 服务。
+4. `dsh-approve-for-me` 必须通过 `ctx.managedAgents.registerProvider()` 注册 Reviewer，不再调用 patched `ctx.subagents.registerManagedProvider()`。
+5. Session persistence 必须启用，Managed catalog/providerData 使用插件自己的持久化边界，不向 Session 写外部未知 event。
+6. companion Profile 必须提供稳定 thin composer adapter、唯一自动 policy slot 和 request-scoped `HumanApprovalPort` bridge；核心插件不得依赖 sibling listener 顺序。
+7. 未授权输入、污染、超时、模型错误、工具错误和存储错误全部失败关闭。
 
 ## 2. 构建与安装前检查
 
@@ -41,25 +42,30 @@ npm pack --dry-run
 - Reviewer policy、上下文算法、测试与文档均为本项目独立编写；
 - 不包含从 Codex Guardian 复制、翻译、近似改写或 vendor 的代码、提示词、测试、snapshot 与文档表达。
 
-## 3. Profile 安装
+## 3. Companion Host Profile 装配
 
-在 DSH CLI 可找到 `pnpm` 的环境中执行本地包安装：
+单独执行以下命令只能安装两个 bundle，不能生成产品级审批组合：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-managed-agent
-dsh plugin --profile web add /path/to/dsh-approve-for-me
+dsh plugin --profile <companion-profile> add /path/to/dsh-managed-agent
+dsh plugin --profile <companion-profile> add /path/to/dsh-approve-for-me
 ```
 
-验证：
+配套 Profile 还必须装配稳定 thin composer adapter。验证：
 
-- profile manifest 的 dependencies 包含两个包；
-- `dsh.profile.bundles` 自动包含两个 bundle；
-- dump-config 中 Host 插件顺序为基础插件先于审批插件；
+- Profile manifest 包含两个 bundle 和 adapter；
+- 官方 DSH package 内容及 lockfile resolution 未修改，兼容版本被锁定；
+- adapter 先于 Guardian policy 存在且不随 policy HMR 卸载；
+- Profile 只有一个自动 policy slot，第二个 contribution 注册失败；
+- 可变／用户 Agent Preset roots 与 preset HMR 已禁用，启用 preset catalog 与 package resolution 由 fingerprint allowlist 锁定；逐个审计其 composition 不注册 `approval/request` listener；所有受支持的 Profile／preset／listener mutation API 由 Profile-owned 原子 gate 持有；
+- adapter 的 request continuation 下游是已核验的 stock Web human listener，Host sibling 与 preset-scoped listener 均不能插入；
+- policy 未挂载时的 deployment default 明确且经过测试；
 - Reviewer provider／model／generation／policyVersion／toolsetVersion 显式存在，缺失、空值或 schema 非法配置在 provider 注册前使挂载失败；
-- `auto-then-user` 缺少 terminal broker／`HumanApprovalPort` 时拒绝挂载；
+- `auto-then-user` 缺少 adapter 或 adapter 静态声明 `supportsHumanDelegation: false` 时拒绝挂载；request-scoped `HumanApprovalPort` 只在每次 dispatch 内构造，运行时 continuation 缺失／抛错／非法返回映射为 `unavailable`；
 - Reviewer route 不继承主 Agent 模型；语法有效但 catalog 中不存在／运行期不可用的 route 在 materialize／request 时失败且不静默切换；
-- Client bundle 被 Web profile 收集；
-- 不修改官方包内容和 lockfile resolution。
+- `dsh-managed-agent` Client bundle 被 Web Profile 收集；
+- 将核心插件装入任意未经认证的 Profile 时，启动检查失败或明确标记为 unsupported，不悄悄采用加载顺序；
+- 启动时分别在测试 preset 预置普通与 prepended `approval/request` listener，确认 attestation 校验失败；ready 后再经 mutation API 尝试两种注册，确认在 Cordis graph 可见前被拒绝；模拟受控 catalog／package drift 时，mutation gate 必须先同步调用 `onTopologyInvalidated`，runtime 进入 `failed` 且 policy gate 保持安装；mutation 在 runtime dispose 撤销 contribution 前始终不可见，disposer 完成后才允许发布重配置。
 
 ## 4. 基础运行时验收
 
@@ -99,7 +105,7 @@ dsh plugin --profile web add /path/to/dsh-approve-for-me
 
 1. 有效 `allow` 只在最小决策记录 durable 后映射为 `allowed-once`；
 2. `deny` 在两种 mode 中都拒绝，记录写入失败也不把它下沉为可人工放行；
-3. profile 只注册一个 terminal approval composer 和一个全局自动 policy slot；第二个自动 policy 无论加载顺序都注册失败。`human_review` 在 `auto-then-user` 中由 composer 显式调用 `HumanApprovalPort`，在 `auto` 中拒绝，不依赖 sibling listener／`next()` 顺序；
+3. companion Profile 只有一个自动 policy slot；第二个自动 policy 无论加载顺序都注册失败。`human_review` 在 `auto-then-user` 中由 composer 调用 request-scoped `HumanApprovalPort`，在 `auto` 中拒绝；只有稳定 adapter 可以在已核验拓扑中使用 continuation，核心 policy 不接触 sibling `next()`；
 4. 不支持工具、动作／卷宗能力不足、预算溢出、Reviewer 暂时故障和有限 attempt 耗尽：`auto` 为 `unavailable`，`auto-then-user` 在父请求仍活跃时下沉；
 5. timeout 或正常 unload：`auto-then-user` 仅在 signal 仍活跃时下沉；用户 Stop／Abort 始终 `cancelled`；
 6. reviewId、actionHash、actual Reviewer Session、generation、sidecar／snapshot 任一身份或完整性冲突都在两种 mode 中硬停止，不调用人工 port；
@@ -111,16 +117,17 @@ dsh plugin --profile web add /path/to/dsh-approve-for-me
 
 ## 6. 卸载、重载与污染
 
-1. 宿主按 `starting → ready → draining → disposed` 迁移，只有 `ready` 接受新自动审批，dispose 幂等；
-2. 卸载先进入 `draining`，terminal broker 中的 policy gate 继续注册：新 `auto` 请求 unavailable，新 `auto-then-user` policy 立即返回 `delegate-human`；
-3. 当前自动审查作废：活跃的 `auto-then-user` 请求由 profile composer 接管显式人工 port，已 abort 的请求 cancelled；pending approval 不跨 reload 恢复；
-4. interrupt/drain 当前 Reviewer，并排空已经入队的安全关键 sidecar／decision-record 写任务；
-5. decision tool、provider、capture hooks 和 guard 按 ownership 顺序撤销；所有插件拥有的存量 policy 调用 settle 后最后撤销自动 policy registration、幂等关闭 Storage Domain handle，profile broker／人工 terminal 继续运行；
-6. 插件缺席期间尝试唤醒旧 child，确认不能产生有效审批；人工 terminal 仍可处理普通 DSH 请求；
-7. 重载后扫描 provider 的全部历史 generation，但旧 pending reviewId／result channel／迟到结果均不可复用；
-8. 发现未授权 transcript 变化时标记污染，旧 child 永久无 armed request；
-9. 新审批创建新 result channel，必要时创建新 generation；旧 child 仍被 provider 级 fail-closed guard 覆盖；
-10. 建立一个 delegated Web 人工 pending 后立即卸载插件：disposer 不等待用户作答并可完成，人工 pending 仍由 profile composer 持有，随后可正常 settle。
+1. 宿主只允许 `starting → ready`、`starting | ready → failed` 与 `starting | ready | failed → draining → disposed`；只有 `ready` 接受新自动审批，dispose 幂等；
+2. 分别注入 gate 注册后的 startup failure 与 ready 期 fatal invariant breach：均进入 `failed`、停止自动 review、清理已拥有资源但保留 policy gate；新 `auto` 请求 unavailable，新 `auto-then-user` 请求有限下沉；`dispose(failed)` 必须经 draining 到 disposed；
+3. 卸载先进入 `draining`，terminal broker 中的 policy gate 继续注册：新 `auto` 请求 unavailable，新 `auto-then-user` policy 立即返回 `delegate-human`；
+4. 当前自动审查作废：活跃的 `auto-then-user` 请求由 profile composer 接管 dispatch-local 人工 port，已 abort 的请求 cancelled；pending approval 不跨 reload 恢复；
+5. interrupt/drain 当前 Reviewer，并排空已经入队的安全关键 sidecar／decision-record 写任务；
+6. decision tool、provider、capture hooks 和 guard 按 ownership 顺序撤销；所有插件拥有的存量 policy 调用 settle 后最后撤销自动 policy registration、幂等关闭 Storage Domain handle，profile broker／人工 terminal 继续运行；
+7. 插件缺席期间尝试唤醒旧 child，确认不能产生有效审批；人工 terminal 仍可处理普通 DSH 请求；
+8. 重载后扫描 provider 的全部历史 generation，但旧 pending reviewId／result channel／迟到结果均不可复用；
+9. 发现未授权 transcript 变化时标记污染，旧 child 永久无 armed request；
+10. 新审批创建新 result channel，必要时创建新 generation；旧 child 仍被 provider 级 fail-closed guard 覆盖；
+11. 建立一个 delegated Web 人工 pending 后立即卸载插件：disposer 不等待用户作答并可完成，人工 pending 仍由 profile composer 持有，随后可正常 settle。
 
 ## 7. Web 验收
 
@@ -157,15 +164,27 @@ web smoke     bundle 加载、树、历史、只读 composer、Stop
 profile       dsh plugin 安装、dump-config、重启与卸载
 ```
 
-## 10. 完成判定
+## 10. 分级完成判定
 
-只有同时满足以下条件才可把 README 状态改为“可安装实测”：
+### 10.1 Profile／运行时可安装实测
 
-- 两包均可通过标准 DSH bundle 安装；
-- 官方包未修改；
+只有同时满足以下条件，才可把 README 的运行状态改为“可安装实测”；这个结论只证明受控 Profile 装配和运行边界，不代表 Reviewer 已具备成熟自动审批能力：
+
+- 两包和 thin composer adapter 均由 companion Host Profile 正确装配；
+- 官方 packages 未修改且兼容版本被锁定；
 - 首次审批、复用和 cold resume 通过；
 - 全输入守卫矩阵通过；
-- 所有失败路径保持 fail-closed；
-- unload/reload 和污染轮换通过；
+- 宿主映射、abort、unload／reload 和污染轮换保持 fail-closed；
 - Web 只读与 Stop 通过；
 - 完整测试和 pack 校验通过。
+
+### 10.2 自动审批产品就绪
+
+只有在 10.1 之外同时满足以下条件，才可宣称“自动审批产品就绪”或成熟的自动审批能力：
+
+- [当前施工计划](construction-plan.md) 的 D1、H2–H4 和 I1 退出条件全部成立；
+- [Reviewer 路线图](reviewer-roadmap.md) 的 R1–R5 完成，source-backed dossier、工具语义、风险／授权 assessment 和完整 policy 已实现；
+- 自动 allow 的最小决策记录 durability gate、默认关闭的 full case capture 及其保留边界通过验收；
+- 风险、安全和误放行评测达到另行版本化的发布门槛。
+
+宿主运行正确不能替代 Reviewer 语义成熟；任何 README 状态更新必须明确属于上述哪一级。
