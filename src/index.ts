@@ -255,6 +255,7 @@ export type {
   InMemoryCaseCaptureStats,
 } from './application/case-capture.js'
 export { DefaultDossierCompiler } from './application/dossier-compiler.js'
+export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 export type {
   DecisionRecordStorageBackend,
   DecisionRecordStore,

@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：在工具副作用发生前，由隔离的 Guardian Reviewer 裁决；确定性信任包络内的常规动作直接放行，长程任务尽量无人值守。
 
-> 当前代码状态（2026-08-28）：宿主方案已切换到 **机器决策槽 v2**——本仓库交付“插件本体 + 官方 `dsh-user-approval` 的最小 patch”，`dsh-managed-agent` 保持独立仓库作为依赖插件。patch 已在本仓库成形（overlay + 构建/校验脚本），本体的 `approval-gate` 端口骨架、P2 纯逻辑组件、`DefaultGatePipeline`、capture-backed fact store 与插件组合根串联已完成；`package.json` 的 DSH 依赖已声明为 0.1.2-alpha.1，并新增了 DSH machine-policy adapter。默认无 `toolCatalog` 时仍走 transitional delegating gate；配置 `toolCatalog` 后机器策略通过真实 pipeline 认领。持久化记录（Storage Domain）与真实 0.1.2 Web 验收尚未完成。当前测试 157 项仍基于本机 0.1.1-rc.2 安装基线；0.1.2 fork 的实机构建/挂载验收待完成。
+> 当前代码状态（2026-08-28）：宿主方案已切换到 **机器决策槽 v2**——本仓库交付“插件本体 + 官方 `dsh-user-approval` 的最小 patch”，`dsh-managed-agent` 保持独立仓库作为依赖插件。patch 已在本仓库成形（overlay + 构建/校验脚本），本体的 `approval-gate` 端口骨架、P2 纯逻辑组件、`DefaultGatePipeline`、capture-backed fact store 与插件组合根串联已完成；`package.json` 的 DSH 依赖已声明为 0.1.2-alpha.1，并新增了 DSH machine-policy adapter。默认无 `toolCatalog` 时仍走 transitional delegating gate；配置 `toolCatalog` 后机器策略通过真实 pipeline 认领。持久化记录（Storage Domain）与真实 0.1.2 Web 验收尚未完成。当前测试 160 项仍基于本机 0.1.1-rc.2 安装基线；0.1.2 fork 的实机构建/挂载验收待完成。
 
 ## 项目目标
 
