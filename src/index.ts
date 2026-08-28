@@ -6,6 +6,21 @@ export {
   snapshotJson,
 } from './domain/json.js'
 export type { JsonPrimitive, JsonValue } from './domain/json.js'
+export {
+  DECISION_PAYLOAD_HASH_DOMAIN,
+  DECISION_TOOL_SCHEMA_HASH_DOMAIN,
+  PACKET_HASH_DOMAIN,
+  POLICY_ARTIFACT_HASH_DOMAIN,
+  artifactBytes,
+  caseArtifactKey,
+  hashApprovalDecisionPayload,
+  hashApprovalReviewPacket,
+  hashDecisionToolSchema,
+  hashGuardianPolicyArtifact,
+  reviewRecordKey,
+  validateCaseCaptureConfig,
+} from './domain/records.js'
+export type { GuardianCaseCaptureConfigV1, SessionLifecycleIdentityV1 } from './domain/records.js'
 
 export {
   APPROVAL_PROTOCOL_VERSION,
