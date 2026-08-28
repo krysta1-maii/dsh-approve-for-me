@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './json.js'
+import type { JsonValue } from './json.js'
+import type { ApprovalDecision, ApprovalReviewRequest } from './protocol.js'
 
 /** Durable parent Session lifecycle identity used as record/artifact scope. */
 export interface SessionLifecycleIdentityV1 {
@@ -388,4 +390,68 @@ export function parseReviewDecisionRecord(input: unknown): ReviewDecisionRecordV
     ...value.failureStage === undefined ? {} : { failureStage: nonEmptyString(value.failureStage, 'record.failureStage') },
     completedAt: safeInt(value.completedAt, 'record.completedAt'),
   })
+}
+
+/**
+ * Canonical packet sent to Guardian: the attempt request plus an opaque,
+ * source-verified dossier. D1 will replace `dossier` with the fully typed
+ * `GuardianDossierV1` once the compiler lands; this shape already carries the
+ * packet-level envelope and hash used by record/case artifacts.
+ */
+export interface ApprovalReviewPacketV1 {
+  readonly version: 1
+  readonly kind: 'approval-review-packet'
+  readonly request: ApprovalReviewRequest
+  readonly dossier: JsonValue
+  readonly dossierHash: string
+}
+
+export interface GuardianPolicyArtifactV1 {
+  readonly version: 1
+  readonly policyVersion: string
+  readonly policyArtifactFingerprint: string
+  readonly systemPrompt: string
+  readonly decisionToolName: string
+  readonly decisionToolSchema: JsonValue
+  readonly decisionSchemaFingerprint: string
+  readonly toolsetVersion: 1
+}
+
+export type GuardianCaseAttemptObservationV1 =
+  | { readonly kind: 'decision-tool'; readonly payload: ApprovalDecision }
+  | {
+      readonly kind: 'invalid-result'
+      readonly code: 'schema-invalid' | 'identity-mismatch' | 'duplicate' | 'late' | 'unknown'
+      readonly observedBytes?: number
+    }
+  | { readonly kind: 'no-result'; readonly reason: 'no-tool-call' | 'max-tokens' | 'refusal' | 'completed-without-decision' }
+  | { readonly kind: 'transport-error'; readonly code: 'provider-unavailable' | 'network' | 'rate-limited' | 'timeout' | 'model-error' | 'unknown' }
+  | { readonly kind: 'aborted' }
+
+export interface GuardianCaseArtifactV1 {
+  readonly version: 1
+  readonly artifactId: string
+  readonly session: SessionLifecycleIdentityV1
+  readonly approval: ReviewDecisionRecordV1['approval']
+  readonly reviewRunId: string
+  readonly configurationFingerprint: string
+  readonly reviewerPolicy: GuardianPolicyArtifactV1
+  readonly attempts: readonly {
+    readonly ordinal: number
+    readonly reviewId: string
+    readonly reviewerSessionId: string
+    readonly packetHash: string
+    readonly packet: ApprovalReviewPacketV1
+    readonly generation: string
+    readonly providerId: string
+    readonly modelId: string
+    readonly reasoningEffort?: string
+    readonly startedAt: number
+    readonly completedAt: number
+    readonly observation: GuardianCaseAttemptObservationV1
+  }[]
+  readonly recoveries: readonly ReviewerRecoveryRecordV1[]
+  readonly pluginDisposition: ReviewDecisionRecordV1['pluginDisposition']
+  readonly capturedAt: number
+  readonly expiresAt: number
 }

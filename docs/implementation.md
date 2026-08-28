@@ -57,9 +57,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/domain/records.ts` | `SessionLifecycleIdentityV1`、`GuardianCaseCaptureConfigV1` 校验、`r1_`/`c1_` key 编码、packet/decision/schema/policy 的版本化 hash domain、artifact 计费字节；并实现 `ReviewDecisionRecordV1` 闭集 schema 与 `parseReviewDecisionRecord()` |
+| `src/domain/records.ts` | `SessionLifecycleIdentityV1`、`GuardianCaseCaptureConfigV1` 校验、`r1_`/`c1_` key 编码、packet/decision/schema/policy 的版本化 hash domain、artifact 计费字节；并实现 `ReviewDecisionRecordV1` 闭集 schema 与 `parseReviewDecisionRecord()`；另含 `ApprovalReviewPacketV1`、`GuardianPolicyArtifactV1`、`GuardianCaseArtifactV1` 类型 |
 
-当前已具备最小记录 schema/parser；Storage Domain writer、create-once durable read-back、quota/GC 尚未实现。
+当前已具备最小记录与完整案例的 schema/parser 基础；Storage Domain writer、create-once durable read-back、quota/GC 尚未实现。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 

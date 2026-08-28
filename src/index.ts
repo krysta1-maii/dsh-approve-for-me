@@ -22,7 +22,11 @@ export {
   validateCaseCaptureConfig,
 } from './domain/records.js'
 export type {
+  ApprovalReviewPacketV1,
+  GuardianCaseArtifactV1,
+  GuardianCaseAttemptObservationV1,
   GuardianCaseCaptureConfigV1,
+  GuardianPolicyArtifactV1,
   ReviewDecisionGuardianV1,
   ReviewDecisionRecordAttemptOutcome,
   ReviewDecisionRecordV1,
