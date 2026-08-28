@@ -21,6 +21,8 @@ export {
   hashGuardianDossier,
   hashGuardianPolicyArtifact,
   parseApprovalReviewPacketV1,
+  parseGuardianCaseArtifactV1,
+  parseGuardianPolicyArtifactV1,
   parseReviewDecisionRecord,
   reviewRecordKey,
   validateCaseCaptureConfig,

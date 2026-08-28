@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './json.js'
 import type { JsonValue } from './json.js'
-import { parseApprovalReviewRequest } from './protocol.js'
+import { parseApprovalDecision, parseApprovalReviewRequest } from './protocol.js'
 import type { ApprovalDecision, ApprovalReviewRequest } from './protocol.js'
 
 /** Durable parent Session lifecycle identity used as record/artifact scope. */
@@ -501,5 +501,141 @@ export function parseApprovalReviewPacketV1(input: unknown): ApprovalReviewPacke
     request,
     dossier: value.dossier as JsonValue,
     dossierHash,
+  })
+}
+
+export function parseGuardianPolicyArtifactV1(input: unknown): GuardianPolicyArtifactV1 {
+  const value = recordObject(input, 'policy-artifact')
+  exactKeys(value, [
+    'version', 'policyVersion', 'policyArtifactFingerprint', 'systemPrompt',
+    'decisionToolName', 'decisionToolSchema', 'decisionSchemaFingerprint', 'toolsetVersion',
+  ], [], 'policy-artifact')
+  if (value.version !== 1) throw new TypeError('policy-artifact.version must be 1')
+  if (value.toolsetVersion !== 1) throw new TypeError('policy-artifact.toolsetVersion must be 1')
+  canonicalJson(value.decisionToolSchema)
+  return Object.freeze({
+    version: 1,
+    policyVersion: nonEmptyString(value.policyVersion, 'policy-artifact.policyVersion'),
+    policyArtifactFingerprint: hash(value.policyArtifactFingerprint, 'policy-artifact.policyArtifactFingerprint'),
+    systemPrompt: nonEmptyString(value.systemPrompt, 'policy-artifact.systemPrompt'),
+    decisionToolName: nonEmptyString(value.decisionToolName, 'policy-artifact.decisionToolName'),
+    decisionToolSchema: value.decisionToolSchema as JsonValue,
+    decisionSchemaFingerprint: hash(value.decisionSchemaFingerprint, 'policy-artifact.decisionSchemaFingerprint'),
+    toolsetVersion: 1,
+  })
+}
+
+function parseCaseObservation(value: unknown, name: string): GuardianCaseAttemptObservationV1 {
+  const object = recordObject(value, name)
+  const kind = object.kind
+  if (kind === 'decision-tool') {
+    exactKeys(object, ['kind', 'payload'], [], name)
+    return Object.freeze({ kind: 'decision-tool', payload: parseApprovalDecision(object.payload) })
+  }
+  if (kind === 'invalid-result') {
+    exactKeys(object, ['kind', 'code'], ['observedBytes'], name)
+    const code = object.code
+    if (!['schema-invalid', 'identity-mismatch', 'duplicate', 'late', 'unknown'].includes(code as string)) {
+      throw new TypeError(`${name}.code is not supported`)
+    }
+    return Object.freeze({
+      kind: 'invalid-result',
+      code: code as 'schema-invalid',
+      ...object.observedBytes === undefined ? {} : { observedBytes: safeInt(object.observedBytes, `${name}.observedBytes`) },
+    })
+  }
+  if (kind === 'no-result') {
+    exactKeys(object, ['kind', 'reason'], [], name)
+    const reason = object.reason
+    if (!['no-tool-call', 'max-tokens', 'refusal', 'completed-without-decision'].includes(reason as string)) {
+      throw new TypeError(`${name}.reason is not supported`)
+    }
+    return Object.freeze({ kind: 'no-result', reason: reason as 'no-tool-call' })
+  }
+  if (kind === 'transport-error') {
+    exactKeys(object, ['kind', 'code'], [], name)
+    const code = object.code
+    if (!['provider-unavailable', 'network', 'rate-limited', 'timeout', 'model-error', 'unknown'].includes(code as string)) {
+      throw new TypeError(`${name}.code is not supported`)
+    }
+    return Object.freeze({ kind: 'transport-error', code: code as 'provider-unavailable' })
+  }
+  if (kind === 'aborted') return Object.freeze({ kind: 'aborted' })
+  throw new TypeError(`${name}.kind is not supported`)
+}
+
+function parseSessionIdentity(value: unknown, name: string): SessionLifecycleIdentityV1 {
+  const object = recordObject(value, name)
+  exactKeys(object, ['sessionId', 'sessionFormatVersion', 'createdAt'], ['cwd'], name)
+  return Object.freeze({
+    sessionId: nonEmptyString(object.sessionId, `${name}.sessionId`),
+    sessionFormatVersion: safeInt(object.sessionFormatVersion, `${name}.sessionFormatVersion`),
+    createdAt: safeInt(object.createdAt, `${name}.createdAt`),
+    ...object.cwd === undefined ? {} : { cwd: nonEmptyString(object.cwd, `${name}.cwd`) },
+  })
+}
+
+function parseApprovalRef(value: unknown, name: string): ReviewDecisionRecordV1['approval'] {
+  const object = recordObject(value, name)
+  exactKeys(object, ['askedEventSeq', 'callId', 'toolName'], [], name)
+  return Object.freeze({
+    askedEventSeq: safeInt(object.askedEventSeq, `${name}.askedEventSeq`),
+    callId: nonEmptyString(object.callId, `${name}.callId`),
+    toolName: nonEmptyString(object.toolName, `${name}.toolName`),
+  })
+}
+
+export function parseGuardianCaseArtifactV1(input: unknown): GuardianCaseArtifactV1 {
+  const value = recordObject(input, 'case-artifact')
+  exactKeys(value, ['version', 'artifactId', 'session', 'approval', 'reviewRunId', 'configurationFingerprint', 'reviewerPolicy', 'attempts', 'recoveries', 'pluginDisposition', 'capturedAt', 'expiresAt'], [], 'case-artifact')
+  if (value.version !== 1) throw new TypeError('case-artifact.version must be 1')
+  if (!Array.isArray(value.attempts)) throw new TypeError('case-artifact.attempts must be an array')
+  if (!Array.isArray(value.recoveries)) throw new TypeError('case-artifact.recoveries must be an array')
+  const pluginDisposition = value.pluginDisposition
+  if (!PLUGIN_DISPOSITIONS.includes(pluginDisposition as typeof PLUGIN_DISPOSITIONS[number])) {
+    throw new TypeError('case-artifact.pluginDisposition is not supported')
+  }
+  const capturedAt = safeInt(value.capturedAt, 'case-artifact.capturedAt')
+  const expiresAt = safeInt(value.expiresAt, 'case-artifact.expiresAt')
+  if (expiresAt < capturedAt) throw new TypeError('case-artifact.expiresAt must not precede capturedAt')
+
+  const attempts = Object.freeze(value.attempts.map((attempt, index) => {
+    const name = `case-artifact.attempts[${index}]`
+    const object = recordObject(attempt, name)
+    exactKeys(object, ['ordinal', 'reviewId', 'reviewerSessionId', 'packetHash', 'packet', 'generation', 'providerId', 'modelId', 'startedAt', 'completedAt', 'observation'], ['reasoningEffort'], name)
+    const packet = parseApprovalReviewPacketV1(object.packet)
+    const packetHash = hash(object.packetHash, `${name}.packetHash`)
+    if (packetHash !== hashApprovalReviewPacket(packet)) {
+      throw new TypeError(`${name}.packetHash does not match packet`)
+    }
+    return Object.freeze({
+      ordinal: safeInt(object.ordinal, `${name}.ordinal`),
+      reviewId: nonEmptyString(object.reviewId, `${name}.reviewId`),
+      reviewerSessionId: nonEmptyString(object.reviewerSessionId, `${name}.reviewerSessionId`),
+      packetHash,
+      packet,
+      generation: nonEmptyString(object.generation, `${name}.generation`),
+      providerId: nonEmptyString(object.providerId, `${name}.providerId`),
+      modelId: nonEmptyString(object.modelId, `${name}.modelId`),
+      ...object.reasoningEffort === undefined ? {} : { reasoningEffort: nonEmptyString(object.reasoningEffort, `${name}.reasoningEffort`) },
+      startedAt: safeInt(object.startedAt, `${name}.startedAt`),
+      completedAt: safeInt(object.completedAt, `${name}.completedAt`),
+      observation: parseCaseObservation(object.observation, `${name}.observation`),
+    })
+  }))
+
+  return Object.freeze({
+    version: 1,
+    artifactId: nonEmptyString(value.artifactId, 'case-artifact.artifactId'),
+    session: parseSessionIdentity(value.session, 'case-artifact.session'),
+    approval: parseApprovalRef(value.approval, 'case-artifact.approval'),
+    reviewRunId: nonEmptyString(value.reviewRunId, 'case-artifact.reviewRunId'),
+    configurationFingerprint: hash(value.configurationFingerprint, 'case-artifact.configurationFingerprint'),
+    reviewerPolicy: parseGuardianPolicyArtifactV1(value.reviewerPolicy),
+    attempts,
+    recoveries: Object.freeze(value.recoveries.map((recovery, index) => parseRecovery(recovery, `case-artifact.recoveries[${index}]`))),
+    pluginDisposition: pluginDisposition as 'allow',
+    capturedAt,
+    expiresAt,
   })
 }

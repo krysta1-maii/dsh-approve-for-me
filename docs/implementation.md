@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 136 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 141 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -57,7 +57,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/domain/records.ts` | `SessionLifecycleIdentityV1`、`GuardianCaseCaptureConfigV1` 校验、`r1_`/`c1_` key 编码、packet/decision/schema/policy 的版本化 hash domain、artifact 计费字节；并实现 `ReviewDecisionRecordV1` 闭集 schema 与 `parseReviewDecisionRecord()`；另含 `ApprovalReviewPacketV1` 类型与 `create/parseApprovalReviewPacketV1`（dossierHash 可重算）、`GuardianPolicyArtifactV1`、`GuardianCaseArtifactV1` 类型 |
+| `src/domain/records.ts` | `SessionLifecycleIdentityV1`、`GuardianCaseCaptureConfigV1` 校验、`r1_`/`c1_` key 编码、packet/decision/schema/policy 的版本化 hash domain、artifact 计费字节；并实现 `ReviewDecisionRecordV1` 闭集 schema 与 `parseReviewDecisionRecord()`；`ApprovalReviewPacketV1` codec、`parseGuardianPolicyArtifactV1`、`parseGuardianCaseArtifactV1`（packetHash 重算、observation 闭集）|
 
 当前已具备最小记录与完整案例的 schema/parser 基础；Storage Domain writer、create-once durable read-back、quota/GC 尚未实现。
 
@@ -80,7 +80,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 136 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 141 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```
