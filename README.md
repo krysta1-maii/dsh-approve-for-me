@@ -2,7 +2,7 @@
 
 面向 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/DeepSeek-Harness) 的受管自动审批插件。
 
-> 当前代码状态（2026-08-25）：领域协议、应用层和标准 `ctx.managedAgents` Guarded Continuable 接入已实现，当前测试为 82 项；已补齐标准 DSH bundle 包装（`dsh.bundle.patch` + `cordis.patch.yml`），等待在真实 DSH profile 中人工测试与验收。
+> 当前代码状态（2026-08-27）：领域协议、应用层和标准 `ctx.managedAgents` Guarded Continuable 接入已实现，当前测试为 82 项；已补齐标准 DSH bundle 包装（`dsh.bundle.patch` + `cordis.patch.yml`）。审批 listener 仍是待迁移骨架；真实 profile 还需正式的 terminal approval composer seam，尚未完成人工测试与验收。
 >
 > 当前 Reviewer 状态：审批执行骨架和最小保守 `policy-v1` 已实现；父 Session + sidecar 驱动的五段式实验卷宗已形成接口规范，子代理采用 root-principal／delegation-envelope 归因并排除 direct child-origin output，但 compiler 代码、完整风险／授权策略、有限重试和拒绝熔断尚待逐步实现。项目采用独立 MIT 实现；Codex Guardian 仅作为设计参照，不复制或翻译其代码、提示词、测试与文档表达。
 
@@ -59,7 +59,7 @@ src/
 └── dsh/
     ├── managed-controller.ts   # ManagedAgentController → 应用 port
     ├── action-capture.ts       # 真实 ToolExecution 的 capture/release bridge
-    └── approval-answerer.ts    # 真实 approval/request waterfall answerer
+    └── approval-answerer.ts    # 当前 sibling 骨架；待迁移到 terminal composer policy
 ```
 
 ### Reviewer composition
@@ -82,10 +82,12 @@ ToolDefinition.execute()         校验真实调用者 → 暂存 candidate → 
 成功终态才 authorized submit；失败/身份不符/无调用者 -> 丢弃，不产生副作用
 ```
 
-### 审批模式
+### 审批模式（目标契约）
 
-- `auto`：只有完整验证的 `allow` 自动映射为 `allowed-once`；其他决定或故障均不放行。
-- `auto-then-user`：有效 `human_review` 或无法取得完整动作快照时调用 `next()` 转交人工 answerer。
+- `auto`：只有完整验证且最小决策记录已 durable 的 `allow` 自动映射为 `allowed-once`；其他决定或故障均不放行。
+- `auto-then-user`：只有能力不足、Reviewer 暂时不可用或明确 `human_review` 可由 terminal composer 调用显式 `HumanApprovalPort`；身份、hash、generation 或 sidecar 完整性冲突硬停止。
+
+当前 `approval-answerer.ts` 仍用 prepended sibling listener + `next()`，DSH 不保证这种 listener 顺序是 policy priority，因而不能作为上述产品契约。DSH 0.1.1-rc.2 的 Web 人工 answerer 也没有公开 callable port；完成 host/profile terminal composer seam 前，`auto-then-user` 不得用于真实 profile 验收。
 
 ### 污染隔离与 generation 轮换
 
@@ -103,7 +105,7 @@ ToolDefinition.execute()         校验真实调用者 → 暂存 candidate → 
 4. shell、filesystem、network、MCP 和 permission request 等工具族动作语义；
 5. 项目自有的风险分类、用户授权 assessment、完整 policy、有限尝试和拒绝熔断。
 
-卷宗的候选接口、提取不变量、sidecar 边界和测试条件见 [Guardian 案件卷宗接口与编译规范](docs/guardian-dossier.md)；完整组件和实施顺序见 [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)。所有内容从 DSH 的需求与威胁模型独立推导；外部项目只用于能力覆盖比较，不作为源码或文本素材。
+宿主组合、审批映射、Review Run、生命周期和留存端口见 [Approve-for-me 宿主接口与生命周期契约](docs/host-contract.md)；卷宗的候选接口、提取不变量、sidecar 边界和测试条件见 [Guardian 案件卷宗接口与编译规范](docs/guardian-dossier.md)；完整组件和实施顺序见 [Approval Reviewer 独立实现路线](docs/reviewer-roadmap.md)。所有内容从 DSH 的需求与威胁模型独立推导；外部项目只用于能力覆盖比较，不作为源码或文本素材。
 
 ## 依赖边界
 
@@ -116,9 +118,10 @@ ToolDefinition.execute()         校验真实调用者 → 暂存 candidate → 
 应用迁移（Phase 3）与标准 bundle 包装（Phase 4 包侧部分）已完成，但真实 profile 集成验收（Phase 5）尚未执行：**在人工验收通过前，尚不应作为正式产品环境配置**。目标前提为：
 
 1. stock DSH 安装并挂载标准 `dsh-managed-agent` Guarded Continuable bundle；
-2. 配置 `reviewer.generation/provider/model/policyVersion/toolsetVersion`（可选 `mode`、`timeoutMs`、`reasoningEffort`）；
-3. 按需通过 `installApproveForMe(ctx, config, { projectPermissions })` 注入权限投影 port（不进入序列化 Config）；
-4. 未授权输入、污染、超时或基础设施失败必须继续映射为拒绝或 `auto-then-user` 下沉，不得静默降级为放行。
+2. 配置 `reviewer.generation/provider/model/policyVersion/toolsetVersion`（可选 `mode`、`timeoutMs`、`reasoningEffort` 和 case capture）；
+3. 目标 composition root 通过代码级 options 注入 terminal composer、可选 `HumanApprovalPort` 和权限投影 port，均不进入序列化 Config；当前导出的安装接口尚待按宿主契约迁移；
+4. profile 只注册单一 terminal approval composer 和一个全局自动 policy slot；`auto-then-user` 还须提供显式 `HumanApprovalPort`，不得依赖普通 sibling listener 顺序；
+5. 未授权输入、污染、超时或基础设施失败必须继续映射为拒绝、`unavailable` 或受限人工恢复，不得静默降级为放行。
 
 完整人工验收清单见 [集成验证计划](docs/integration.md)。
 

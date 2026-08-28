@@ -5,15 +5,15 @@
 > Managed Runtime 基线：`dsh-managed-agent` `878bf45`（contract 包现为 `0.1.0-dev.0`）  
 > 本文重点是抽象、组件关系、接口与施工顺序。具体安全加固、错误文案和穷举式 fail-closed 分支属于各阶段的工程验收，不作为架构主线。
 
-> 状态（2026-08-25）：Phase 0–4 的 patched Managed 契约实现已完成，随后应用迁移（Phase 3）也已切换到标准 `ctx.managedAgents`，当前完整测试为 82 项。部署路线为 stock DSH + Guarded Continuable；本文保留为已实现业务分层和旧施工顺序的历史基线，后续 patched-DSH Phase 5 不再执行。新的跨仓库权威计划见 [`dsh-managed-agent/docs/guarded-continuable-migration-plan.md`](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)，新的运行验收清单见 [integration.md](integration.md)。文中 `registerManagedProvider()` 和 patched fixture 描述属于历史基线，当前事实以 `ctx.managedAgents.registerProvider()` 为准。
+> 状态（2026-08-25）：Phase 0–4 的 patched Managed 契约实现已完成，随后应用迁移（Phase 3）也已切换到标准 `ctx.managedAgents`，当前完整测试为 82 项。部署路线为 stock DSH + Guarded Continuable；本文保留为已实现业务分层和旧施工顺序的历史基线，后续 patched-DSH Phase 5 不再执行。新的跨仓库权威计划见 [`dsh-managed-agent/docs/guarded-continuable-migration-plan.md`](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)，新的运行验收清单见 [integration.md](integration.md)。文中 `registerManagedProvider()` 和 patched fixture 描述属于历史基线，当前事实以 `ctx.managedAgents.registerProvider()` 为准。2026-08-27 进一步确认 DSH sibling waterfall 顺序不是 policy priority：本文早期 prepended answerer + `next()` 方案已废弃，最终宿主须采用 profile 单一 terminal approval composer／显式 `HumanApprovalPort`。
 
 ## 1. 施工目标
 
 本项目要实现的不是一个独立 Agent Runtime，而是一个 DSH 业务插件：
 
-1. 在 DSH 的 `approval/request` waterfall 中增加自动 Reviewer answerer；
+1. 向 profile 的单一 terminal approval composer 注册自动 Reviewer policy；
 2. 为每个父 Session 按插件策略管理一个持久 Reviewer child；
-3. 通过 `dsh-managed-agent` 增加的 `ctx.subagents.registerManagedProvider()` 控制 Reviewer；
+3. 通过 `dsh-managed-agent` 提供的 `ctx.managedAgents.registerProvider()` 控制 Reviewer；
 4. 通过 Reviewer scope 内的结构化工具取得审批结果；
 5. 继续使用 DSH 原生 Agent、Session、模型路由、工具系统、审批审计、持久化和 Web 子代理树。
 
@@ -28,7 +28,7 @@ provider registration capability       Reviewer 配置代际
 create / list / deliver / interrupt     同父审批串行
 cold resume / persistence              请求—结果关联与 deadline
 官方 subagent tree / read-only Web      动作快照、policy 与结果映射
-approval/request waterfall             自动 answerer 与人工 answerer 委托
+terminal approval composer             自动 policy 与显式人工 port 组合
 ```
 
 ## 2. 当前代码结论
@@ -134,7 +134,7 @@ src/
 └── dsh/
     ├── managed-controller.ts    # 官方 Controller → 应用 port
     ├── action-capture.ts        # tools/pre-execute + tools/result
-    └── approval-answerer.ts     # approval/request waterfall
+    └── approval-answerer.ts     # 当前 sibling answerer；待迁移为 terminal policy adapter
 ```
 
 不建议把每个纯函数机械拆成文件；上述划分表达的是模块边界，而不是追求文件数量。
@@ -164,7 +164,7 @@ interface Config {
 export const name = 'dsh-approve-for-me'
 export const inject = ['subagents', 'tools', 'systemPrompt', 'approval']
 export const Config: z<Config>
-export interface Config { ... }
+export interface Config {}
 export function normalizeConfig(config: Config): NormalizedConfig
 ```
 
@@ -338,7 +338,7 @@ interface ReviewerPolicy {
 | sandbox 策略 | DSH sandbox session policy | Reviewer setup／部署组合 |
 | 捕获动作 | `tools/pre-execute` | `dsh/action-capture.ts` |
 | 释放捕获 | `tools/result` | `dsh/action-capture.ts` |
-| 自动 answerer | `approval/request` waterfall | `dsh/approval-answerer.ts` |
+| 自动 policy | profile terminal approval composer | `dsh/approval-answerer.ts` 待迁移 |
 | 生命周期 | Cordis effect disposer | `plugin.ts` |
 
 ### 5.1 Managed provider
@@ -435,7 +435,7 @@ installModelSelection(agentCtx, {
 
 这样 provider、model 和 reasoning effort 同时作用于 prompt variables 与 `agent/request`。不允许配置指纹与真实运行 composition 不一致。
 
-### 5.5 Approval answerer
+### 5.5 Terminal approval policy
 
 DSH adapter 接收真实 `ApprovalRequest`：
 
@@ -444,16 +444,12 @@ req.agent      精确 live parent authority
 req.toolName   与 capture 复核
 req.callId     capture key
 req.reason     进入业务请求
-req.signal     贯穿 review
-next()         仅用于 auto-then-user 委托
+req.signal     贯穿 review／人工 port
 ```
 
-adapter 负责从 `req.agent.id` 构造唯一 `ParentAuthority`，然后调用 `ReviewCoordinator`。应用层不再接触 DSH waterfall。
+adapter 负责从 `req.agent.id` 构造唯一 `ParentAuthority`，然后调用 `ReviewCoordinator`。应用层不接触 Cordis sibling waterfall。profile 只注册一个 terminal approval composer；本插件向 composer 提供 `ApproveForMePolicy`，`auto-then-user` 的人工恢复由 composer 显式调用 `HumanApprovalPort.answer(req)`。
 
-两个 listener 的顺序属于接口语义：
-
-- `tools/pre-execute` capture 使用 `{ prepend: true }`，保证其他 policy listener 发起 approval ask 前动作已进入 capture；
-- `approval/request` answerer 使用 `{ prepend: true }`，保证本插件先评审，`auto-then-user` 再通过 `next()` 明确委托后续人工 answerer。
+`tools/pre-execute` capture 仍可使用 `{ prepend: true }`，保证其他 pre-execute policy 发起 approval ask 前动作已进入 capture。`approval/request` 不得依赖 `{ prepend: true }` 与 `next()` 形成自动→人工优先级；DSH 明确不保证 sibling listener 顺序是 policy priority。`auto-then-user` 缺少 terminal broker／人工 port 时不得挂载。
 
 ### 5.6 Web 与 Host
 
@@ -555,7 +551,9 @@ approval/request
       → DecisionChannel.arm()
       → controller.deliver(ContentBlock[])
       → await decision tool submission
-  → map Decision to DSH ApprovalOutcome / next()
+  → terminal composer maps policy disposition
+      → direct DSH ApprovalOutcome
+      → or explicit HumanApprovalPort.answer(req)
 
 tools/result
   → ActionCapture.release()
@@ -715,7 +713,7 @@ M3 和 M4 可以在 M2 后并行；M5 必须在两者完成后进行。
 - [x] model、reasoning effort、prompt、tools 和 policy 是否来自同一个持久 preset？
 - [x] decision tool 是否只依赖 SessionId 和 DecisionSink，不保留 Agent？
 - [x] decision 是否经过 tool body 暂存并在成功的 `tools/result` 才提交？
-- [x] capture 与 approval answerer 是否在 waterfall 中占据预期的 prepend 顺序？
+- [ ] capture 是否先于 approval ask 完成，且 profile 是否只有一个显式组合自动 policy／人工 port 的 terminal approval answerer？
 - [x] parent identity 是否从 exact live Agent 一次性派生？
 - [x] `MessageId` 是否只被当作 inbox acceptance？
 - [x] Reviewer singleton、串行和 decision correlation 是否仍属于应用层？

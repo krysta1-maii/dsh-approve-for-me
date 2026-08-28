@@ -1,6 +1,6 @@
 # Approval Reviewer 独立实现路线
 
-> 状态：2026-08-25 确立；2026-08-27 将父会话材料路线收敛为 DSH Session log + Storage Domain sidecar 驱动的实验性案件卷宗，并确定 principal／delegation-envelope 子代理归因。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图；卷宗接口以 [Guardian 案件卷宗规范](guardian-dossier.md) 为准。
+> 状态：2026-08-25 确立；2026-08-27 将父会话材料路线收敛为 DSH Session log + Storage Domain sidecar 驱动的实验性案件卷宗，并确定 principal／delegation-envelope 子代理归因；2026-08-28 宿主行为以 [宿主接口与生命周期契约](host-contract.md) 初步定稿。本文是协议与 Guarded Continuable 接入完成后，逐步填充审批 Reviewer 产品能力的权威路线图；卷宗接口以 [Guardian 案件卷宗规范](guardian-dossier.md) 为准。
 
 ## 1. 实现原则
 
@@ -35,7 +35,7 @@
 | token budget／截断 | v1 规定完整或失败关闭 | 先测量完整卷宗，再以新版本定义裁剪算法 |
 | full／delta transport | 未实现、非 v1 前置 | 根据完整卷宗实验决定 cursor 方案 |
 | 模型／解析重试 | 未实现 | 在单一 deadline 内有限重试 |
-| 拒绝熔断 | 未实现 | 建立 per-parent-turn 熔断状态 |
+| 拒绝熔断 | 未实现，首期范围已收敛 | 仅实现 per-parent-turn 的精确 `actionHash` 重复熔断；语义等价留作未来优化 |
 | Reviewer 调查工具 | v1 明确不提供 | 仅在卷宗评测证明必要后重新立项 |
 | 业务审计／指标 | 未实现 | 先定义脱敏事件和保留策略 |
 
@@ -135,25 +135,27 @@ interface AuthorizationAssessment {
 
 完整 policy 由本项目从空白文本独立撰写，至少包含：角色边界、卷宗来源与角色解释、风险规则、授权规则、不确定性处理、调查限制和唯一结构化输出要求。
 
-现有外层 decision identity 继续负责 `reviewId`、parent／Reviewer、generation、action hash 和 deadline。业务 assessment 与防重放 envelope 分离，避免模型字段变化破坏关联协议。
+宿主 `reviewRunId` 标识一次业务 run；每个 attempt 的协议 `reviewId` 绑定 parent、实际 Reviewer Session、generation、action hash 和 deadline。业务 assessment 与防重放 envelope 分离，避免模型字段变化破坏关联协议。
 
 退出条件：policy 版本化；unknown policy 失败关闭；自由文本、缺字段、矛盾字段和身份不匹配均不能产生 allow。
 
 ### 3.9 Review Attempts
 
-在一次业务 review 的固定 deadline 内增加有限尝试层。只有明确分类的瞬时 transport／provider 错误和可修复的结构化输出错误可以重试；deny、abort、身份不匹配、策略错误和 deadline 到期不得重试。
+在一次业务 review run 的固定 deadline 内增加最多两个 Reviewer attempts。所有 attempt 共享同一宿主 `reviewRunId`、不可变 dossier／`actionHash` 和总 deadline；每个 attempt 使用唯一协议 `reviewId` 并绑定实际 Reviewer Session，旧 attempt 的迟到结果不能满足新 attempt。只有明确分类的瞬时 transport／provider 错误、未调用结果工具、可修复的结构化输出错误和干净 Reviewer 的一次非语义故障可以重试。
 
-污染 child 的 rotate 重试属于基础设施恢复，与模型审查尝试分开计数和审计。
+明确 deny、human_review、abort、身份／hash／generation 不匹配、sidecar 完整性冲突、策略错误和 deadline 到期不得重试。污染 child 的 rotate + fresh-child 恢复属于基础设施恢复，与业务审查 attempt 分开计数和审计，也不能延长外层 deadline；它可改变实际 Reviewer Session id，但不得改变同一 run 的 generation、configuration／route、policy、dossier 或 deadline。
 
-退出条件：尝试次数有上限、共享单一 deadline、支持 abort，且任何 retry exhaustion 都失败关闭。
+退出条件：最多两个 attempt、共享单一 deadline 和同一事实快照、支持 abort；允许与禁止重试的错误分类都有测试，任何 exhaustion 都按宿主模式失败关闭或有限人工下沉，绝不 allow。
 
-### 3.10 Rejection Circuit Breaker
+### 3.10 Exact Rejection Circuit Breaker
 
-建立 per-parent-turn 状态，阻止代理在同一目标上反复请求、改写或绕过被拒动作。计数规则和阈值由 DSH 场景评测确定，不照搬外部默认值。
+首期只实现可由现有协议确定证明的精确重复熔断，不建立通用“同一目标”或动作语义等价判断。一个 live parent Session 的同一 DSH turn 内，Reviewer 明确 `deny` 后，若后续审批的 `actionHash` 完全相同，宿主可直接复用拒绝并跳过 Reviewer；新 `callId` 不改变该结论。新的直接用户消息进入主体轨迹后，旧熔断项不再直接复用，后续相同动作必须重新审查，但新消息本身不构成自动授权。
 
-熔断至少区分：明确 deny、人工下沉、基础设施 unavailable 和 materially safer alternative。只有明确的新用户授权或新 turn／目标版本才能解除相应拒绝状态。
+`human_review`、人工下沉结果、基础设施 `unavailable`、timeout、abort 和插件卸载均不建立拒绝熔断。熔断状态只属于当前 live turn；丢失该优化状态最多导致重新审查，绝不能产生 allow。实现不得从命令文本、路径重叠、风险类别或模型解释推断等价，也不得声称修改参数、换工具、间接工具或跨工具族动作与已拒请求相同。
 
-退出条件：重复、轻微改写、间接工具和跨工具族绕过都有测试；熔断本身不能误映射为 allow。
+轻微改写、效果键、目标重叠、跨工具族关系、materially safer alternative 和通用绕过识别全部作为未来可选优化；只有在工具族语义模型能够确定投影且独立评测证明收益后，才以新版本立项，不属于当前实现或验收目标。
+
+退出条件：同一 parent lifecycle／turn／直接用户消息 frontier 下，相同 `actionHash` 的首次明确 deny 建立熔断，后续精确重复不调用 Reviewer 且仍映射为拒绝；不同 hash、非 deny 结果、新直接用户消息、下一 turn、abort 和 unload 不误命中；熔断永不映射为 allow。
 
 ### 3.11 Optional Investigation
 
@@ -163,11 +165,17 @@ v1 Guardian 是纯卷宗裁决者，不提供读取文件、shell、网络、Ses
 
 退出条件：v1 无实现任务；未来立项时逐个工具完成 capability、数据暴露和旁路审计。
 
-### 3.12 Audit and Metrics
+### 3.12 Audit, Case Retention and Metrics
 
-审计应记录协议结果和安全原因，不默认保存完整敏感 payload。先定义事件 schema、脱敏 projection、保留期限和导出边界，再接入持久化或 telemetry。
+数据分成三个边界：
 
-退出条件：可以解释一次 allow／deny／fallback 的依据和失败阶段，同时不会把凭据、完整文件或内部 Controller capability 写入日志。
+1. **安全关键 facts**：action projection、approval snapshot、safe receipt 与自动 allow 所依据的最小决策记录；按规范 durable 写入，缺失时自动审批失败关闭。
+2. **默认最小决策记录**：保存 hash、版本、route／generation、attempt／污染恢复摘要、规范化 decision（不含 rationale 正文）、插件在返回 composer 前确定的 disposition 和失败阶段，不复制完整卷宗、人工 port outcome 或所谓 final DSH outcome；后者只能从匹配的 `approval/decided` Session event 读取。
+3. **运行指标**：延迟、错误率、fallback、污染轮换等脱敏 telemetry；尽力写入，失败不得阻止 DSH 工具执行或人工审批。
+
+另提供默认关闭的 `caseCapture.mode: full`：显式开启后保存 Guardian 实际收到的 canonical packet、fingerprint-bound policy artifact 与有界结构化 attempt／结果，用于 parser/coordinator replay、packetHash／packet 内部 dossierHash 验证和旧案例对新 policy 的行为评测；source-backed rebuild 仍必须有存活的 Session + fact sidecar。完整案例与 Reviewer 输入同级敏感，必须有限额、TTL、host-private 访问控制、确定性删除和显式脱敏导出；不得自动进入 Git、telemetry 或 golden fixture。外部模型回放只比较结构化行为要求，不假定逐字确定。
+
+退出条件：可以解释一次 allow／deny／fallback 的依据和失败阶段；自动 allow 在最小记录 durable 前不会生效；完整捕获默认关闭且捕获失败不改变裁决；任何层级都不会保存 provider 凭据、隐藏 reasoning、内部 Controller capability 或 packet 之外的 child／宿主数据。
 
 ## 4. 实施顺序
 
@@ -186,7 +194,7 @@ R0 独立实现原则、MIT 许可和路线图
 
 R3 与 R4 都是 R5 的前置条件；R6、R7 与 R8 收敛后再完成 R9。R1–R5 是 Reviewer 能够进行有依据审批的主路径。R6–R9 不能用来掩盖主策略不完整；每个里程碑都必须保持当前 fail-closed 性质。
 
-真实 stock DSH profile 验收可与 R1–R5 并行推进，但在上下文、policy 和风险评测完成前，插件仍只应视为协议与运行骨架，不应宣称具备成熟的自动审批能力。
+真实 stock DSH profile 验收可与 R1–R5 并行推进，但须先完成 profile-owned terminal approval composer seam；DSH 0.1.1-rc.2 的 private Web sibling listener 不能冒充 callable human port。在上下文、policy 和风险评测完成前，插件仍只应视为协议与运行骨架，不应宣称具备成熟的自动审批能力。
 
 ## 5. 每个里程碑的提交纪律
 

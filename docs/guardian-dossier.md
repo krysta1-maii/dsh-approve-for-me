@@ -1,8 +1,8 @@
 # Guardian 案件卷宗接口与编译规范
 
-> 状态：2026-08-27 设计草案；主 Agent／子代理归因边界已收敛。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；对应代码尚未实现，文中的 TypeScript 是待实现契约，不是当前包已经导出的 API。
+> 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；对应代码尚未实现，文中的 TypeScript 是待实现契约，不是当前包已经导出的 API。
 >
-> 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。
+> 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。宿主组合、失败映射、Review Run 与生命周期见 [宿主接口与生命周期契约](host-contract.md)；Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。
 
 ## 1. 目标
 
@@ -141,7 +141,7 @@ DSH 工具注册表目前没有通用的“该工具会创建 Agent”语义标�
 
 ## 5. 顶层候选接口
 
-以下接口使用项目领域层已有的 `JsonValue`、`ActionSnapshot` 和 `ApprovalReviewRequest` 概念。实现时领域层不得 import DSH 类型。
+以下接口使用项目领域层已有的 `JsonValue`、`ActionSnapshot`、`ApprovalReviewRequest` 和 `ApprovalDecision` 概念。实现时领域层不得 import DSH 类型。
 
 ```ts
 interface ApprovalReviewPacketV1 {
@@ -923,7 +923,7 @@ type DossierCompilationResultV1 =
     }
 ```
 
-`ParentSessionFactSource` 的 DSH adapter 必须直接接收 waterfall 回调携带的 live `ApprovalRequest`，并一次性构造 authority：`request.agent === authority.live`、`request.agent.session` 是被快照的 exact Session、`agent.id === session.id === authority.sessionId`。不得从裸 sessionId 重新查找另一个 live Agent，也不得允许调用方另传任意 root／Session 组合。v1 随后必须从 exact live Agent 同时读取 Session header depth 与 `agent.options.subagentDepth`，计算两者最大值，并验证没有 `parentSessionId` 且 effective depth 为 `0`；这些值在 approval snapshot 中冻结，失败即 `unsupported-delegated-requester`。
+`ParentSessionFactSource` 的 DSH adapter 必须直接接收 terminal approval composer 传入的 live `ApprovalRequest`，并一次性构造 authority：`request.agent === authority.live`、`request.agent.session` 是被快照的 exact Session、`agent.id === session.id === authority.sessionId`。不得从裸 sessionId 重新查找另一个 live Agent，也不得允许调用方另传任意 root／Session 组合。v1 随后必须从 exact live Agent 同时读取 Session header depth 与 `agent.options.subagentDepth`，计算两者最大值，并验证没有 `parentSessionId` 且 effective depth 为 `0`；这些值在 approval snapshot 中冻结，失败即 `unsupported-delegated-requester`。
 
 `ParentSessionFactSnapshotV1` 不是第三份持久记录，也不再是 raw `data` 的无条件 lossless 副本。adapter 必须先只解析 event envelope、message source 和已冻结工具分类，再决定是否复制正文：纳入卷宗的事实保持 lossless DSH-neutral 投影；child-origin message、工具结果／delegation result／job output 正文在进入 snapshot 对象前替换为 typed `excluded-content` record。底层 JSONL reader 必然会反序列化包含记录，因此本规范保证的是“不在 source snapshot 中保留、不投递 Guardian”，而不是声称文件字节从未被读取。filter policy id 与 catalog fingerprint 都必须随 snapshot 冻结。`delegationReceipts` 只由 durable execution records 的 receipt 字段投影；冷恢复不得从持久化 rendered tool result 反向解析。
 
@@ -941,7 +941,7 @@ dsh-approve-for-me/delegation-tool-classification/v1\0
 
 ## 12. Sidecar 候选记录
 
-Storage Domain 首期使用两个不同生命周期的表：per-execution 记录保存 pre-execute action 与最终结果；immutable per-approval snapshot 保存某一次 `approval/asked` 真正采用的环境。这样同一 ToolExecution 顺序发起多次审批时不会覆盖较早案件。
+Storage Domain 的 **dossier fact-source 部分**首期使用两个不同生命周期的表：per-execution 记录保存 pre-execute action 与最终结果；immutable per-approval snapshot 保存某一次 `approval/asked` 真正采用的环境。这样同一 ToolExecution 顺序发起多次审批时不会覆盖较早案件。第 13.4 节另定义审计／调试留存 tables；它们不参与 dossier 编译。
 
 ```ts
 interface ToolExecutionFactRecordV1 {
@@ -1019,8 +1019,8 @@ interface ApprovalSnapshotRecordV1 {
 ### 12.1 Storage Domain 规则
 
 - 实现阶段必须显式依赖并注入 DSH `storageDomain` service；未组合该官方服务时插件不得回退到私有 JSON 文件，自动审批保持不可用／下沉人工；
-- 使用 `ctx.storageDomain.open(...)`、`defineDomain(...)`、`domainTable(...)` 和 Zod record schema；
-- domain／table／unit 名必须匹配 `^[a-z][a-z0-9_]*$`；候选 domain 名为 `approve_for_me`，format version 为 `1`，包含 `executions` 与 `approval_snapshots` 两张表；
+- 使用 `ctx.storageDomain.open(...)`、`defineDomain(...)`、`domainTable(...)` 和 Zod record schema；打开者拥有返回的 Domain handle，插件 dispose 在安全关键队列 drain 后必须幂等关闭，HMR 不得泄漏 ownership；
+- domain／table／unit 名必须匹配 `^[a-z][a-z0-9_]*$`；候选 domain 名为 `approve_for_me`，format version 为 `1`；dossier fact source 使用 `executions` 与 `approval_snapshots`，审计／调试留存另使用不参与编译的 `review_records` 与 `case_artifacts`；
 - Storage Domain table key 是单个字符串，不是假想的多列主键。execution key 使用 `e1_` + `base64url(UTF8(canonicalJson([sessionId, sessionFormatVersion, createdAt, cwd ?? null, callId, requestEventSeq])))`；approval key 使用 `a1_` + `base64url(UTF8(canonicalJson([sessionId, sessionFormatVersion, createdAt, cwd ?? null, approvalRequestId, approvalAskedSeq])))`；JSON 数组结构和可逆 base64url 避免字段拼接碰撞；
 - 只保存 lossless JSON。`tools/pre-execute` 先在进程内保留不可变 action projection；遇到 approval ask 时必须立即持久化 pending execution record，无审批的调用可在 durable result join 时直接创建 terminal record；
 - execution record 可用 Storage Domain 的整记录原子覆盖语义从 pending 更新为 terminal，但 `session`／`request`／`toolClassification`／`projection` 前缀必须 canonical 相等；terminal join 可以一次性增加 `result`、`outcome` 和 descriptor 允许的 `delegationReceipt`，之后任何变化均为 conflict；
@@ -1116,7 +1116,168 @@ compiler 自身建议只记录不含完整敏感 payload 的指标：
 
 为了验证首期材料的效率和审批倾向，下游 Reviewer／coordinator 可以按 `dossierHash` 另行联表：首次创建／cold resume、投递和模型裁决耗时，risk、userAuthorization、decision 分布，以及按工具族、standing mode、requested mode、enforcement 和同 Session 审批序号的分布。这些是本文接口的外部消费者指标，不改变 dossier compiler 的职责，也不在本规范定义 decision mapping。
 
-完整卷宗默认不重复写入 telemetry 或 sidecar。只要冻结父 Session 与 versioned sidecar 仍存在，就能按版本重建；若任何必要 projection 从未落盘，则必须承认该历史样本不可重建。
+完整卷宗默认不写入普通 telemetry。只要冻结父 Session 与 versioned fact sidecar 仍存在，就能按版本重建；若任何必要 projection 从未落盘，则必须承认该历史样本不可重建。为了支持审计与受控回归，宿主另采用下述两级留存，不能把完整 packet 混入指标流。
+
+### 13.4 决策记录与可选完整案例
+
+**第一级：默认最小决策记录。** 每次完成的 review run 建立 versioned `ReviewDecisionRecordV1`，保存 Session lifecycle／approval ask 引用、宿主 `reviewRunId`、每个 attempt 的唯一协议 `reviewId`／Reviewer Session、污染恢复记录、`actionHash`、`dossierHash`、所有 source／dossier／policy／projector 版本与 catalog fingerprint、Reviewer route／generation、attempt 分类结果、Guardian 的规范化 decision／risk／categories／authorization（不含 rationale 正文）、完整 decision payload hash，以及插件在返回 terminal composer 前已经确定的 disposition 与失败阶段。它不复制 `ApprovalReviewPacketV1`、用户消息、项目指令、工具参数、人工 port outcome 或 Reviewer transcript。
+
+**第二级：显式调试模式下的完整案例。** `caseCapture.mode: full` 时，宿主可以额外保存每个 attempt 实际发送给 Guardian 的 canonical `ApprovalReviewPacketV1` 与 packet hash、route／时序／结构化 transport 状态、schema-validated decision-tool payload 或无结果／非法结果的有界诊断、污染恢复记录和插件 disposition。同一 run 的 dossier／`actionHash`／总 deadline 不变，但 attempt packet 的 `reviewId`、`reviewerSessionId` 和时序字段可以不同。不得保存 provider 凭据、请求 header、隐藏 reasoning、Controller capability、人工 port outcome、任意 child transcript 或 packet 之外的宿主数据。
+
+完整案例具有与 Reviewer 模型输入相同的敏感级别，默认关闭，并必须设置数量／字节／保留期上限、访问控制和确定性删除。底层存储支持时应启用静态加密；插件不得因缺少加密 API 自创密钥文件或私有 JSON。完整案例写入失败只产生结构化 warning／metric，不改变 allow／deny／fallback；默认最小记录中，任何自动 `allow` 必须在返回 `allowed-once` 前完成 durable record 写入，失败则不得自动放行。明确 `deny` 即使记录写入失败仍保持拒绝，不能因审计故障下沉为可能的 allow。
+
+候选接口（`GuardianCaseCaptureConfigV1` 是未来 loader config，不表示当前代码已经支持）：
+
+```ts
+interface GuardianCaseCaptureConfigV1 {
+  readonly mode: 'off' | 'full'
+  readonly maxCases: number
+  readonly maxArtifactBytes: number
+  readonly maxTotalBytes: number
+  readonly retentionDays: number
+}
+
+interface ReviewerRecoveryRecordV1 {
+  readonly ordinal: number
+  readonly kind: 'contaminated-child'
+  readonly reviewerSessionId: string
+  readonly discardedReviewId?: string
+  readonly generation: string
+  readonly occurredAt: number
+}
+
+interface ReviewDecisionRecordV1 {
+  readonly version: 1
+  readonly session: SessionLifecycleIdentityV1
+  readonly approval: {
+    readonly askedEventSeq: number
+    readonly callId: string
+    readonly toolName: string
+  }
+  readonly review: {
+    readonly reviewRunId: string
+    readonly actionHash: string
+    readonly dossierHash: string
+    readonly dossierVersion: 1
+    readonly approvalProtocolVersion: 1
+    readonly decisionSchemaVersion: 1
+    readonly packetCodecId: 'approval-review-packet-v1'
+    readonly hashSuiteId: 'dsh-approve-for-me-hash-v1'
+    readonly sourceProjectionPolicyId: 'dsh-session-facts-v1'
+    readonly argumentSemanticsId: string
+    readonly actionProjectorId: string
+    readonly policyVersion: string
+    readonly policyArtifactFingerprint: string
+    readonly decisionSchemaFingerprint: string
+    readonly classificationCatalogFingerprint: string
+    readonly toolsetVersion: 1
+    readonly configurationFingerprint: string
+    readonly generation: string
+    readonly providerId: string
+    readonly modelId: string
+    readonly reasoningEffort?: string
+  }
+  readonly attempts: readonly {
+    readonly ordinal: number
+    readonly reviewId: string
+    readonly reviewerSessionId: string
+    readonly generation: string
+    readonly outcome:
+      | { readonly kind: 'decision'; readonly decision: 'allow' | 'deny' | 'human_review' }
+      | { readonly kind: 'transport-error'; readonly code: 'provider-unavailable' | 'network' | 'rate-limited' | 'timeout' | 'model-error' | 'unknown' }
+      | { readonly kind: 'invalid-result'; readonly code: 'schema-invalid' | 'identity-mismatch' | 'duplicate' | 'late' | 'unknown' }
+      | { readonly kind: 'no-result'; readonly reason: 'no-tool-call' | 'max-tokens' | 'refusal' | 'completed-without-decision' }
+      | { readonly kind: 'aborted' }
+    readonly durationMs: number
+  }[]
+  /** Ordered by (occurredAt, ordinal); records discarded armed/delivered identities. */
+  readonly recoveries: readonly ReviewerRecoveryRecordV1[]
+  readonly guardian:
+    | {
+        readonly kind: 'decision'
+        readonly decision: 'allow' | 'deny' | 'human_review'
+        readonly risk: string
+        readonly categories: readonly string[]
+        readonly userAuthorization: string
+        readonly decisionPayloadHash: string
+        readonly rationaleBytes: number
+      }
+    | {
+        readonly kind: 'no-decision'
+        readonly reason: 'transport-error' | 'invalid-result' | 'no-result' | 'deadline' | 'aborted' | 'host-disposed'
+      }
+  /** 宿主 policy 在返回 terminal composer 前已经确定的 disposition。 */
+  readonly pluginDisposition: 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled'
+  readonly failureStage?: string
+  readonly completedAt: number
+}
+
+interface GuardianPolicyArtifactV1 {
+  readonly version: 1
+  readonly policyVersion: string
+  readonly policyArtifactFingerprint: string
+  readonly systemPrompt: string
+  readonly decisionToolName: string
+  readonly decisionToolSchema: JsonValue
+  readonly decisionSchemaFingerprint: string
+  readonly toolsetVersion: 1
+}
+
+interface GuardianCaseArtifactV1 {
+  readonly version: 1
+  readonly artifactId: string
+  readonly session: SessionLifecycleIdentityV1
+  readonly approval: ReviewDecisionRecordV1['approval']
+  readonly reviewRunId: string
+  readonly configurationFingerprint: string
+  readonly reviewerPolicy: GuardianPolicyArtifactV1
+  readonly attempts: readonly {
+    readonly ordinal: number
+    readonly reviewId: string
+    readonly reviewerSessionId: string
+    readonly packetHash: string
+    readonly packet: ApprovalReviewPacketV1
+    readonly generation: string
+    readonly providerId: string
+    readonly modelId: string
+    readonly reasoningEffort?: string
+    readonly startedAt: number
+    readonly completedAt: number
+    readonly observation:
+      | { readonly kind: 'decision-tool'; readonly payload: ApprovalDecision }
+      | {
+          readonly kind: 'invalid-result'
+          readonly code: 'schema-invalid' | 'identity-mismatch' | 'duplicate' | 'late' | 'unknown'
+          readonly observedBytes?: number
+        }
+      | { readonly kind: 'no-result'; readonly reason: 'no-tool-call' | 'max-tokens' | 'refusal' | 'completed-without-decision' }
+      | { readonly kind: 'transport-error'; readonly code: 'provider-unavailable' | 'network' | 'rate-limited' | 'timeout' | 'model-error' | 'unknown' }
+      | { readonly kind: 'aborted' }
+  }[]
+  readonly recoveries: readonly ReviewerRecoveryRecordV1[]
+  readonly pluginDisposition: ReviewDecisionRecordV1['pluginDisposition']
+  readonly capturedAt: number
+  readonly expiresAt: number
+}
+```
+
+`packetHash`、`decisionPayloadHash`、`decisionSchemaFingerprint` 与 `policyArtifactFingerprint` 使用本文第 5 节相同的 canonical JSON／UTF-8／`sha256:<lowerhex>` 规则，domain separator 分别为 `dsh-approve-for-me/approval-review-packet/v1\0`、`dsh-approve-for-me/approval-decision-payload/v1\0`、`dsh-approve-for-me/decision-tool-schema/v1\0` 和 `dsh-approve-for-me/guardian-policy-artifact/v1\0`；preimage 依次是完整 packet、完整 schema-validated `ApprovalDecision`、`decisionToolSchema`，以及排除自身 fingerprint 的完整 policy artifact。读取时必须重新计算全部 hash／fingerprint。每个 artifact attempt 的 `packet.request.reviewId`／`reviewerSessionId`／generation 必须与 attempt 外层字段相同，所有 packet 的 `dossierHash`／`actionHash`／parent／deadline 必须与同一 run 的冻结值一致。fresh-child recovery 可以改变 `reviewerSessionId`，但一个 run 内 generation、configuration／route、policy artifact、dossier 和总 deadline 不得变化；任何配置代际变化都取消旧 run，而不是作为下一 attempt。
+
+`recoveries` 必须按 `(occurredAt, ordinal)` 严格递增，ordinal 为非负 safe integer，`discardedReviewId`（存在时）在同一 run 内唯一且不能出现在成功计数的 `attempts[].reviewId` 中；record 与 full artifact 的 recovery 数组必须 canonical 相等。它只记录宿主观察到的 content-free 污染恢复身份，不复制 child output。
+
+错误 observation 只允许上述闭集 code 和非负 safe-integer `observedBytes`；不得保存 raw malformed payload、provider response body／header、异常 message／stack 或模型自由文本。完整案例内嵌 fingerprint-bound `GuardianPolicyArtifactV1`，使离线 replay 不依赖一个可能已被覆盖的 `policyVersion` 标签；该 policy artifact 只能是固定 Reviewer composition，不得混入凭据、provider header 或每请求动态上下文。
+
+`ReviewDecisionRecordV1` 与 `GuardianCaseArtifactV1` 使用 Storage Domain 中独立的 `review_records`／`case_artifacts` tables，但不是 dossier fact-source 输入；删除、过期或损坏不得改变历史 `dossierHash` 或父 Session 恢复。record key 使用 `r1_` + `base64url(UTF8(canonicalJson([SessionLifecycleIdentityV1, reviewRunId])))`，artifact key 使用 `c1_` + 同一身份与 `artifactId` 的规范数组；终态记录 create-once，相同字节可幂等，内容冲突必须 quarantine。自动 allow 所依赖的 create 只有在 durable read-back 确认 canonical 相等后才算成功；adapter 不得向上返回“可能已提交”的模糊失败，明确失败前必须按同 key reconcile。
+
+四张表都属于 host-private storage，不进入普通 Session export、Web API 或模型工具。`executions`、`approval_snapshots` 和 `review_records` 最长只随 exact parent Session lifecycle 存在；`case_artifacts` 在 configured TTL 与 parent 删除两者中较早者删除。只有权威 SessionStore 明确确认该 lifecycle 已删除时才 cascade／GC，临时读取错误不得当成删除；fork 不复制任何 sidecar／record／artifact。Session 删除后 source-backed replay 有意不可用，若要长期保留测试样本必须先走显式脱敏导出。Session id 与 hash 是可关联的 pseudonymous audit data，不是匿名 telemetry，同样受 host storage 访问边界保护。
+
+`GuardianCaseCaptureConfigV1` 的四个数值字段必须是正 safe integer，且 `maxArtifactBytes <= maxTotalBytes`；`expiresAt = capturedAt + retentionDays * 86_400_000` 必须仍是 safe integer，否则拒绝该配置。artifact 计费字节固定为 `UTF8(artifactKey).byteLength + UTF8(canonicalJson(artifact)).byteLength`。full capture 与 confirmed parent-lifecycle GC 使用同一 domain write／GC lane：进程启动和首次 capture 前先 reconcile；capture 在 put 前重新确认 exact parent lifecycle 仍存在，不存在则跳过；每次写入先删除 `expiresAt <= now`，再按 `(capturedAt, artifactKey)` 升序删除最旧项，直到新 artifact 写入后同时满足 `maxCases`／`maxTotalBytes`。单个 artifact 超过 `maxArtifactBytes` 或 `maxTotalBytes` 时直接跳过并记 code，不截断 packet。实现只支持一个 profile Storage Domain writer；无法证明单 writer 时禁用 full capture。崩溃后下次 reconcile 以相同排序恢复配额，quota／GC 故障只禁用本次捕获。
+
+最小记录与完整 artifact 不做跨表事务，也不互相持有强指针。插件 disposition 已知后先构造并提交 create-once 最小记录；只有自动 `allow` 必须等待其 durable 成功，否则改为 `unavailable`，明确 deny／delegate-human／unavailable／cancelled 不因记录故障改变。full capture 随后以独立 best-effort 任务提交，以 Session lifecycle + `reviewRunId` 联表；不等待 artifact 才返回 policy disposition，不修改已提交最小记录，失败或进程退出丢失都不影响裁决。插件 dispose 可以 drain 已入队 capture，但不得让 capture 成为 approval completion 前置条件。
+
+`ReviewDecisionRecordV1`／`GuardianCaseArtifactV1` 刻意不复制 `HumanApprovalPort` 返回值或所谓 final DSH outcome。DSH `ApprovalService` 会把 answerer promise 与 request abort signal 竞速，composer 拟返回的值可能被 authoritative `approval/decided: cancelled` 覆盖；人工 pending 也可能在插件卸载后继续由 profile composer 完成。最终 DSH outcome 必须按 `approval` 引用与仍存在的父 Session `approval/decided` event 后置关联，artifact／record 自身不得冒充该权威事实。
+
+完整 artifact 不能自动提交 Git、进入 telemetry 或变成 golden fixture；导出测试案例必须由显式 host-local capability 执行脱敏、secret scan 和人工确认。可重放性分三层：packet codec／coordinator 测试可直接消费记录的结构化输入输出；新 Guardian policy 可对保存的 packet + fingerprint-bound policy artifact 做行为评测并比较 decision／risk／category 的允许集合；source compiler 只有从仍存在的 Session + fact sidecar 才能重新生成并核对 source-backed `dossierHash`。单独 artifact 只能重算 packetHash 和 packet 内部 dossierHash，不能恢复 source assurance。外部模型具有非确定性，保存旧输入与结果不承诺再次获得逐字相同的 rationale 或 decision。
 
 ## 14. 隐私和模型边界
 
@@ -1130,7 +1291,7 @@ compiler 自身建议只记录不含完整敏感 payload 的指标：
 - 当前 turn 的精确工具请求；
 - 当前审批动作和提权理由。
 
-因此部署者必须把 Reviewer 模型 route 视为能接触父会话敏感内容和主 Agent 委托正文的处理方。高召回实验还会发送带 `superseded` 标记的旧直接用户消息；若 DSH 产品把 surface 移除／替换承诺为内容删除而非历史修订，该行为在进入生产前必须重新评审，不能仅凭状态标签继续发送。插件不得额外读取 process environment、凭据文件、child Session 或历史工具输出正文；审计默认只保存 hash 和大小指标。
+因此部署者必须把 Reviewer 模型 route 视为能接触父会话敏感内容和主 Agent 委托正文的处理方。高召回实验还会发送带 `superseded` 标记的旧直接用户消息；若 DSH 产品把 surface 移除／替换承诺为内容删除而非历史修订，该行为在进入生产前必须重新评审，不能仅凭状态标签继续发送。插件不得额外读取 process environment、凭据文件、child Session 或历史工具输出正文；普通 telemetry 只保存 hash、大小和脱敏分类。默认最小决策记录遵守第 13.4 节的字段白名单；完整 packet 只有显式 `caseCapture.mode: full` 才可进入受控案例存储。
 
 ## 15. 首期不包含的能力
 
@@ -1188,7 +1349,14 @@ compiler 自身建议只记录不含完整敏感 payload 的指标：
 36. 所有结构整数、event seq、delegation order 和对象 exact keys 经对抗测试；负数、unsafe integer、重复／乱序 seq、unknown key 和 raw JSON duplicate key 都不能解析；
 37. source projection policy／argument semantics version 或 catalog fingerprint 不一致时失败关闭，历史 snapshot 不用新解析器静默重解释；
 38. source-kind fixture 精确覆盖 `subagent-report/relay`、`subagent-settled/notice` 和 child-side `coordinator/relay`；top-level workflow 元事件可校验，Code Mode workflow 与 Ralph 不伪造不存在的 per-child ledger；
-39. packet-only parser 只能返回 `internal-consistency-only`，伪造 hash 自洽的 historical entry 不能获得 module-private source-verified brand；只有携带 frozen facts 的 compiler 能验证 source completeness。
+39. packet-only parser 只能返回 `internal-consistency-only`，伪造 hash 自洽的 historical entry 不能获得 module-private source-verified brand；只有携带 frozen facts 的 compiler 能验证 source completeness；
+40. 默认 `review_records` 不含 packet、用户／指令／工具参数或 rationale 正文，任何自动 allow 在 durable record 前不会返回 `allowed-once`，而 deny 的记录故障不会转成人工可放行路径；
+41. `caseCapture` 默认关闭；开启后保存的 packet 与 Guardian 实际输入 canonical 相等，policy artifact／packet／decision hash 均可重算，闭集错误 observation 不泄露 provider body、header、stack 或模型自由文本；
+42. 正 safe-integer 配置、canonical stored-byte 计费、expired-first + `(capturedAt, artifactKey)` eviction、oversize skip、serialized writer、crash reconcile 和 single-writer refusal 均有确定性测试；artifact 写入失败不改变审批结果；
+43. 四张表的 parent-delete cascade、fork non-inheritance、private access／export 边界和 TTL 测试通过；artifact 过期／删除或 storage 损坏不影响父 Session 恢复、fact-source compiler 或既有 dossier hash；
+44. fresh-child attempt 可改变 Reviewer Session id 但不能改变 generation／route／policy／dossier／deadline；每个 attempt 的协议 `reviewId`、generation 和 packet 身份严格一致；
+45. 最小记录先于自动 allow durable，完整 artifact 异步且无强指针；record 或 capture 故障遵守各自映射，dispose drain 不使 capture 成为 approval completion 前置；
+46. recorded-decision replay、saved packet 内部 hash 验证、旧 packet + exact saved policy artifact 对新 policy 的行为评测，以及 Session + fact-sidecar source rebuild 分别有测试，且测试不假定外部模型逐字确定。
 
 ## 17. 后续待评测问题
 
@@ -1200,7 +1368,7 @@ compiler 自身建议只记录不含完整敏感 payload 的指标：
 - 当前 turn 是否足以解释审批，还是要增加前一 turn 的工具状态；
 - 是否需要单独记录可验证来源的人工批准历史；
 - 持久 Reviewer 的后续请求采用 full、delta 还是定期 full；
-- sidecar 的 fork 继承、Session 删除回收和导出策略；
+- 是否在未来引入与 parent lifecycle 解耦、受独立合规策略约束的长期审计保留；
 - 是否需要 jobId-keyed 生命周期 sidecar，把后台启动与后续终态显式关联；
 - 是否需要把 child output provenance 作为独立风险信号；若需要，必须升级 dossier 版本，不能静默改变 `childOutputPolicy: exclude-direct-origin-v1`；
 - 是否有任何场景值得增加目的受限的只读调查能力。

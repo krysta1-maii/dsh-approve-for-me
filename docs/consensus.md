@@ -1,12 +1,12 @@
 # Approve for Me 最终设计共识
 
-> 状态：2026-08-24 建立业务边界；2026-08-25 部署机制改为 stock DSH 上的 Guarded Continuable，并确定 Reviewer 后续采用独立 MIT 实现。审批协议、身份／哈希校验、失败关闭、最小权限和每父 Reviewer 等产品边界继续有效；早期“官方第三 mode”与 patched API 描述均由 [`dsh-managed-agent` 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)取代。
+> 状态：2026-08-24 建立业务边界；2026-08-25 部署机制改为 stock DSH 上的 Guarded Continuable，并确定 Reviewer 后续采用独立 MIT 实现；2026-08-28 宿主 fallback、生命周期、有限尝试、事实持久化、案例留存和配置取向已形成 [宿主接口与生命周期契约](host-contract.md)。审批协议、身份／哈希校验、失败关闭、最小权限和每父 Reviewer 等产品边界继续有效；早期“官方第三 mode”与 patched API 描述均由 [`dsh-managed-agent` 无补丁改造计划](../../dsh-managed-agent/docs/guarded-continuable-migration-plan.md)取代。
 
 ## 1. 项目定位
 
 `dsh-approve-for-me` 是面向 DSH 的受管自动审批 provider 插件，也是 `dsh-managed-agent` 的首个适配应用。历史工作名 `dsh-approval-for-me` 已废弃。
 
-项目不是绕过审批，而是向 DSH 的 approval answerer waterfall 增加一个隔离、可审计的自动 Reviewer。只有通过完整 schema、身份、哈希、代际和 deadline 校验的确定性 `allow` 才能映射为单次 `allowed-once`。
+项目不是绕过审批，而是为 DSH 的单一终端 approval policy composer 提供一个隔离、可审计的自动 Reviewer policy。只有通过完整 schema、身份、哈希、代际和 deadline 校验的确定性 `allow` 才能映射为单次 `allowed-once`。
 
 ## 2. 基础设施边界
 
@@ -50,9 +50,24 @@ Manager 是本插件对 Controller 的应用层 wrapper，不是 authority 本�
 
 Reviewer 是由 `ctx.managedAgents` 独占管理、底层使用官方 `continuable` wire mode 的持久 child Session。其 Activation 可以在 idle 后释放；后续审批通过同一 child cold-resume，继续保留兼容 transcript。产品界面可以标识为 Managed Reviewer，但不得把该语义误写成官方新增的 `managed` mode。
 
-### Human answerer
+### Terminal approval composer／HumanApprovalPort
 
-人工 answerer 是 approval waterfall 中的下游 handler。`auto-then-user` 通过 `next()` 转交，而不是让 Reviewer 自己聊天式询问用户。
+DSH 明确要求部署组合一个 terminal answerer，普通 sibling waterfall listener 的注册／prepend 顺序不是 policy priority 机制。因此本插件不得把“自动 listener 调用 `next()`，恰好落到人工 sibling”当成产品契约。
+
+宿主必须提供一个显式 terminal approval composer（或等价的 profile-owned broker），由它按固定代码路径组合 `ApproveForMePolicy` 与 `HumanApprovalPort`，并且只由该 composer 向 DSH `approval/request` 提议 answerer outcome；权威最终值仍由 DSH 与 abort signal 竞速后写入 `approval/decided`：
+
+```text
+DSH approval/request
+→ terminal composer
+  → 唯一全局 approve-for-me 自动 policy slot
+  → 仅在 disposition = delegate-human 时调用 HumanApprovalPort.answer(同一 borrowed request)
+→ composer proposal
+→ DSH abort race + authoritative approval/decided
+```
+
+v1 composer 只提供一个全局自动 policy slot：插件挂载期间每个 `ApprovalRequest` 都进入该 policy，不支持的请求也必须显式映射；第二个自动 policy 注册无条件失败，不使用任意 `owns(request)` predicate。`auto` 不需要人工 port；`auto-then-user` 在挂载时必须取得显式 `HumanApprovalPort`／broker registration，缺失时拒绝启用该 mode。人工 port 负责 Web／ACP／其他部署的人类交互，Reviewer 不得自行聊天式询问用户。broker 生命周期独立于自动 policy registration：插件卸载只撤销自动 policy，人工 terminal fallback 继续存在。
+
+当前代码仍以 prepended sibling answerer + `next()` 实现，这只可视为待迁移骨架，不满足 stock DSH 的最终宿主契约；真实 profile 验收前必须完成 terminal composer 接口和迁移。DSH 0.1.1-rc.2 的 Web 人工审批由 `dsh-host-apiproxy` 内部 sibling listener 实现，并未公开可调用的 human port；因此 profile composer seam 是明确的宿主集成前置条件，不能由本插件读取其 private pending registry 或复制 Web 协议来伪造。该 seam 未提供时，本项目两个 mode 都不得宣称完成 stock Web profile 验收，`auto-then-user` 必须拒绝挂载。
 
 ## 4. 实例和生命周期
 
@@ -69,11 +84,28 @@ Reviewer 是由 `ctx.managedAgents` 独占管理、底层使用官方 `continuab
 
 “持久 Reviewer”不等于常驻进程 Agent，也不表示 parent teardown 会删除 child 历史。
 
+### 4.1 宿主状态与 pending approval
+
+宿主目标状态机为：
+
+```text
+starting → ready → draining → disposed
+                  ↘ failed
+```
+
+只有 `ready` 接受新的自动审批。卸载／HMR 先进入 `draining`，但 terminal broker 中的状态感知 policy gate 必须保留：draining 期间新 `auto` 请求返回 `unavailable`，新 `auto-then-user` 请求由 policy 立即返回 `delegate-human`，不能因先注销 listener 而绕过 mode。随后宿主终止当前自动审查、disarm pending result channel、interrupt／drain live Reviewer、排空已经入队的安全关键 sidecar 写入，撤销 provider／capture hooks；所有**插件拥有的**存量 policy 调用 settle 后才最后撤销自动 policy registration、幂等关闭 owned Storage Domain handle 并进入 `disposed`。policy 返回 `delegate-human` 后，人工 pending 由 profile composer 独占且不计入插件 in-flight，dispose 不等待用户作答。broker／人工 terminal fallback 不随自动 policy registration 销毁；dispose 必须幂等。
+
+Reviewer Session 可以在以后 cold-resume，但某一次 pending approval 绑定旧 open turn、deadline、generation 和一次性 result channel，**不得跨 unload／reload 恢复**。`auto-then-user` 中，正常卸载时仍活跃的存量请求交给显式人工 port；已经 Stop／Abort 的请求返回 `cancelled`。重载后的自动审查必须是新请求和新 result channel，不能接受旧 generation 的迟到结果。
+
+这采用取消重建而不是无缝续审：审批结果是当前精确工具调用的一次性 capability，不是可跨宿主代际恢复的业务任务。
+
 ## 5. providerData
 
 providerData 是 Runtime 不解释的 lossless JSON。首期包含 schema version、`primary` role、应用 generation、可复算 configuration fingerprint、provider／model／effort route、policy version 和 toolset version。
 
 它不得包含凭据、函数、工具对象、Agent、Session、Controller 或业务请求。每次 materialize 都必须严格运行时解析；未知版本、额外字段、非法 route 或错误 fingerprint 明确失败。
+
+Reviewer route 必须由插件配置显式固定，不继承主 Agent 当前 provider／model，也不在 route 不可用时静默切换。缺失、空值或 schema 非法的 provider／model id、generation、policy version 或 toolset version 应在 provider 注册前使插件挂载失败。stock DSH model selection 不负责预检 catalog；因此语法有效但不存在／暂不可用的 route 在 materialize／request 时按 Reviewer 能力故障处理，在 `auto-then-user` 中可以人工恢复，但不能改用另一模型。只有未来显式注入权威 provider/model catalog verifier 后，才能宣称挂载期验证 route 存在。
 
 ## 6. 动作捕获
 
@@ -81,7 +113,7 @@ DSH `approval/request` 只有 Agent、tool name、可选 call id／reason／sign
 
 本插件将在 `tools/pre-execute` 中以 exact Agent + call id 捕获完整、frozen 的 `ToolExecution.arguments`，并在 `tools/result` 后释放。只有 call id、exact Agent 和 tool name 全部匹配时才自动评审。
 
-缺失或不匹配时：`auto` 返回 unavailable；`auto-then-user` 调用 `next()`。
+缺失或不匹配时：普通能力缺失在 `auto` 返回 unavailable、在 `auto-then-user` 由 terminal composer 调用显式 `HumanApprovalPort`；若已经形成身份／完整性矛盾，则两种 mode 都硬停止。
 
 ## 7. action hash
 
@@ -141,14 +173,40 @@ ensure Reviewer
 
 ## 12. 审批映射
 
-唯一自动放行路径是：完整动作已捕获、请求正确投递、首个结果 schema 有效、全部 identity／hash／generation／deadline 匹配，并且 decision 为 `allow`。
+唯一自动放行路径是：完整动作已捕获、请求正确投递、首个结果 schema 有效、全部 identity／hash／generation／deadline 匹配，并且 decision 为 `allow`。人工 fallback 只恢复普通能力不足，不能绕过身份、完整性或协议不变量。
 
-- valid allow → `allowed-once`；
-- valid deny → `rejected`；
-- valid human_review + `auto-then-user` → `next()`；
-- valid human_review + `auto` → `rejected`；
-- request abort → `cancelled`；
-- timeout、模型／transport、managed error、invalid、mismatch、missing snapshot → `unavailable` 或人工 fallback，绝不 allow。
+| 情况 | `auto` | `auto-then-user` |
+|---|---|---|
+| Guardian 明确 `allow` | `allowed-once` | `allowed-once` |
+| Guardian 明确 `deny` | `rejected` | `rejected` |
+| Guardian 明确 `human_review` | `rejected` | `HumanApprovalPort.answer(request)` |
+| 不支持的工具、无法形成完整语义快照、卷宗预算溢出 | `unavailable` | `HumanApprovalPort.answer(request)` |
+| Reviewer model／provider／transport 暂时故障或有限尝试耗尽 | `unavailable` | `HumanApprovalPort.answer(request)` |
+| Reviewer deadline 到期且父请求仍活跃 | `unavailable` | `HumanApprovalPort.answer(request)` |
+| 插件正常卸载且父请求仍活跃 | `unavailable` | `HumanApprovalPort.answer(request)` |
+| 用户 Stop／Abort | `cancelled` | `cancelled` |
+| Session／Reviewer 身份矛盾、`actionHash`／generation 不匹配、sidecar／approval snapshot 冲突 | `unavailable` | `unavailable` |
+| 非法、伪造、迟到或无法安全关联的 Reviewer 结果 | `unavailable` | `unavailable` |
+
+`HumanApprovalPort.answer(request)` 接收 DSH 借出的**同一次尚未执行的工具调用请求对象**，不是创建新的授权或在执行后补票。terminal composer 调用人工 port 前必须再次确认 request signal 未 aborted；人工 port 缺失、抛错或返回非法值统一为 `unavailable`。不得使用普通 sibling `next()` 顺序模拟该组合。
+
+技术边界是：能力不足可以人工恢复；身份、完整性和协议矛盾必须硬停止；任何 fallback 都不能生成隐式 allow。
+
+### 12.1 Review attempts
+
+一次业务 review run 共享同一个宿主 `reviewRunId`、不可变 dossier／`actionHash` 和总 deadline，首期最多两个 Reviewer attempts；每个 attempt 使用唯一协议 `reviewId` 并绑定实际 Reviewer Session，防止迟到结果跨 attempt 被接受。只允许重试明确分类的瞬时 transport／provider 错误、未调用结果工具、可修复的结构化输出错误，或干净 Reviewer 的一次非语义故障。
+
+明确 `deny`、明确 `human_review`、身份／hash／generation 不匹配、sidecar 完整性冲突、策略版本错误、deadline 到期和用户 Abort 均不得重试。污染 child 的 rotate + fresh-child 恢复属于基础设施恢复，必须与业务 attempt 分开计数和审计，但同样不能延长总 deadline；它只能改变实际 Reviewer Session id，不能改变该 run 的 generation、configuration／route、policy 或 dossier。
+
+原则是只重试传输和表达失败，不重试已经形成的安全判断。
+
+### 12.2 事实、案例与指标
+
+DSH Session log 继续保存 `approval/asked`、`approval/decided`、`tool/call`、`tool/result` 与 turn 生命周期。插件的 action projection、approval snapshot、safe receipt 和自动 allow 所依据的最小决策记录属于安全关键事实，必须使用 Storage Domain 强持久化；缺失时自动审批失败关闭。
+
+每次 review 默认保存不含完整 packet／rationale 正文的最小决策记录。完整 Guardian 案例采用显式 opt-in：`caseCapture.mode: full` 才保存实际投递的 canonical packet、exact fingerprint-bound policy artifact 和有界结构化结果，并受 deterministic 数量／字节 quota、TTL、parent deletion、host-private 访问和显式脱敏导出规则约束。完整 artifact 与最小记录不建立强事务指针，异步捕获失败不改变既有 allow／deny／fallback；运行指标写入失败也不得阻止工具执行或人工审批。详细接口见 [Guardian 案件卷宗规范](guardian-dossier.md#134-决策记录与可选完整案例)。
+
+这一区分体现：决策事实强一致、失败关闭；完整调试案例受控留存；产品 telemetry 尽力写入且不得干扰 DSH 主执行链。
 
 ## 13. Reviewer composition
 
@@ -189,10 +247,14 @@ Managed capability 防止普通产品通道和其他 provider 操作 child；它
 7. 同 parent 串行、不同 parent 并行。
 8. Reviewer 懒创建、兼容 child 复用、新 generation 创建替代 child。
 9. approval answerer 原样传递 exact live parent。
-10. `auto`／`auto-then-user` 不产生隐式 allow。
-11. typecheck、单元测试和 build 全部通过。
+10. profile 只组合一个 state-aware terminal approval composer；`auto`／`auto-then-user` 不依赖 sibling 顺序、不产生隐式 allow，显式人工 port 不越过身份／完整性冲突。
+11. pending approval 不跨 unload／reload 恢复，Stop／Abort 始终 cancelled。
+12. 最多两个业务 attempts 共享同一 dossier／actionHash／deadline，安全判断不重试。
+13. 自动 allow 在最小决策记录 durable 前不生效；完整案例捕获默认关闭且失败不改变裁决。
+14. Reviewer route 显式固定，不继承主 Agent，也不静默切换。
+15. typecheck、单元测试和 build 全部通过。
 
-真实集成里程碑还需证明 provider registration／effect disposal、动作 capture hooks、Reviewer materialize setup、scoped decision tool、approval listener、persistence／cold-resume／HMR、provider unavailable 和只读 Web 路径。
+真实集成里程碑还需证明 provider registration／effect disposal、动作 capture hooks、Reviewer materialize setup、scoped decision tool、approval listener、persistence／cold-resume／HMR、provider unavailable、两级案例留存和只读 Web 路径。
 
 ## 17. 明确禁止
 
@@ -204,5 +266,7 @@ Managed capability 防止普通产品通道和其他 provider 操作 child；它
 - 把 Controller 或 providerData 暴露到模型、wire 或 Web；
 - 把 MessageId、Agent idle 或自由文本当作业务结果；
 - 在 route 失效时静默切换模型；
+- 跨 unload／reload 恢复旧 pending approval 或接受旧 result channel 的迟到结果；
 - 在缺失、非法或不确定结果时自动放行；
+- 默认保存完整 Guardian packet，或把完整案例自动写入 telemetry、Session export、Git／测试 fixture；
 - 复制、翻译或近似改写 Codex Guardian 的代码、提示词、测试、snapshot 或文档表达。

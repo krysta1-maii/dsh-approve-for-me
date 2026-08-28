@@ -26,7 +26,7 @@
 | `src/reviewer/decision-tool.ts` | 真实 `ToolDefinition` 两阶段结果工具 |
 | `src/dsh/managed-controller.ts` | `ManagedAgentController` → 应用 port 适配（含 contaminated 映射） |
 | `src/dsh/action-capture.ts` | 真实 `ToolExecution` 的 capture／release bridge |
-| `src/dsh/approval-answerer.ts` | 真实 `approval/request` waterfall answerer |
+| `src/dsh/approval-answerer.ts` | 当前 prepended `approval/request` answerer 骨架；待迁移到 profile 单一 terminal composer policy |
 | `src/plugin.ts` | Cordis composition root |
 
 ### 验证
@@ -67,10 +67,12 @@ dsh-managed-agent         0.1.0-dev.0
 
 应用迁移与标准 bundle 包装已完成，后续分成两条并行轨道：
 
-1. **运行验收**：在真实 stock DSH profile 中验证首次物化、复用、cold resume、污染轮换、unload／reload、Web 只读与 Stop；权威清单见 [integration.md](integration.md)。
-2. **Reviewer 产品化**：先按 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 实现 Session／sidecar facts source、五段式完整卷宗、root-principal delegation ledger／direct child-origin output 过滤和基线指标，再按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 建设工具族动作语义、风险／授权 assessment、完整 policy、有限尝试、拒绝熔断和审计。
+1. **宿主与运行验收**：按 [宿主接口与生命周期契约](host-contract.md) 实现 terminal composer policy、映射、draining、attempt、熔断和留存端口，再在真实 stock DSH profile 中验证首次物化、复用、cold resume、污染轮换、unload／reload、Web 只读与 Stop；权威清单见 [integration.md](integration.md)。
+2. **Reviewer 产品化**：先按 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 实现 Session／sidecar facts source、五段式完整卷宗、root-principal delegation ledger／direct child-origin output 过滤和基线指标，再按 [Approval Reviewer 独立实现路线](reviewer-roadmap.md) 建设工具族动作语义、风险／授权 assessment、完整 policy、有限尝试、精确 `actionHash` 重复熔断和审计；语义等价与跨工具绕过识别仅作为未来可选优化。
 
 Reviewer 产品化全部基于 DSH 需求独立设计并使用 MIT 许可证。Codex Guardian 只作为能力覆盖参照，不复制或翻译其代码、提示词、测试、snapshot 与文档表达。
+
+宿主目标语义已确定为有限人工恢复、pending approval 取消重建、单 deadline 最多两个 Reviewer attempts、精确 `actionHash` 熔断、决策 facts 强持久化／telemetry 尽力写入，以及显式固定 Reviewer route。默认最小决策记录与 opt-in full case capture 的接口见卷宗规范。当前代码仍未实现 profile 单一 terminal approval composer／显式 `HumanApprovalPort`、完整错误分类、draining gate、业务 attempts、熔断、决策记录和案例捕获；现有 prepended sibling answerer + `next()` 不得作为 stock DSH 的 policy-priority 契约。DSH 0.1.1-rc.2 Web host 也尚未公开 callable human port，因此 composer 还是一个明确的 host/profile 集成前置任务，而非本包内部已经可调用的现成服务。文档描述的是下一阶段验收契约，不得误报为已完成能力。
 
 ## 当前未执行的操作
 
