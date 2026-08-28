@@ -248,6 +248,11 @@ export {
   InMemoryDecisionRecordStorageBackend,
   ReviewDecisionRecordStore,
 } from './application/record-storage.js'
+export { InMemoryCaseCaptureSink } from './application/case-capture.js'
+export type {
+  CaseCaptureSink,
+  InMemoryCaseCaptureStats,
+} from './application/case-capture.js'
 export type {
   DecisionRecordStorageBackend,
   DecisionRecordStore,
