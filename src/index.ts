@@ -17,10 +17,18 @@ export {
   hashApprovalReviewPacket,
   hashDecisionToolSchema,
   hashGuardianPolicyArtifact,
+  parseReviewDecisionRecord,
   reviewRecordKey,
   validateCaseCaptureConfig,
 } from './domain/records.js'
-export type { GuardianCaseCaptureConfigV1, SessionLifecycleIdentityV1 } from './domain/records.js'
+export type {
+  GuardianCaseCaptureConfigV1,
+  ReviewDecisionGuardianV1,
+  ReviewDecisionRecordAttemptOutcome,
+  ReviewDecisionRecordV1,
+  ReviewerRecoveryRecordV1,
+  SessionLifecycleIdentityV1,
+} from './domain/records.js'
 
 export {
   APPROVAL_PROTOCOL_VERSION,

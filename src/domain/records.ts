@@ -79,3 +79,313 @@ export function validateCaseCaptureConfig(config: GuardianCaseCaptureConfigV1): 
 export function artifactBytes(artifactKey: string, artifact: unknown): number {
   return Buffer.byteLength(artifactKey, 'utf8') + Buffer.byteLength(canonicalJson(artifact), 'utf8')
 }
+
+export type ReviewDecisionRecordAttemptOutcome =
+  | { readonly kind: 'decision'; readonly decision: 'allow' | 'deny' | 'human_review' }
+  | { readonly kind: 'transport-error'; readonly code: 'provider-unavailable' | 'network' | 'rate-limited' | 'timeout' | 'model-error' | 'unknown' }
+  | { readonly kind: 'invalid-result'; readonly code: 'schema-invalid' | 'identity-mismatch' | 'duplicate' | 'late' | 'unknown' }
+  | { readonly kind: 'no-result'; readonly reason: 'no-tool-call' | 'max-tokens' | 'refusal' | 'completed-without-decision' }
+  | { readonly kind: 'aborted' }
+
+export interface ReviewerRecoveryRecordV1 {
+  readonly ordinal: number
+  readonly kind: 'contaminated-child'
+  readonly reviewerSessionId: string
+  readonly discardedReviewId?: string
+  readonly generation: string
+  readonly occurredAt: number
+}
+
+export type ReviewDecisionGuardianV1 =
+  | {
+      readonly kind: 'decision'
+      readonly decision: 'allow' | 'deny' | 'human_review'
+      readonly risk: string
+      readonly categories: readonly string[]
+      readonly userAuthorization: string
+      readonly decisionPayloadHash: string
+      readonly rationaleBytes: number
+    }
+  | {
+      readonly kind: 'no-decision'
+      readonly reason: 'transport-error' | 'invalid-result' | 'no-result' | 'deadline' | 'aborted' | 'host-disposed'
+    }
+
+export interface ReviewDecisionRecordV1 {
+  readonly version: 1
+  readonly session: SessionLifecycleIdentityV1
+  readonly approval: {
+    readonly askedEventSeq: number
+    readonly callId: string
+    readonly toolName: string
+  }
+  readonly review: {
+    readonly reviewRunId: string
+    readonly actionHash: string
+    readonly dossierHash: string
+    readonly dossierVersion: 1
+    readonly approvalProtocolVersion: 1
+    readonly decisionSchemaVersion: 1
+    readonly packetCodecId: 'approval-review-packet-v1'
+    readonly hashSuiteId: 'dsh-approve-for-me-hash-v1'
+    readonly sourceProjectionPolicyId: 'dsh-session-facts-v1'
+    readonly argumentSemanticsId: string
+    readonly actionProjectorId: string
+    readonly policyVersion: string
+    readonly policyArtifactFingerprint: string
+    readonly decisionSchemaFingerprint: string
+    readonly classificationCatalogFingerprint: string
+    readonly toolsetVersion: 1
+    readonly configurationFingerprint: string
+    readonly generation: string
+    readonly providerId: string
+    readonly modelId: string
+    readonly reasoningEffort?: string
+  }
+  readonly attempts: readonly {
+    readonly ordinal: number
+    readonly reviewId: string
+    readonly reviewerSessionId: string
+    readonly generation: string
+    readonly outcome: ReviewDecisionRecordAttemptOutcome
+    readonly durationMs: number
+  }[]
+  readonly recoveries: readonly ReviewerRecoveryRecordV1[]
+  readonly guardian: ReviewDecisionGuardianV1
+  readonly pluginDisposition: 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled'
+  readonly failureStage?: string
+  readonly completedAt: number
+}
+
+const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/
+const PLUGIN_DISPOSITIONS = ['allow', 'deny', 'delegate-human', 'unavailable', 'cancelled'] as const
+const GUARDIAN_NO_DECISION_REASONS = [
+  'transport-error', 'invalid-result', 'no-result', 'deadline', 'aborted', 'host-disposed',
+] as const
+
+function recordObject(input: unknown, name: string): Record<string, unknown> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError(`${name} must be an object`)
+  }
+  return input as Record<string, unknown>
+}
+
+function exactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  name: string,
+): void {
+  const allowed = new Set([...required, ...optional])
+  for (const key of required) {
+    if (!Object.hasOwn(value, key)) throw new TypeError(`${name}.${key} is required`)
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new TypeError(`${name}.${key} is not supported`)
+  }
+}
+
+function nonEmptyString(value: unknown, name: string, max = 4096): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new TypeError(`${name} must be a non-empty string of at most ${max} characters`)
+  }
+  return value
+}
+
+function safeInt(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError(`${name} must be a non-negative safe integer`)
+  return value as number
+}
+
+function stringArray(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`)
+  return Object.freeze(value.map((item, index) => nonEmptyString(item, `${name}[${index}]`)))
+}
+
+function hash(value: unknown, name: string): string {
+  const result = nonEmptyString(value, name, 71)
+  if (!HASH_PATTERN.test(result)) throw new TypeError(`${name} must be a sha256 digest`)
+  return result
+}
+
+function parseAttemptOutcome(value: unknown, name: string): ReviewDecisionRecordAttemptOutcome {
+  const object = recordObject(value, name)
+  const kind = object.kind
+  if (kind === 'decision') {
+    exactKeys(object, ['kind', 'decision'], [], name)
+    const decision = object.decision
+    if (decision !== 'allow' && decision !== 'deny' && decision !== 'human_review') {
+      throw new TypeError(`${name}.decision must be allow/deny/human_review`)
+    }
+    return Object.freeze({ kind: 'decision', decision })
+  }
+  if (kind === 'transport-error') {
+    exactKeys(object, ['kind', 'code'], [], name)
+    const code = object.code
+    if (!['provider-unavailable', 'network', 'rate-limited', 'timeout', 'model-error', 'unknown'].includes(code as string)) {
+      throw new TypeError(`${name}.code is not supported`)
+    }
+    return Object.freeze({ kind: 'transport-error', code: code as 'provider-unavailable' })
+  }
+  if (kind === 'invalid-result') {
+    exactKeys(object, ['kind', 'code'], [], name)
+    const code = object.code
+    if (!['schema-invalid', 'identity-mismatch', 'duplicate', 'late', 'unknown'].includes(code as string)) {
+      throw new TypeError(`${name}.code is not supported`)
+    }
+    return Object.freeze({ kind: 'invalid-result', code: code as 'schema-invalid' })
+  }
+  if (kind === 'no-result') {
+    exactKeys(object, ['kind', 'reason'], [], name)
+    const reason = object.reason
+    if (!['no-tool-call', 'max-tokens', 'refusal', 'completed-without-decision'].includes(reason as string)) {
+      throw new TypeError(`${name}.reason is not supported`)
+    }
+    return Object.freeze({ kind: 'no-result', reason: reason as 'no-tool-call' })
+  }
+  if (kind === 'aborted') {
+    return Object.freeze({ kind: 'aborted' })
+  }
+  throw new TypeError(`${name}.kind is not supported`)
+}
+
+function parseRecovery(value: unknown, name: string): ReviewerRecoveryRecordV1 {
+  const object = recordObject(value, name)
+  exactKeys(object, ['ordinal', 'kind', 'reviewerSessionId', 'generation', 'occurredAt'], ['discardedReviewId'], name)
+  if (object.kind !== 'contaminated-child') throw new TypeError(`${name}.kind must be contaminated-child`)
+  return Object.freeze({
+    ordinal: safeInt(object.ordinal, `${name}.ordinal`),
+    kind: 'contaminated-child',
+    reviewerSessionId: nonEmptyString(object.reviewerSessionId, `${name}.reviewerSessionId`),
+    ...object.discardedReviewId === undefined ? {} : { discardedReviewId: nonEmptyString(object.discardedReviewId, `${name}.discardedReviewId`) },
+    generation: nonEmptyString(object.generation, `${name}.generation`),
+    occurredAt: safeInt(object.occurredAt, `${name}.occurredAt`),
+  })
+}
+
+function parseGuardian(value: unknown, name: string): ReviewDecisionGuardianV1 {
+  const object = recordObject(value, name)
+  if (object.kind === 'decision') {
+    exactKeys(object, ['kind', 'decision', 'risk', 'categories', 'userAuthorization', 'decisionPayloadHash', 'rationaleBytes'], [], name)
+    const decision = object.decision
+    if (decision !== 'allow' && decision !== 'deny' && decision !== 'human_review') {
+      throw new TypeError(`${name}.decision must be allow/deny/human_review`)
+    }
+    return Object.freeze({
+      kind: 'decision',
+      decision,
+      risk: nonEmptyString(object.risk, `${name}.risk`),
+      categories: stringArray(object.categories, `${name}.categories`),
+      userAuthorization: nonEmptyString(object.userAuthorization, `${name}.userAuthorization`),
+      decisionPayloadHash: hash(object.decisionPayloadHash, `${name}.decisionPayloadHash`),
+      rationaleBytes: safeInt(object.rationaleBytes, `${name}.rationaleBytes`),
+    })
+  }
+  if (object.kind === 'no-decision') {
+    exactKeys(object, ['kind', 'reason'], [], name)
+    const reason = object.reason
+    if (!GUARDIAN_NO_DECISION_REASONS.includes(reason as typeof GUARDIAN_NO_DECISION_REASONS[number])) {
+      throw new TypeError(`${name}.reason is not supported`)
+    }
+    return Object.freeze({ kind: 'no-decision', reason: reason as 'aborted' })
+  }
+  throw new TypeError(`${name}.kind is not supported`)
+}
+
+export function parseReviewDecisionRecord(input: unknown): ReviewDecisionRecordV1 {
+  const value = recordObject(input, 'record')
+  exactKeys(value, ['version', 'session', 'approval', 'review', 'attempts', 'recoveries', 'guardian', 'pluginDisposition', 'completedAt'], ['failureStage'], 'record')
+  if (value.version !== 1) throw new TypeError('record.version must be 1')
+
+  const session = recordObject(value.session, 'record.session')
+  exactKeys(session, ['sessionId', 'sessionFormatVersion', 'createdAt'], ['cwd'], 'record.session')
+  const sessionIdentity: SessionLifecycleIdentityV1 = Object.freeze({
+    sessionId: nonEmptyString(session.sessionId, 'record.session.sessionId'),
+    sessionFormatVersion: safeInt(session.sessionFormatVersion, 'record.session.sessionFormatVersion'),
+    createdAt: safeInt(session.createdAt, 'record.session.createdAt'),
+    ...session.cwd === undefined ? {} : { cwd: nonEmptyString(session.cwd, 'record.session.cwd') },
+  })
+
+  const approval = recordObject(value.approval, 'record.approval')
+  exactKeys(approval, ['askedEventSeq', 'callId', 'toolName'], [], 'record.approval')
+  const approvalRecord = Object.freeze({
+    askedEventSeq: safeInt(approval.askedEventSeq, 'record.approval.askedEventSeq'),
+    callId: nonEmptyString(approval.callId, 'record.approval.callId'),
+    toolName: nonEmptyString(approval.toolName, 'record.approval.toolName'),
+  })
+
+  const review = recordObject(value.review, 'record.review')
+  exactKeys(review, [
+    'reviewRunId', 'actionHash', 'dossierHash', 'dossierVersion', 'approvalProtocolVersion',
+    'decisionSchemaVersion', 'packetCodecId', 'hashSuiteId', 'sourceProjectionPolicyId',
+    'argumentSemanticsId', 'actionProjectorId', 'policyVersion', 'policyArtifactFingerprint',
+    'decisionSchemaFingerprint', 'classificationCatalogFingerprint', 'toolsetVersion',
+    'configurationFingerprint', 'generation', 'providerId', 'modelId',
+  ], ['reasoningEffort'], 'record.review')
+  if (review.dossierVersion !== 1) throw new TypeError('record.review.dossierVersion must be 1')
+  if (review.approvalProtocolVersion !== 1) throw new TypeError('record.review.approvalProtocolVersion must be 1')
+  if (review.decisionSchemaVersion !== 1) throw new TypeError('record.review.decisionSchemaVersion must be 1')
+  if (review.packetCodecId !== 'approval-review-packet-v1') throw new TypeError('record.review.packetCodecId must be approval-review-packet-v1')
+  if (review.hashSuiteId !== 'dsh-approve-for-me-hash-v1') throw new TypeError('record.review.hashSuiteId must be dsh-approve-for-me-hash-v1')
+  if (review.sourceProjectionPolicyId !== 'dsh-session-facts-v1') throw new TypeError('record.review.sourceProjectionPolicyId must be dsh-session-facts-v1')
+  if (review.toolsetVersion !== 1) throw new TypeError('record.review.toolsetVersion must be 1')
+  const reviewRecord = Object.freeze({
+    reviewRunId: nonEmptyString(review.reviewRunId, 'record.review.reviewRunId'),
+    actionHash: hash(review.actionHash, 'record.review.actionHash'),
+    dossierHash: hash(review.dossierHash, 'record.review.dossierHash'),
+    dossierVersion: 1,
+    approvalProtocolVersion: 1,
+    decisionSchemaVersion: 1,
+    packetCodecId: 'approval-review-packet-v1' as const,
+    hashSuiteId: 'dsh-approve-for-me-hash-v1' as const,
+    sourceProjectionPolicyId: 'dsh-session-facts-v1' as const,
+    argumentSemanticsId: nonEmptyString(review.argumentSemanticsId, 'record.review.argumentSemanticsId'),
+    actionProjectorId: nonEmptyString(review.actionProjectorId, 'record.review.actionProjectorId'),
+    policyVersion: nonEmptyString(review.policyVersion, 'record.review.policyVersion'),
+    policyArtifactFingerprint: hash(review.policyArtifactFingerprint, 'record.review.policyArtifactFingerprint'),
+    decisionSchemaFingerprint: hash(review.decisionSchemaFingerprint, 'record.review.decisionSchemaFingerprint'),
+    classificationCatalogFingerprint: hash(review.classificationCatalogFingerprint, 'record.review.classificationCatalogFingerprint'),
+    toolsetVersion: 1,
+    configurationFingerprint: hash(review.configurationFingerprint, 'record.review.configurationFingerprint'),
+    generation: nonEmptyString(review.generation, 'record.review.generation'),
+    providerId: nonEmptyString(review.providerId, 'record.review.providerId'),
+    modelId: nonEmptyString(review.modelId, 'record.review.modelId'),
+    ...review.reasoningEffort === undefined ? {} : { reasoningEffort: nonEmptyString(review.reasoningEffort, 'record.review.reasoningEffort') },
+  })
+
+  if (!Array.isArray(value.attempts)) throw new TypeError('record.attempts must be an array')
+  const attempts = Object.freeze(value.attempts.map((attempt, index) => {
+    const name = `record.attempts[${index}]`
+    const object = recordObject(attempt, name)
+    exactKeys(object, ['ordinal', 'reviewId', 'reviewerSessionId', 'generation', 'outcome', 'durationMs'], [], name)
+    return Object.freeze({
+      ordinal: safeInt(object.ordinal, `${name}.ordinal`),
+      reviewId: nonEmptyString(object.reviewId, `${name}.reviewId`),
+      reviewerSessionId: nonEmptyString(object.reviewerSessionId, `${name}.reviewerSessionId`),
+      generation: nonEmptyString(object.generation, `${name}.generation`),
+      outcome: parseAttemptOutcome(object.outcome, `${name}.outcome`),
+      durationMs: safeInt(object.durationMs, `${name}.durationMs`),
+    })
+  }))
+
+  if (!Array.isArray(value.recoveries)) throw new TypeError('record.recoveries must be an array')
+  const recoveries = Object.freeze(value.recoveries.map((recovery, index) => parseRecovery(recovery, `record.recoveries[${index}]`)))
+
+  const pluginDisposition = value.pluginDisposition
+  if (!PLUGIN_DISPOSITIONS.includes(pluginDisposition as typeof PLUGIN_DISPOSITIONS[number])) {
+    throw new TypeError('record.pluginDisposition is not supported')
+  }
+
+  return Object.freeze({
+    version: 1,
+    session: sessionIdentity,
+    approval: approvalRecord,
+    review: reviewRecord,
+    attempts,
+    recoveries,
+    guardian: parseGuardian(value.guardian, 'record.guardian'),
+    pluginDisposition: pluginDisposition as 'allow',
+    ...value.failureStage === undefined ? {} : { failureStage: nonEmptyString(value.failureStage, 'record.failureStage') },
+    completedAt: safeInt(value.completedAt, 'record.completedAt'),
+  })
+}
