@@ -141,8 +141,12 @@ export class DefaultDecisionChannel implements DecisionChannel {
       decision = parseApprovalDecision(payload)
     } catch (error: unknown) {
       const typed = error instanceof TypeError ? error : new TypeError(String(error))
-      if (routedReviewId !== undefined && this.pending.has(routedReviewId)) {
-        this.rejectPending(routedReviewId, 'invalid-result', `review ${routedReviewId} returned an invalid result`)
+      // v2 fix: an invalid payload must not terminate another child's pending
+      // review. Only the exact pending entry whose owning Reviewer matches the
+      // actual caller may be closed on an invalid result.
+      const pending = routedReviewId === undefined ? undefined : this.pending.get(routedReviewId)
+      if (pending !== undefined && pending.request.reviewerSessionId === context.actualReviewerSessionId) {
+        this.rejectPending(routedReviewId!, 'invalid-result', `review ${routedReviewId} returned an invalid result`)
       }
       return { status: 'invalid', ...routedReviewId === undefined ? {} : { reviewId: routedReviewId }, error: typed }
     }

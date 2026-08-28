@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 118 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate，并实现 P2 纯逻辑组件与 `DefaultGatePipeline`；0.1.2 fork 的实机构建/挂载、pipeline 与插件组合根串联、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 121 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate，并实现 P2 纯逻辑组件与 `DefaultGatePipeline`；0.1.2 fork 的实机构建/挂载、pipeline 与插件组合根串联、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -59,9 +59,9 @@
 | `src/config.ts` | `name`／`inject`（含 `managedAgents`）／Schemastery `Config`／`normalizeConfig` |
 | `src/domain/json.ts` | lossless JSON snapshot、递归冻结、canonical JSON |
 | `src/domain/protocol.ts` | providerData、ActionSnapshot、ReviewRequest、Decision、hash、结果映射 |
-| `src/application/decision-channel.ts` | 一次性 pending 结果、身份校验、timeout／abort、tombstone |
+| `src/application/decision-channel.ts` | 一次性 pending 结果、身份校验、timeout／abort、tombstone；v2 修复：invalid payload 路径先校验 actual Reviewer 再终结 pending |
 | `src/application/reviewer-directory.ts` | find-or-create、role／generation／fingerprint 选择、污染跳过 |
-| `src/application/serial-lanes.ts` | per-parent 串行、跨 parent 并行 |
+| `src/application/serial-lanes.ts` | per-parent 串行、跨 parent 并行；v2 新增 `drain()` 等待当前 lane 任务 settle |
 | `src/application/review-coordinator.ts` | 审批编排（ParentAuthority 入口、污染 rotate + 单次 fresh-child 重试） |
 | `src/ports/*` | 最窄 managed port、ActionProjector／ActionCapture |
 | `src/reviewer/*` | v1 policy、真实 ManagedAgentProvider、两阶段决策工具 |
@@ -71,7 +71,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 118 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 121 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```

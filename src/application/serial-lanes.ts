@@ -14,4 +14,9 @@ export class SerialLanes {
       if (this.tails.get(key) === tail) this.tails.delete(key)
     })
   }
+
+  /** Wait until every currently queued lane task has settled. */
+  async drain(): Promise<void> {
+    await Promise.all([...this.tails.values()])
+  }
 }

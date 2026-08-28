@@ -89,6 +89,16 @@ describe('DefaultDecisionChannel', () => {
     await expect(pending).resolves.toMatchObject({ decision: 'allow' })
   })
 
+  it('does not let a routable invalid payload from another child kill the pending review', async () => {
+    const channel = new DefaultDecisionChannel(new FakeClock())
+    const pending = channel.arm(request())
+    const malformed = { ...decision(), risk: 'safe' }
+    expect(channel.submit(malformed, { actualReviewerSessionId: 'reviewer-other' }).status).toBe('invalid')
+    // The owning Reviewer can still submit a valid result.
+    expect(channel.submit(decision(), { actualReviewerSessionId: 'reviewer-1' }).status).toBe('accepted')
+    await expect(pending).resolves.toMatchObject({ decision: 'allow' })
+  })
+
   it.each([
     ['parentSessionId', 'parent-2'],
     ['reviewerSessionId', 'reviewer-2'],
