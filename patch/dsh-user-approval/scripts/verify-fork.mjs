@@ -49,8 +49,9 @@ if (!libIndex.includes('registerMachinePolicy')) {
   throw new Error('lib/index.js does not contain registerMachinePolicy — lib/ was not rebuilt from patched sources')
 }
 const libTypes = tarRead('package/lib/types/index.d.ts')
-if (!libTypes.includes('MachineApprovalPolicy') || !libTypes.includes('requestId')) {
-  throw new Error('lib/types/index.d.ts does not expose MachineApprovalPolicy/requestId')
+const libTypesSubpath = tarRead('package/lib/types/types.d.ts')
+if (!libTypes.includes('MachineApprovalPolicy') || (!libTypes.includes('requestId') && !libTypesSubpath.includes('requestId'))) {
+  throw new Error('fork type declarations do not expose MachineApprovalPolicy/requestId')
 }
 
 const entries = execFileSync('tar', ['-tf', tarball], { encoding: 'utf8' })

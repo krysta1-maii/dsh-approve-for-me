@@ -93,13 +93,23 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> marking package.json in worktree"
   node "${PATCH_DIR}/scripts/mark-package.mjs" "${PKG_DIR}/package.json" "${UPSTREAM_JSON}"
 
-  echo "==> rebuilding lib/ from patched sources"
+  echo "==> rebuilding patched package lib/ from sources"
   (
     cd "${WORKTREE_DIR}"
-    # Packages in 0.1.2 do not carry per-package build scripts; the patched
-    # source is compiled by the root host aggregate (tsc -b + tsdown), which
-    # emits lib/ for this package like every other workspace package.
-    pnpm run build:lib:host
+    # The 0.1.2 package has no npm build script, but it does ship a package
+    # tsdown config and a project tsconfig. Build only this package rather
+    # than the whole host aggregate: `tsc -b` emits lib/types and the package
+    # tsdown bundles lib/index.js + lib/invariant.js. tsdown's TS config
+    # loader requires the optional `unrun` peer; the pinned upstream lock does
+    # not install it, so add it to this throwaway worktree only.
+    if ! node -e "require.resolve('unrun')" >/dev/null 2>&1; then
+      pnpm add -D -w unrun
+    fi
+    node node_modules/typescript/bin/tsc -b "${PKG_DIR}/tsconfig.json"
+  )
+  (
+    cd "${PKG_DIR}"
+    pnpm exec tsdown
   )
 
   echo "==> copying built package out of the worktree"
@@ -116,10 +126,16 @@ else
 fi
 
 echo "==> packing"
+# pnpm rewrites `workspace:^` ranges only when packing from inside the
+# workspace that installed those dependencies; pack from the upstream worktree
+# package dir after a real build, or from the already-built copied dir when
+# SKIP_BUILD reuses an upstream checkout.
+PACK_SOURCE="${BUILD_DIR}"
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  PACK_SOURCE="${WORKTREE_DIR}/${PKG_PATH}"
+fi
 (
-  cd "${BUILD_DIR}"
-  # pnpm pack rewrites `workspace:^` peer ranges to concrete versions;
-  # npm pack would leave them invalid outside the workspace.
+  cd "${PACK_SOURCE}"
   pnpm pack --pack-destination "${BUILD_ROOT}"
 )
 # Pack tools name the tarball from package.json; rename to the fork artifact name.
