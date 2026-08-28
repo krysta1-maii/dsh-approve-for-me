@@ -165,6 +165,7 @@ export type {
   GatePreReview,
   GatePreReviewInput,
 } from './application/gate-pipeline.js'
+export { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
 
 // Cordis plugin entry and serializable config.
 export { Config, inject, name, normalizeConfig } from './config.js'
