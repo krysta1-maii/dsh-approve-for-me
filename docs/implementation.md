@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 162 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 164 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -71,8 +71,9 @@
 | `src/domain/dossier.ts` | `GuardianDossierV1` 顶层结构、`DossierFreezeV1`、`EventRefV1`、`SourceVerifiedDossierV1` module-private brand、`assertDossierShape()`（内部一致性一级）与 `recomputeDossierHash()`；并增加 `InstructionSectionV1`、`ToolTrajectorySectionV1`、`PendingApprovalSectionV1`、`DelegationToolClassificationCatalogV1`、`ParentSessionFactSnapshotV1`、`PrincipalDelegationProjector`、`GuardianDossierCompiler` 等编译端口；实现 `validateDelegationToolCatalog()` 与 `validateToolTrajectorySection()` |
 | `src/application/dossier-compiler.ts` | `DefaultDossierCompiler`：校验 principal/authority/execution-fact，输出 `SourceVerifiedDossierV1` + metrics；section 内容当前为保守最小化 |
 | `src/application/delegation-projector.ts` | `DefaultPrincipalDelegationProjector`：把 delegation attempt + safe receipt 投影为 `PrincipalDelegationEntryV1`，校验 receipt policy / toolName / callId |
+| `src/application/fact-repositories.ts` | `InMemoryExecutionFactRepository` / `InMemoryApprovalSnapshotRepository`：sidecar 事实与审批快照的 get/create |
 
-当前已有 D1 编译端口、校验、首个确定性编译器与 delegation projector；完整 instruction/tool 投影与双射验证尚未实现。
+当前已有 D1 编译端口、校验、首个确定性编译器、delegation projector 与 in-memory fact repos；完整 instruction/tool 投影与双射验证尚未实现。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 
@@ -93,7 +94,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 162 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 164 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```

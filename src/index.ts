@@ -257,6 +257,14 @@ export type {
 } from './application/case-capture.js'
 export { DefaultDossierCompiler } from './application/dossier-compiler.js'
 export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
+export {
+  InMemoryApprovalSnapshotRepository,
+  InMemoryExecutionFactRepository,
+} from './application/fact-repositories.js'
+export type {
+  ApprovalSnapshotRepository,
+  ExecutionFactRepository,
+} from './application/fact-repositories.js'
 export type {
   DecisionRecordStorageBackend,
   DecisionRecordStore,
