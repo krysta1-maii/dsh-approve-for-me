@@ -15,7 +15,7 @@ export interface ExecutionFactRepository {
 }
 
 export interface ApprovalSnapshotRepository {
-  create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical'>
+  create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'>
   get(input: {
     session: SessionLifecycleIdentityV1
     approvalRequestId: string
@@ -46,14 +46,14 @@ export class InMemoryExecutionFactRepository implements ExecutionFactRepository 
 export class InMemoryApprovalSnapshotRepository implements ApprovalSnapshotRepository {
   private readonly rows = new Map<string, ApprovalSnapshotRecordV1>()
 
-  async create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical'> {
+  async create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'> {
     const key = this.key(record.session, record.approvalRequestId, record.approvalAskedSeq)
     const existing = this.rows.get(key)
     if (existing === undefined) {
       this.rows.set(key, record)
       return 'created'
     }
-    return canonicalJson(existing) === canonicalJson(record) ? 'identical' : 'created'
+    return canonicalJson(existing) === canonicalJson(record) ? 'identical' : 'conflict'
   }
 
   async get(input: {

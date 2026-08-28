@@ -1,4 +1,5 @@
-import { resolve, relative, isAbsolute } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path'
 import type {
   TrustEnvelopeConfigV1,
   TrustEnvelopeEvaluationV1,
@@ -24,10 +25,28 @@ function isStrictWidening(from: SandboxRank, to: SandboxRank): boolean {
 }
 
 function isInsideWorkspace(workspaceRoot: string, target: string): boolean {
-  const root = resolve(workspaceRoot)
-  const absolute = isAbsolute(target) ? target : resolve(root, target)
-  const rel = relative(root, absolute)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  try {
+    // Resolve symlinks on both sides; a path that points outside the workspace
+    // must never be accepted just because the lexical path looks contained.
+    const root = realpathSync(resolve(workspaceRoot))
+    const absolute = realpathSync(isAbsolute(target) ? target : resolve(root, target))
+    const rel = relative(root, absolute)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  } catch {
+    // A path that cannot be resolved (including a dangling symlink or a
+    // nonexistent target) cannot be proven inside; for a not-yet-created
+    // target, resolve its nearest existing parent and re-check that path.
+    try {
+      const root = realpathSync(resolve(workspaceRoot))
+      const lexical = isAbsolute(target) ? target : resolve(root, target)
+      const parent = realpathSync(dirname(lexical))
+      const absolute = join(parent, basename(lexical))
+      const rel = relative(root, absolute)
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    } catch {
+      return false
+    }
+  }
 }
 
 /** Pure evaluator for the deterministic trust envelope fast path. */

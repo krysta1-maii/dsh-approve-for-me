@@ -267,6 +267,23 @@ describe('installApproveForMe composition root', () => {
     await plugin.dispose()
   })
 
+  it('fails loud when toolCatalog is configured without the patched machine-policy fork', () => {
+    const h = harness()
+    const catalogConfig: Config = {
+      ...config,
+      toolCatalog: {
+        version: 1,
+        argumentSemanticsId: 'default-v1',
+        fingerprint: `sha256:${'0'.repeat(64)}`,
+        descriptors: [
+          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
+        ],
+      },
+    }
+    const withoutFork = { ...h.ctx, approval: undefined } as unknown as Context
+    expect(() => installApproveForMe(withoutFork, catalogConfig)).toThrow(/patched @deepseek-ai\/dsh-user-approval/)
+  })
+
   it('registers the machine-policy adapter, resolves captured hashes, and disposes it exactly once', async () => {
     const h = harness()
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)

@@ -149,7 +149,10 @@ export class DefaultGatePipeline implements GatePipeline {
     if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
       const record = recordFor(request, facts, 'allow', request.requestId ?? 'trust-envelope')
       const result = await this.deps.records.createConfirmed(record)
-      if (result === 'confirmed') return 'allowed-once'
+      if (result === 'confirmed') {
+        this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
+        return 'allowed-once'
+      }
       if (result === 'conflict') return 'unavailable'
       return this.delegateOrUnavailable()
     }
@@ -158,7 +161,15 @@ export class DefaultGatePipeline implements GatePipeline {
 
     if (request.requestId !== undefined && request.callId !== undefined) {
       const replay = this.deps.seals.lookup(request.requestId, request.callId, request.actionHash)
-      if (replay.kind === 'sealed') return this.mapDisposition(replay.disposition.disposition)
+      if (replay.kind === 'sealed') {
+        const now = this.deps.now?.() ?? Date.now()
+        if (!replay.disposition.replayable || replay.disposition.deadlineAt < now) return 'unavailable'
+        // A sealed outcome is a single-use replay for an ask identity. Consuming
+        // here closes the infinite-replay hole; if another path raced us, the
+        // registry reports consumed and the gate fails closed.
+        if (!this.deps.seals.consume(request.requestId, request.callId)) return 'unavailable'
+        return this.mapDisposition(replay.disposition.disposition)
+      }
       if (replay.kind === 'consumed' || replay.kind === 'mismatch') return 'unavailable'
     }
 
@@ -179,8 +190,10 @@ export class DefaultGatePipeline implements GatePipeline {
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'conflict') return 'unavailable'
       if (result !== 'confirmed') return this.delegateOrUnavailable()
-    } else if (mapped !== 'delegate' && mapped !== 'cancelled') {
+      this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
+    } else if (mapped === 'rejected') {
       await this.deps.records.recordBestEffort(record)
+      this.deps.breaker.recordGuardianDeny(facts.breakerKey)
     }
     return mapped
   }

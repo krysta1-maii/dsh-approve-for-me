@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   InMemoryAllowCache,
   InMemoryExactDenialBreaker,
@@ -122,6 +125,19 @@ describe('createToolApprovalClassifier', () => {
 })
 
 describe('createTrustEnvelopeEvaluator', () => {
+  let dir: string
+  let outsideDir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'afm-workspace-'))
+    outsideDir = await mkdtemp(join(tmpdir(), 'afm-outside-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+    await rm(outsideDir, { recursive: true, force: true })
+  })
+
   const config = {
     version: 1 as const,
     enabled: true,
@@ -132,42 +148,58 @@ describe('createTrustEnvelopeEvaluator', () => {
     requireStrictWidening: false,
   }
 
-  const baseInput = {
+  const input = (overrides: {
+    workspaceRoot?: string
+    targets?: string[]
+    toolFamily?: 'bash' | 'filesystem' | 'network'
+    effectiveMode?: 'read-only' | 'workspace-write' | 'danger-full-access'
+    requestedMode?: 'workspace-write' | 'danger-full-access'
+    justification?: string
+  } = {}) => ({
     toolFamily: 'bash' as const,
     effectiveMode: 'read-only' as const,
-    workspaceRoot: '/work',
-    targets: ['/work/src'],
-  }
+    workspaceRoot: dir,
+    targets: [join(dir, 'src')],
+    ...overrides,
+  })
 
   it('admits an in-workspace read-only bash call', () => {
     const evaluator = createTrustEnvelopeEvaluator(config)
-    expect(evaluator.evaluate(baseInput)).toEqual({ kind: 'inside' })
+    expect(evaluator.evaluate(input())).toEqual({ kind: 'inside' })
   })
 
   it('rejects disabled envelopes, uncovered families, and mode above ceiling', () => {
     const evaluator = createTrustEnvelopeEvaluator({ ...config, enabled: false })
-    expect(evaluator.evaluate(baseInput).kind).toBe('outside')
+    expect(evaluator.evaluate(input()).kind).toBe('outside')
 
     const uncovered = createTrustEnvelopeEvaluator(config)
-    expect(uncovered.evaluate({ ...baseInput, toolFamily: 'network' }).kind).toBe('outside')
+    expect(uncovered.evaluate(input({ toolFamily: 'network' })).kind).toBe('outside')
 
     const aboveCeiling = createTrustEnvelopeEvaluator({ ...config, maxRequestedMode: 'read-only' })
-    expect(aboveCeiling.evaluate({ ...baseInput, requestedMode: 'workspace-write' }).kind).toBe('outside')
+    expect(aboveCeiling.evaluate(input({ requestedMode: 'workspace-write' })).kind).toBe('outside')
   })
 
-  it('rejects outside-workspace targets and missing required justification', () => {
+  it('rejects outside-workspace targets, symlink escapes, and missing required justification', async () => {
     const evaluator = createTrustEnvelopeEvaluator(config)
-    expect(evaluator.evaluate({ ...baseInput, targets: ['/etc/passwd'] })).toEqual({
+    expect(evaluator.evaluate(input({ targets: [outsideDir] }))).toEqual({
+      kind: 'outside',
+      reason: 'outside-workspace',
+    })
+
+    // A symlink inside the workspace that resolves outside must not pass.
+    const escaped = join(dir, 'escaped')
+    await symlink(outsideDir, escaped)
+    expect(evaluator.evaluate(input({ targets: [escaped] }))).toEqual({
       kind: 'outside',
       reason: 'outside-workspace',
     })
 
     const strictJustification = createTrustEnvelopeEvaluator({ ...config, requireJustification: true })
-    expect(strictJustification.evaluate(baseInput)).toEqual({
+    expect(strictJustification.evaluate(input())).toEqual({
       kind: 'outside',
       reason: 'missing-justification',
     })
-    expect(strictJustification.evaluate({ ...baseInput, justification: 'needed' })).toEqual({ kind: 'inside' })
+    expect(strictJustification.evaluate(input({ justification: 'needed' }))).toEqual({ kind: 'inside' })
   })
 
   it('accepts only strict ladder widening when strict widening is required', () => {
@@ -176,15 +208,11 @@ describe('createTrustEnvelopeEvaluator', () => {
       requireStrictWidening: true,
     })
     // read-only -> workspace-write is exactly one strict step.
-    expect(evaluator.evaluate({
-      ...baseInput,
-      requestedMode: 'workspace-write',
-    })).toEqual({ kind: 'inside' })
+    expect(evaluator.evaluate(input({ requestedMode: 'workspace-write' }))).toEqual({ kind: 'inside' })
     // Same level is not a widening.
     expect(evaluator.evaluate({
-      ...baseInput,
+      ...input({ requestedMode: 'workspace-write' }),
       effectiveMode: 'workspace-write',
-      requestedMode: 'workspace-write',
     })).toEqual({
       kind: 'outside',
       reason: 'not-strictly-wider',

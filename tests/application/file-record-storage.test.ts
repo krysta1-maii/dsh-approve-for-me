@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileDecisionRecordStorageBackend } from '../../src/index.js'
@@ -21,6 +21,12 @@ describe('FileDecisionRecordStorageBackend', () => {
     await expect(backend.putIfAbsent('r1_key', { a: 1 }, 'canonical-a')).resolves.toBe('identical')
     await expect(backend.putIfAbsent('r1_key', { a: 2 }, 'canonical-b')).resolves.toBe('conflict')
     await expect(backend.read('r1_key')).resolves.toEqual({ a: 1 })
+  })
+
+  it('throws for a corrupt existing row instead of pretending it is absent', async () => {
+    const backend = new FileDecisionRecordStorageBackend(dir)
+    await writeFile(join(dir, 'r1_corrupt.json'), '{not-json', 'utf8')
+    await expect(backend.read('r1_corrupt')).rejects.toThrow(/corrupt/)
   })
 
   it('returns unavailable on backend write errors', async () => {

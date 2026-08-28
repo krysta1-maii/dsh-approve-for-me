@@ -31,11 +31,20 @@ export class FileDecisionRecordStorageBackend implements DecisionRecordStorageBa
   }
 
   async read(key: string): Promise<unknown | undefined> {
+    const file = join(this.directory, `${key}.json`)
+    let raw: string
     try {
-      const raw = await readFile(join(this.directory, `${key}.json`), 'utf8')
+      raw = await readFile(file, 'utf8')
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+    try {
       return (JSON.parse(raw) as { value?: unknown }).value
     } catch {
-      return undefined
+      // Distinguish a corrupt existing row from an absent key; callers must
+      // not treat unreadable durable data as "never written".
+      throw new Error(`managed record "${key}" is corrupt`)
     }
   }
 

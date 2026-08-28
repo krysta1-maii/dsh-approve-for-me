@@ -1,3 +1,4 @@
+import { canonicalJson } from '../domain/json.js'
 import type {
   DossierCompilationResultV1,
   GuardianDossierCompiler,
@@ -52,7 +53,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         throughSeq: facts.throughSeq,
         currentTurn: turn,
         currentStep: step,
-        frozenAt: Date.now(),
+        // Deterministic placeholder until the source-backed compiler accepts an
+        // explicit capture timestamp; using Date.now() here would make the same
+        // facts produce different dossier hashes on every compile.
+        frozenAt: 0,
       },
       environment: snapshot.environment,
       instructions: Object.freeze({ messages: [] }),
@@ -70,7 +74,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           kind: execution.request.kind === 'model-tool-call' ? 'model-tool-call' : 'code-dispatch',
           callId: execution.request.callId,
           toolName: execution.request.toolName,
-          rawArguments: JSON.stringify(execution.projection.action.arguments),
+          rawArguments: canonicalJson(execution.projection.action.arguments),
           eventSeq: execution.request.eventSeq,
         },
         approvalAsked: facts.approvalBinding.event,
@@ -83,7 +87,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         confinement: { kind: 'unconfined-composition' },
         earlierSandboxDenials: [],
       }),
-      completeness: Object.freeze({ ready: true, missing: [] }),
+      completeness: Object.freeze({
+        ready: false,
+        missing: ['instructions', 'interaction', 'delegations'],
+      }),
     })
     return {
       kind: 'ready',

@@ -65,7 +65,7 @@ function sealed(disposition: SealedDispositionV1['disposition']): SealedDisposit
     configurationFingerprint: hash('cfg'),
     disposition,
     issuedAt: 100,
-    deadlineAt: 200,
+    deadlineAt: Number.MAX_SAFE_INTEGER,
     replayable: true,
   }
 }
@@ -86,6 +86,7 @@ function makePipeline(overrides: {
   allowHit?: boolean
   preReview?: GatePreReview
   records?: GateDecisionRecordStore
+  now?: () => number
 } = {}) {
   const seals = new InMemorySealedDispositionRegistry()
   const records = overrides.records ?? recordsStub()
@@ -113,6 +114,7 @@ function makePipeline(overrides: {
     preReview,
     records,
     mode: overrides.mode ?? 'auto',
+    ...overrides.now === undefined ? {} : { now: overrides.now },
   }
   return { pipeline: new DefaultGatePipeline(deps), seals, records, preReview, factsResolver, deps }
 }
@@ -162,10 +164,30 @@ describe('DefaultGatePipeline', () => {
     expect(preReview.preReview).not.toHaveBeenCalled()
   })
 
-  it('replays a sealed disposition instead of reviewing again', async () => {
+  it('replays a sealed disposition once instead of reviewing again', async () => {
     const { pipeline, preReview, seals } = makePipeline()
     seals.seal(sealed('deny'))
     await expect(pipeline.decide(request())).resolves.toBe('rejected')
+    expect(preReview.preReview).not.toHaveBeenCalled()
+    // The same ask identity is consumed after replay, not endlessly replayable.
+    await expect(pipeline.decide(request())).resolves.toBe('unavailable')
+    expect(seals.lookup('ask-1', 'call-1', hash('a')).kind).toBe('consumed')
+  })
+
+  it('records guardian deny/allow into the exact breaker and allow cache', async () => {
+    const allow = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('allow')) } })
+    await allow.pipeline.decide(request())
+    expect(allow.deps.allowCache.recordGuardianAllow).toHaveBeenCalledWith(facts().allowCacheKey)
+
+    const deny = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('deny')) } })
+    await deny.pipeline.decide(request())
+    expect(deny.deps.breaker.recordGuardianDeny).toHaveBeenCalledWith(facts().breakerKey)
+  })
+
+  it('does not replay an expired sealed disposition', async () => {
+    const { pipeline, preReview, seals } = makePipeline({ now: () => 300 })
+    seals.seal({ ...sealed('allow'), deadlineAt: 200 })
+    await expect(pipeline.decide(request())).resolves.toBe('unavailable')
     expect(preReview.preReview).not.toHaveBeenCalled()
   })
 

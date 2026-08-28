@@ -55,4 +55,15 @@ describe('in-memory fact repositories', () => {
     await expect(repo.create(approvalSnapshot())).resolves.toBe('identical')
     await expect(repo.get({ session, approvalRequestId: 'ask-1', approvalAskedSeq: 5 })).resolves.toEqual(approvalSnapshot())
   })
+
+  it('reports a conflict instead of claiming success for a contradicting snapshot', async () => {
+    const repo = new InMemoryApprovalSnapshotRepository()
+    await repo.create(approvalSnapshot())
+    await expect(repo.create({
+      ...approvalSnapshot(),
+      environment: { version: 1, sessionId: 'parent-other' },
+    })).resolves.toBe('conflict')
+    // Original row is not overwritten.
+    await expect(repo.get({ session, approvalRequestId: 'ask-1', approvalAskedSeq: 5 })).resolves.toEqual(approvalSnapshot())
+  })
 })

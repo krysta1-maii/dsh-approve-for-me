@@ -176,6 +176,12 @@ export function installApproveForMe(
   const approvalService = ctx as unknown as {
     approval?: { registerMachinePolicy?: (policy: PatchedMachineApprovalPolicyLike) => () => void }
   }
+  if (normalized.toolCatalog.descriptors.length > 0 && approvalService.approval?.registerMachinePolicy === undefined) {
+    throw new Error(
+      'toolCatalog is configured but the patched @deepseek-ai/dsh-user-approval fork '
+      + '(registerMachinePolicy) is not installed; refusing to silently run without machine policy',
+    )
+  }
   const stopMachinePolicy = approvalService.approval?.registerMachinePolicy?.(machinePolicy)
 
   const stopPreExecute = ctx.on('tools/pre-execute', bridge.preExecute, { prepend: true })

@@ -83,8 +83,19 @@ describe('DefaultDossierCompiler', () => {
     expect(result.kind).toBe('ready')
     if (result.kind !== 'ready') return
     expect(result.verified.dossier.freeze.throughSeq).toBe(5)
+    expect(result.verified.dossier.freeze.frozenAt).toBe(0)
+    expect((result.verified.dossier.completeness as { ready: boolean; missing: string[] }).ready).toBe(false)
     expect(result.verified.dossierHash).toBe(recomputeDossierHash(result.verified.dossier))
     expect(result.metrics.eventCount).toBe(0)
+  })
+
+  it('is deterministic for the same frozen facts (stable dossier hash)', () => {
+    const compiler = new DefaultDossierCompiler(deps)
+    const first = compiler.compile({ facts: facts() })
+    const second = compiler.compile({ facts: facts() })
+    if (first.kind !== 'ready' || second.kind !== 'ready') throw new Error('expected ready')
+    expect(first.verified.dossierHash).toBe(second.verified.dossierHash)
+    expect(first.verified.dossier).toEqual(second.verified.dossier)
   })
 
   it('returns incomplete for delegated requester, missing call id, and missing execution fact', () => {

@@ -41,7 +41,9 @@ if [[ ! -d "${UPSTREAM_REPO}/.git" ]]; then
 fi
 
 ACTUAL_COMMIT="$(git -C "${UPSTREAM_REPO}" rev-parse HEAD)"
-if [[ "${ACTUAL_COMMIT}" != "${UPSTREAM_COMMIT}" ]]; then
+# upstream.json stores a shortened commit; accept either an exact full SHA or
+# the same shortened prefix.
+if [[ "${ACTUAL_COMMIT}" != "${UPSTREAM_COMMIT}" && "${ACTUAL_COMMIT:0:${#UPSTREAM_COMMIT}}" != "${UPSTREAM_COMMIT}" ]]; then
   echo "error: upstream HEAD is ${ACTUAL_COMMIT}, expected ${UPSTREAM_COMMIT}" >&2
   exit 2
 fi
