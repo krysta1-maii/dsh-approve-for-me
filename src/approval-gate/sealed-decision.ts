@@ -28,3 +28,10 @@ export type SealedDispositionLookupV1 =
   | { readonly kind: 'missing' }
   | { readonly kind: 'mismatch'; readonly reason: string }
   | { readonly kind: 'consumed' }
+
+export interface SealedDispositionRegistryV1 {
+  seal(disposition: SealedDispositionV1): void
+  lookup(requestId: string, callId: string, actionHash: string): SealedDispositionLookupV1
+  consume(requestId: string, callId: string): boolean
+  clearParent(parentSessionId: string): void
+}

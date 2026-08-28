@@ -6,6 +6,19 @@
 
 export type TrustEnvelopeToolFamily = 'bash' | 'filesystem' | 'patch' | 'network' | 'process' | 'mcp' | 'other'
 
+export interface TrustEnvelopeInputV1 {
+  readonly toolFamily: TrustEnvelopeToolFamily
+  readonly requestedMode?: 'workspace-write' | 'danger-full-access'
+  readonly effectiveMode: 'read-only' | 'workspace-write' | 'danger-full-access'
+  readonly workspaceRoot: string
+  readonly targets: readonly string[]
+  readonly justification?: string
+}
+
+export interface TrustEnvelopeEvaluatorV1 {
+  evaluate(input: TrustEnvelopeInputV1): TrustEnvelopeEvaluationV1
+}
+
 export interface TrustEnvelopeConfigV1 {
   readonly version: 1
   readonly enabled: boolean

@@ -90,6 +90,7 @@ export type {
   GateMachineRequestV1,
   SealedDispositionKind,
   SealedDispositionLookupV1,
+  SealedDispositionRegistryV1,
   SealedDispositionV1,
   ToolApprovalClass,
   ToolApprovalClassificationResult,
@@ -97,6 +98,8 @@ export type {
   ToolApprovalDescriptor,
   TrustEnvelopeConfigV1,
   TrustEnvelopeEvaluationV1,
+  TrustEnvelopeEvaluatorV1,
+  TrustEnvelopeInputV1,
   TrustEnvelopeRejectReasonV1,
   TrustEnvelopeToolFamily,
 } from './approval-gate/index.js'
@@ -138,6 +141,18 @@ export type {
 
 // Application gate pieces (DSH-neutral).
 export { createDelegatingGate } from './application/delegating-gate.js'
+export {
+  InMemoryAllowCache,
+  InMemoryExactDenialBreaker,
+} from './application/breaker.js'
+export { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
+export { createToolApprovalClassifier } from './application/tool-classifier.js'
+export { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
+export { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
+export type {
+  PreReviewCoordinator,
+  PreReviewInput,
+} from './application/pre-review-coordinator.js'
 
 // Cordis plugin entry and serializable config.
 export { Config, inject, name, normalizeConfig } from './config.js'
