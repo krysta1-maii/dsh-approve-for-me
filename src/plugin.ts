@@ -57,11 +57,12 @@ export function installApproveForMe(
     },
   }))
   const port = createManagedReviewerPort(registration.controller)
+  const lanes = new SerialLanes()
   const coordinator = new DefaultReviewCoordinator({
     port,
     directory: new DefaultReviewerDirectory(port),
     channel,
-    lane: new SerialLanes(),
+    lane: lanes,
     timeoutMs: normalized.timeoutMs,
     preset: normalized.preset,
   })
@@ -97,6 +98,7 @@ export function installApproveForMe(
       stopAnswerer()
       stopResult()
       stopPreExecute()
+      await lanes.drain()
       channel.dispose()
       await registration.dispose()
     },
