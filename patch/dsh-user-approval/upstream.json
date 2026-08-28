@@ -1,0 +1,12 @@
+{
+  "packageName": "@deepseek-ai/dsh-user-approval",
+  "upstreamVersion": "0.1.2-alpha.1",
+  "upstreamTag": "dsh-v0.1.2-alpha.1",
+  "upstreamCommit": "cd5ef81481",
+  "patchVersion": 1,
+  "changes": [
+    "ApprovalRequestEvent.requestId: service-issued ask id reaches answerers and machine policies",
+    "ApprovalService.registerMachinePolicy(): deterministic machine-policy slot after the session never check and before the approval/request waterfall"
+  ],
+  "forkMarker": "dshApprovalPatch"
+}
