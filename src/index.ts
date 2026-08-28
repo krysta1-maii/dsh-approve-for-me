@@ -201,6 +201,15 @@ export type {
 export { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
 export { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
 export type { GateFactRegistration } from './application/capture-gate-facts.js'
+export {
+  InMemoryDecisionRecordStorageBackend,
+  ReviewDecisionRecordStore,
+} from './application/record-storage.js'
+export type {
+  DecisionRecordStorageBackend,
+  DecisionRecordStore,
+  StorageWriteResult,
+} from './application/record-storage.js'
 
 // Cordis plugin entry and serializable config.
 export { Config, inject, name, normalizeConfig } from './config.js'
