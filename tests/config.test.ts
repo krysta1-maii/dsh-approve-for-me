@@ -95,6 +95,36 @@ describe('plugin config', () => {
     })).toThrow(/duplicate toolCatalog descriptor/)
   })
 
+  it('normalizes case-capture defaults and accepts explicit full config', () => {
+    const normalized = normalizeConfig(valid())
+    expect(normalized.caseCapture).toEqual({
+      mode: 'off',
+      maxCases: 100,
+      maxArtifactBytes: 1_000_000,
+      maxTotalBytes: 10_000_000,
+      retentionDays: 30,
+    })
+    const full = normalizeConfig({
+      ...valid(),
+      caseCapture: {
+        mode: 'full',
+        maxCases: 10,
+        maxArtifactBytes: 2_000,
+        maxTotalBytes: 20_000,
+        retentionDays: 7,
+      },
+    })
+    expect(full.caseCapture.mode).toBe('full')
+    expect(Object.isFrozen(full.caseCapture)).toBe(true)
+  })
+
+  it('rejects invalid case-capture configuration', () => {
+    expect(() => normalizeConfig({
+      ...valid(),
+      caseCapture: { mode: 'full', maxCases: 0, maxArtifactBytes: 1, maxTotalBytes: 2, retentionDays: 1 },
+    })).toThrow(/positive safe integer/)
+  })
+
   it('accepts explicit maxReviewsPerChild and a partial trust envelope', () => {
     const normalized = normalizeConfig({
       ...valid(),

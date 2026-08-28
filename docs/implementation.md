@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 131 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 133 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -47,7 +47,7 @@
 | `src/application/gate-pipeline.ts` | `DefaultGatePipeline`：按 breaker → trustEnvelope → allowCache → seal replay → Guardian → 模式映射/记录三态执行 |
 | `src/application/decision-record.ts` | `InMemoryGateDecisionRecordStore`：最小决策记录，冲突/幂等语义；H4 将替换为 Storage Domain 持久化 |
 | `src/application/capture-gate-facts.ts` | `InMemoryGateActionFactStore`：按 actionHash 暂存 live authority/action/classification 等 gate facts |
-| `src/config.ts` | 增加 `maxReviewsPerChild`、`trustEnvelope`、`toolCatalog` 的配置声明/默认值/校验 |
+| `src/config.ts` | 增加 `maxReviewsPerChild`、`trustEnvelope`、`toolCatalog`、`caseCapture` 的配置声明/默认值/校验 |
 | `src/approval-gate/sealed-decision.ts` | 补上 `SealedDispositionRegistryV1` 端口 |
 | `src/approval-gate/trust-envelope.ts` | 补上 `TrustEnvelopeInputV1` / `TrustEnvelopeEvaluatorV1` 端口 |
 
@@ -80,7 +80,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 131 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 133 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```

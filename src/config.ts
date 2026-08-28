@@ -10,6 +10,8 @@ import type {
   TrustEnvelopeToolFamily,
 } from './approval-gate/trust-envelope.js'
 import type { ApprovalToolCatalog } from './approval-gate/catalog.js'
+import { validateCaseCaptureConfig } from './domain/records.js'
+import type { GuardianCaseCaptureConfigV1 } from './domain/records.js'
 
 const TRUST_ENVELOPE_TOOLS: readonly TrustEnvelopeToolFamily[] = [
   'bash', 'filesystem', 'patch', 'network', 'process', 'mcp', 'other',
@@ -35,6 +37,7 @@ export interface Config {
   readonly maxReviewsPerChild?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
+  readonly caseCapture?: GuardianCaseCaptureConfigV1
   readonly reviewer: {
     readonly generation: string
     readonly provider: string
@@ -53,6 +56,7 @@ export const Config: z<Config> = z.object({
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
   toolCatalog: z.any(),
+  caseCapture: z.any(),
   reviewer: z.object({
     generation: z.string().min(1).required(),
     provider: z.string().min(1).required(),
@@ -71,6 +75,7 @@ export interface NormalizedConfig {
   readonly maxReviewsPerChild: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
+  readonly caseCapture: GuardianCaseCaptureConfigV1
   readonly preset: ReviewerProviderDataV1
 }
 
@@ -84,6 +89,20 @@ const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = Object.freeze({
   fingerprint: ZERO_HASH,
   descriptors: Object.freeze([]),
 })
+
+const DEFAULT_CASE_CAPTURE: Readonly<GuardianCaseCaptureConfigV1> = Object.freeze({
+  mode: 'off',
+  maxCases: 100,
+  maxArtifactBytes: 1_000_000,
+  maxTotalBytes: 10_000_000,
+  retentionDays: 30,
+})
+
+function normalizeCaseCapture(input?: GuardianCaseCaptureConfigV1): GuardianCaseCaptureConfigV1 {
+  const config = input ?? DEFAULT_CASE_CAPTURE
+  validateCaseCaptureConfig(config)
+  return Object.freeze({ ...config })
+}
 
 function normalizeToolCatalog(input?: ApprovalToolCatalog): ApprovalToolCatalog {
   if (input === undefined) return DEFAULT_TOOL_CATALOG
@@ -178,6 +197,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     maxReviewsPerChild,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
+    caseCapture: normalizeCaseCapture(config.caseCapture),
     preset: createReviewerProviderData(reviewerConfig),
   })
 }
