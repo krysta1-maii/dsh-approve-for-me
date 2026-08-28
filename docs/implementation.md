@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 104 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate，并开始落地 P2 纯逻辑组件（classifier、trust envelope、breaker/allow-cache、sealed registry）；0.1.2 fork 的实机构建/挂载、完整 gate pipeline、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 113 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate，并实现 P2 纯逻辑组件与 `DefaultGatePipeline`；0.1.2 fork 的实机构建/挂载、pipeline 与插件组合根串联、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -44,11 +44,12 @@
 | `src/application/tool-classifier.ts` | `createToolApprovalClassifier`：闭集分类，未知/漂移都 fail closed |
 | `src/application/trust-envelope.ts` | `createTrustEnvelopeEvaluator`：工具族、mode ceiling、workspace、justification、strict widening 纯判定 |
 | `src/application/pre-review-coordinator.ts` | `DefaultPreReviewCoordinator`：用现有 Guardian `ReviewCoordinator` 产出并 sealed 一条前置裁决，之后只能 replay |
+| `src/application/gate-pipeline.ts` | `DefaultGatePipeline`：按 breaker → trustEnvelope → allowCache → seal replay → Guardian → 模式映射/记录三态执行 |
 | `src/config.ts` | 增加 `maxReviewsPerChild` 与 `trustEnvelope` 的配置声明/默认值/校验 |
 | `src/approval-gate/sealed-decision.ts` | 补上 `SealedDispositionRegistryV1` 端口 |
 | `src/approval-gate/trust-envelope.ts` | 补上 `TrustEnvelopeInputV1` / `TrustEnvelopeEvaluatorV1` 端口 |
 
-这些组件已可独立单测；把它们串成 `GatePipeline` 的下一步仍待接入。
+这些组件与 pipeline 已独立单测；下一步是把 fact resolver / Guardian preReview 装配进插件组合根，让 machine policy 真正认领裁决。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 
@@ -69,7 +70,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 104 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 113 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```

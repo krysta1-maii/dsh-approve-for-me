@@ -153,6 +153,18 @@ export type {
   PreReviewCoordinator,
   PreReviewInput,
 } from './application/pre-review-coordinator.js'
+export { DefaultGatePipeline } from './application/gate-pipeline.js'
+export type {
+  GateActionFactResolver,
+  GateActionFacts,
+  GateDecisionRecord,
+  GateDecisionRecordResult,
+  GateDecisionRecordStore,
+  GatePipeline,
+  GatePipelineDependencies,
+  GatePreReview,
+  GatePreReviewInput,
+} from './application/gate-pipeline.js'
 
 // Cordis plugin entry and serializable config.
 export { Config, inject, name, normalizeConfig } from './config.js'
