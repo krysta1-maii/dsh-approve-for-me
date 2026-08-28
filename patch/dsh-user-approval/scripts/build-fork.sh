@@ -66,6 +66,10 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   # A fresh `git worktree` does not carry the repo's ignored node_modules. The
   # 0.1.2 monorepo builds packages through the root aggregate (`build:lib:host`),
   # so install the workspace once before compiling the patched package.
+  # pnpm treats the `vendor/CLAUDE.md -> AGENTS.md` symlink as a workspace
+  # package and fails with ENOTDIR in a fresh checkout; it is only a doc
+  # alias, so remove it from this throwaway worktree before installing.
+  rm -f "${WORKTREE_DIR}/vendor/CLAUDE.md"
   if [[ ! -d "${WORKTREE_DIR}/node_modules" ]]; then
     echo "==> installing upstream workspace dependencies in throwaway worktree"
     (

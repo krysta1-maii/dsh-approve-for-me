@@ -9,7 +9,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
  * Same minimal stand-in as `approval.spec.ts`: the service only reaches
  * `agent.session.append` and folds `.events`.
  */
-function fakeAgent(seed: Array<{ type: string }> = [{ type: 'turn/start' }, { type: 'user/message' }]): {
+function fakeAgent(seed: Array<{ type: string; data?: Record<string, unknown> }> = [{ type: 'turn/start' }, { type: 'user/message' }]): {
   agent: Agent
   appended: Array<{ type: string; data: Record<string, unknown> }>
 } {
