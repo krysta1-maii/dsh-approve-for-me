@@ -9,6 +9,7 @@ import type {
   TrustEnvelopeConfigV1,
   TrustEnvelopeToolFamily,
 } from './approval-gate/trust-envelope.js'
+import type { ApprovalToolCatalog } from './approval-gate/catalog.js'
 
 const TRUST_ENVELOPE_TOOLS: readonly TrustEnvelopeToolFamily[] = [
   'bash', 'filesystem', 'patch', 'network', 'process', 'mcp', 'other',
@@ -33,6 +34,7 @@ export interface Config {
   readonly timeoutMs?: number
   readonly maxReviewsPerChild?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
+  readonly toolCatalog?: ApprovalToolCatalog
   readonly reviewer: {
     readonly generation: string
     readonly provider: string
@@ -50,6 +52,7 @@ export const Config: z<Config> = z.object({
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
+  toolCatalog: z.any(),
   reviewer: z.object({
     generation: z.string().min(1).required(),
     provider: z.string().min(1).required(),
@@ -67,10 +70,43 @@ export interface NormalizedConfig {
   readonly timeoutMs: number
   readonly maxReviewsPerChild: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
+  readonly toolCatalog: ApprovalToolCatalog
   readonly preset: ReviewerProviderDataV1
 }
 
 const DEFAULT_MAX_REVIEWS_PER_CHILD = 64
+
+const ZERO_HASH = `sha256:${'0'.repeat(64)}`
+
+const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = Object.freeze({
+  version: 1,
+  argumentSemanticsId: 'default-v1',
+  fingerprint: ZERO_HASH,
+  descriptors: Object.freeze([]),
+})
+
+function normalizeToolCatalog(input?: ApprovalToolCatalog): ApprovalToolCatalog {
+  if (input === undefined) return DEFAULT_TOOL_CATALOG
+  if (input.version !== 1) throw new TypeError('toolCatalog.version must be 1')
+  if (!Array.isArray(input.descriptors)) throw new TypeError('toolCatalog.descriptors must be an array')
+  const names = new Set<string>()
+  for (const descriptor of input.descriptors) {
+    if (typeof descriptor.toolName !== 'string' || descriptor.toolName.length === 0) {
+      throw new TypeError('toolCatalog descriptor.toolName must be a non-empty string')
+    }
+    if (names.has(descriptor.toolName)) throw new TypeError(`duplicate toolCatalog descriptor "${descriptor.toolName}"`)
+    names.add(descriptor.toolName)
+    if (typeof descriptor.toolSchemaFingerprint !== 'string' || descriptor.toolSchemaFingerprint.length === 0) {
+      throw new TypeError('toolCatalog descriptor.toolSchemaFingerprint must be a non-empty string')
+    }
+  }
+  return Object.freeze({
+    version: 1,
+    argumentSemanticsId: input.argumentSemanticsId,
+    fingerprint: input.fingerprint,
+    descriptors: Object.freeze([...input.descriptors]),
+  })
+}
 
 const DEFAULT_TRUST_ENVELOPE: Readonly<TrustEnvelopeConfigV1> = Object.freeze({
   version: 1,
@@ -141,6 +177,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     timeoutMs,
     maxReviewsPerChild,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
+    toolCatalog: normalizeToolCatalog(config.toolCatalog),
     preset: createReviewerProviderData(reviewerConfig),
   })
 }

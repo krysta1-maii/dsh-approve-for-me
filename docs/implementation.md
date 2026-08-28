@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 121 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate，并实现 P2 纯逻辑组件与 `DefaultGatePipeline`；0.1.2 fork 的实机构建/挂载、pipeline 与插件组合根串联、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 124 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter，并实现 P2 纯逻辑组件、`DefaultGatePipeline` 与插件组合根串联；0.1.2 fork 的实机构建/挂载、持久化记录（Storage Domain）、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -33,7 +33,7 @@
 | `src/application/delegating-gate.ts` | transitional gate：当前一律 `'delegate'`，在 P2 管线落地前不改变授权行为 |
 | `src/plugin.ts` | 若宿主 approval 服务提供了 `registerMachinePolicy()` 则注册 adapter；disposer 归入插件 dispose |
 
-当前 machine policy 尚不认领裁决，只完成“存在机器决策槽并正确映射”的接入；实际 allow/deny/human 管线在 P2 实现。
+默认（未配置 `toolCatalog`）时 machine policy 仍不认领；配置冻结工具目录后，机器策略通过 `DefaultGatePipeline` 真正产生 allow/deny/human 映射。
 
 ### P2 纯逻辑组件（新增）
 
@@ -46,11 +46,12 @@
 | `src/application/pre-review-coordinator.ts` | `DefaultPreReviewCoordinator`：用现有 Guardian `ReviewCoordinator` 产出并 sealed 一条前置裁决，之后只能 replay |
 | `src/application/gate-pipeline.ts` | `DefaultGatePipeline`：按 breaker → trustEnvelope → allowCache → seal replay → Guardian → 模式映射/记录三态执行 |
 | `src/application/decision-record.ts` | `InMemoryGateDecisionRecordStore`：最小决策记录，冲突/幂等语义；H4 将替换为 Storage Domain 持久化 |
-| `src/config.ts` | 增加 `maxReviewsPerChild` 与 `trustEnvelope` 的配置声明/默认值/校验 |
+| `src/application/capture-gate-facts.ts` | `InMemoryGateActionFactStore`：按 actionHash 暂存 live authority/action/classification 等 gate facts |
+| `src/config.ts` | 增加 `maxReviewsPerChild`、`trustEnvelope`、`toolCatalog` 的配置声明/默认值/校验 |
 | `src/approval-gate/sealed-decision.ts` | 补上 `SealedDispositionRegistryV1` 端口 |
 | `src/approval-gate/trust-envelope.ts` | 补上 `TrustEnvelopeInputV1` / `TrustEnvelopeEvaluatorV1` 端口 |
 
-这些组件与 pipeline 已独立单测；下一步是把 fact resolver / Guardian preReview 装配进插件组合根，让 machine policy 真正认领裁决。
+`plugin.ts` 已把 fact store、pre-review、records、breaker/allow-cache/sealed 串进 `DefaultGatePipeline`；配置 `toolCatalog` 时 machine policy 真正认领，未配置时保留 transitional delegating gate 以兼容旧答案器行为。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 
@@ -71,7 +72,7 @@
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 121 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 124 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```

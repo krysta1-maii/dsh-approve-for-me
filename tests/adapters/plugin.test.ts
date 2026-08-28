@@ -231,6 +231,42 @@ describe('installApproveForMe composition root', () => {
     expect(h.disposeRegistration).toHaveBeenCalledOnce()
   })
 
+  it('activates the real gate pipeline when a tool catalog is configured', async () => {
+    const h = harness()
+    const catalogConfig: Config = {
+      ...config,
+      toolCatalog: {
+        version: 1,
+        argumentSemanticsId: 'default-v1',
+        fingerprint: `sha256:${'0'.repeat(64)}`,
+        descriptors: [
+          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
+        ],
+      },
+    }
+    const plugin = installApproveForMe(h.ctx as unknown as Context, catalogConfig)
+    const policy = h.machinePolicy as {
+      decide(request: { agent: { id: string }; toolName: string; callId?: string; requestId?: string }): Promise<string>
+    }
+
+    const parent = { id: 'parent-1', session: { id: 'parent-1' } }
+    await h.listeners.preExecute!({
+      agent: parent,
+      callId: 'call-1',
+      name: 'bash',
+      arguments: { command: 'pwd' },
+    }, async () => ({ kind: 'ask' }))
+
+    await expect(policy.decide({
+      agent: parent,
+      toolName: 'bash',
+      callId: 'call-1',
+      requestId: 'ask-1',
+    })).resolves.toBe('allowed-once')
+
+    await plugin.dispose()
+  })
+
   it('registers the machine-policy adapter, resolves captured hashes, and disposes it exactly once', async () => {
     const h = harness()
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)

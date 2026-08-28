@@ -14,9 +14,20 @@ import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
 import { createDelegatingGate } from './application/delegating-gate.js'
+import { DefaultGatePipeline } from './application/gate-pipeline.js'
+import type { GatePreReview } from './application/gate-pipeline.js'
+import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
+import { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
+import { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
+import { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
+import { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
+import { createToolApprovalClassifier } from './application/tool-classifier.js'
+import { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
 import { createReviewerProvider } from './reviewer/provider.js'
 import { hashAction } from './domain/protocol.js'
 import type { RequestedPermission } from './domain/protocol.js'
+import type { ParentAuthority } from './ports/managed-reviewer.js'
+import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
 
 export interface ApproveForMePlugin {
   readonly config: NormalizedConfig
@@ -68,18 +79,98 @@ export function installApproveForMe(
   })
   const answerer = createApprovalAnswerer({ coordinator, captures, mode: normalized.mode })
 
+  const classifier = createToolApprovalClassifier(normalized.toolCatalog)
+  const trustEnvelope = createTrustEnvelopeEvaluator(normalized.trustEnvelope)
+  const breaker = new InMemoryExactDenialBreaker()
+  const allowCache = new InMemoryAllowCache()
+  const seals = new InMemorySealedDispositionRegistry()
+  const factStore = new InMemoryGateActionFactStore()
+  const records = new InMemoryGateDecisionRecordStore()
+
+  // Pipeline pre-review uses the same ReviewCoordinator, sealing each result in
+  // the in-memory registry so a later ask can replay instead of re-reviewing.
+  const preReview: GatePreReview = {
+    async preReview(input) {
+      const authority = factStore.authorityFor(input.parentSessionId) as ParentAuthority<Agent, string> | undefined
+      if (authority === undefined) throw new Error('no live parent authority for pre-review')
+      const pre = new DefaultPreReviewCoordinator<Agent, string>(coordinator, seals)
+      return pre.preReview({
+        authority,
+        requestId: input.requestId,
+        callId: input.callId,
+        action: input.action,
+        ...input.reason === undefined ? {} : { reason: input.reason },
+        ...input.signal === undefined ? {} : { signal: input.signal },
+        generation: input.generation,
+        configurationFingerprint: input.configurationFingerprint,
+        issuedAt: Date.now(),
+        deadlineAt: Date.now() + normalized.timeoutMs,
+      })
+    },
+  }
+
+  const pipeline = new DefaultGatePipeline({
+    classifier,
+    trustEnvelope,
+    breaker,
+    allowCache,
+    seals,
+    facts: factStore,
+    preReview,
+    records,
+    mode: normalized.mode,
+  })
+
+  // With no frozen tool catalog the plugin keeps the transitional delegating
+  // gate so existing answerer behavior is unchanged; a configured catalog
+  // activates the real machine-policy pipeline.
+  const gate: GateMachinePolicyV1 = normalized.toolCatalog.descriptors.length > 0
+    ? { id: 'dsh-approve-for-me/v1', decide: request => pipeline.decide(request) }
+    : createDelegatingGate()
+
   const machinePolicy = createMachinePolicyAdapter({
-    gate: createDelegatingGate(),
+    gate,
     mode: normalized.mode,
     resolveActionHash: ({ agent, callId, toolName }) => {
       if (callId === undefined) {
         throw new Error('cannot resolve action hash for an approval ask without a tool call id')
       }
+      const parentSessionId = String(agent.id)
       const captured = captures.lookup(agent, callId, toolName)
       if (captured === undefined) {
         throw new Error(`cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
       }
-      return hashAction(captured)
+      const descriptor = normalized.toolCatalog.descriptors.find(item => item.toolName === toolName)
+      const toolSchemaFingerprint = descriptor?.toolSchemaFingerprint ?? ''
+      const actionHash = hashAction(captured)
+      const classification = classifier.classify({ toolName, toolSchemaFingerprint })
+      factStore.register({
+        parentSessionId,
+        actionHash,
+        action: captured,
+        toolSchemaFingerprint,
+        classification,
+        breakerKey: {
+          parentLifecycleFingerprint: parentSessionId,
+          turn: 0,
+          directUserFrontierSeq: 0,
+          actionHash,
+        },
+        allowCacheKey: {
+          parentLifecycleFingerprint: parentSessionId,
+          turn: 0,
+          directUserFrontierSeq: 0,
+          actionHash,
+          configurationFingerprint: normalized.preset.configurationFingerprint,
+          generation: normalized.preset.generation,
+        },
+        rootRequester: true,
+        directChildOrigin: false,
+        generation: normalized.preset.generation,
+        configurationFingerprint: normalized.preset.configurationFingerprint,
+        authority: { live: agent, sessionId: parentSessionId },
+      })
+      return actionHash
     },
   })
   const approvalService = ctx as unknown as {

@@ -58,6 +58,43 @@ describe('plugin config', () => {
     expect(Object.isFrozen(normalized.trustEnvelope.tools)).toBe(true)
   })
 
+  it('normalizes tool catalog defaults and accepts a closed catalog', () => {
+    expect(normalizeConfig(valid()).toolCatalog).toEqual({
+      version: 1,
+      argumentSemanticsId: 'default-v1',
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      descriptors: [],
+    })
+    const normalized = normalizeConfig({
+      ...valid(),
+      toolCatalog: {
+        version: 1,
+        argumentSemanticsId: 'default-v1',
+        fingerprint: `sha256:${'a'.repeat(64)}`,
+        descriptors: [
+          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
+        ],
+      },
+    })
+    expect(normalized.toolCatalog.descriptors).toHaveLength(1)
+    expect(Object.isFrozen(normalized.toolCatalog.descriptors)).toBe(true)
+  })
+
+  it('rejects duplicate tool catalog descriptors', () => {
+    expect(() => normalizeConfig({
+      ...valid(),
+      toolCatalog: {
+        version: 1,
+        argumentSemanticsId: 'default-v1',
+        fingerprint: `sha256:${'a'.repeat(64)}`,
+        descriptors: [
+          { toolName: 'bash', toolSchemaFingerprint: 'a', classification: 'ordinary' },
+          { toolName: 'bash', toolSchemaFingerprint: 'b', classification: 'body-escalation' },
+        ],
+      },
+    })).toThrow(/duplicate toolCatalog descriptor/)
+  })
+
   it('accepts explicit maxReviewsPerChild and a partial trust envelope', () => {
     const normalized = normalizeConfig({
       ...valid(),
