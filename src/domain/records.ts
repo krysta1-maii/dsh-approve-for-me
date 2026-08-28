@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './json.js'
 import type { JsonValue } from './json.js'
+import { parseApprovalReviewRequest } from './protocol.js'
 import type { ApprovalDecision, ApprovalReviewRequest } from './protocol.js'
 
 /** Durable parent Session lifecycle identity used as record/artifact scope. */
@@ -24,6 +25,7 @@ export const PACKET_HASH_DOMAIN = 'dsh-approve-for-me/approval-review-packet/v1\
 export const DECISION_PAYLOAD_HASH_DOMAIN = 'dsh-approve-for-me/approval-decision-payload/v1\0'
 export const DECISION_TOOL_SCHEMA_HASH_DOMAIN = 'dsh-approve-for-me/decision-tool-schema/v1\0'
 export const POLICY_ARTIFACT_HASH_DOMAIN = 'dsh-approve-for-me/guardian-policy-artifact/v1\0'
+export const DOSSIER_HASH_DOMAIN = 'dsh-approve-for-me/guardian-dossier/v1\0'
 
 function hashWithDomain(domain: string, value: unknown): string {
   return `sha256:${createHash('sha256').update(domain).update(canonicalJson(value)).digest('hex')}`
@@ -47,6 +49,10 @@ export function caseArtifactKey(
   artifactId: string,
 ): string {
   return `c1_${base64url(canonicalJson([session, artifactId]))}`
+}
+
+export function hashGuardianDossier(dossier: unknown): string {
+  return hashWithDomain(DOSSIER_HASH_DOMAIN, dossier)
 }
 
 export function hashApprovalReviewPacket(packet: unknown): string {
@@ -454,4 +460,46 @@ export interface GuardianCaseArtifactV1 {
   readonly pluginDisposition: ReviewDecisionRecordV1['pluginDisposition']
   readonly capturedAt: number
   readonly expiresAt: number
+}
+
+export function createApprovalReviewPacketV1(input: {
+  readonly request: ApprovalReviewRequest
+  readonly dossier: JsonValue
+  readonly dossierHash?: string
+}): ApprovalReviewPacketV1 {
+  const request = parseApprovalReviewRequest(input.request)
+  // canonicalJson rejects non-JSON values before we calculate a hash.
+  canonicalJson(input.dossier)
+  const dossierHash = input.dossierHash ?? hashGuardianDossier(input.dossier)
+  if (dossierHash !== hashGuardianDossier(input.dossier)) {
+    throw new TypeError('approval-review-packet.dossierHash does not match dossier')
+  }
+  return Object.freeze({
+    version: 1,
+    kind: 'approval-review-packet',
+    request,
+    dossier: input.dossier,
+    dossierHash,
+  })
+}
+
+export function parseApprovalReviewPacketV1(input: unknown): ApprovalReviewPacketV1 {
+  const value = recordObject(input, 'packet')
+  exactKeys(value, ['version', 'kind', 'request', 'dossier', 'dossierHash'], [], 'packet')
+  if (value.version !== 1) throw new TypeError('packet.version must be 1')
+  if (value.kind !== 'approval-review-packet') throw new TypeError('packet.kind must be approval-review-packet')
+  const request = parseApprovalReviewRequest(value.request)
+  canonicalJson(value.dossier)
+  const dossierHash = hash(value.dossierHash, 'packet.dossierHash')
+  const expectedDossierHash = hashGuardianDossier(value.dossier)
+  if (dossierHash !== expectedDossierHash) {
+    throw new TypeError('packet.dossierHash does not match packet.dossier')
+  }
+  return Object.freeze({
+    version: 1,
+    kind: 'approval-review-packet',
+    request,
+    dossier: value.dossier as JsonValue,
+    dossierHash,
+  })
 }
