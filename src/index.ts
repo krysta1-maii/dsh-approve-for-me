@@ -39,6 +39,14 @@ export type {
   ReviewerRecoveryRecordV1,
   SessionLifecycleIdentityV1,
 } from './domain/records.js'
+export { assertDossierShape, recomputeDossierHash } from './domain/dossier.js'
+export type {
+  ApprovalReviewPacketCodecV1,
+  DossierFreezeV1,
+  EventRefV1,
+  GuardianDossierV1,
+  SourceVerifiedDossierV1,
+} from './domain/dossier.js'
 
 export {
   APPROVAL_PROTOCOL_VERSION,
