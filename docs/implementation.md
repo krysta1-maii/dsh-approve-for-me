@@ -66,9 +66,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/domain/dossier.ts` | `GuardianDossierV1` 顶层结构、`DossierFreezeV1`、`EventRefV1`、`SourceVerifiedDossierV1` module-private brand、`assertDossierShape()`（内部一致性一级）与 `recomputeDossierHash()` |
+| `src/domain/dossier.ts` | `GuardianDossierV1` 顶层结构、`DossierFreezeV1`、`EventRefV1`、`SourceVerifiedDossierV1` module-private brand、`assertDossierShape()`（内部一致性一级）与 `recomputeDossierHash()`；并增加 `InstructionSectionV1`、`ToolTrajectorySectionV1`、`PendingApprovalSectionV1`、`DelegationToolClassificationCatalogV1` 等 section 类型 |
 
-当前只有顶层形状与 hash；source-backed compiler、五段式 section subtypes、delegation catalog 与双射验证尚未实现。
+当前已有顶层/主要 section 类型；source-backed compiler、delegation 双射验证、完整 interaction/delegation entries 尚未实现。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 

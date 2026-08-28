@@ -2,6 +2,7 @@ import { canonicalJson } from './json.js'
 import type { JsonValue } from './json.js'
 import { hashGuardianDossier } from './records.js'
 import type { SessionLifecycleIdentityV1 } from './records.js'
+import type { ActionSnapshot } from './protocol.js'
 
 export interface EventRefV1 {
   readonly seq: number
@@ -106,4 +107,149 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
 
 export function recomputeDossierHash(dossier: GuardianDossierV1): string {
   return hashGuardianDossier(dossier)
+}
+
+export interface InstructionMessageV1 {
+  readonly event: EventRefV1
+  readonly messageId: string
+  readonly source: {
+    readonly kind: string
+    readonly form: 'instructions'
+    readonly baseline?: boolean
+    readonly baselineIdentity?: string
+    readonly changes?: readonly JsonValue[]
+  }
+  readonly content: readonly JsonValue[]
+}
+
+export interface InstructionSectionV1 {
+  readonly messages: readonly InstructionMessageV1[]
+}
+
+export interface NativeToolRequestRefV1 {
+  readonly kind: 'model-tool-call'
+  readonly issuedIn: EventRefV1
+  readonly blockIndex: number
+  readonly callId: string
+  readonly toolName: string
+  readonly rawArguments: string
+  readonly callEvent?: EventRefV1
+}
+
+export interface CodeDispatchRequestRefV1 {
+  readonly kind: 'code-dispatch'
+  readonly dispatchStart: EventRefV1
+  readonly rootCallId: string
+  readonly parentCallId: string
+  readonly callId: string
+  readonly toolName: string
+  readonly arguments: JsonValue
+}
+
+export type ToolRequestRefV1 = NativeToolRequestRefV1 | CodeDispatchRequestRefV1
+
+export interface ToolRequestKeyV1 {
+  readonly callId: string
+  readonly requestEventSeq: number
+}
+
+export interface ProcessTailV1 {
+  readonly exitCode: number | null
+  readonly signal: string | null
+}
+
+export type ToolAttemptOutcomeV1 =
+  | { readonly kind: 'not-started'; readonly reason: 'queued' | 'aborted-before-dispatch' }
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'completed' }
+  | { readonly kind: 'background-launched' }
+  | {
+      readonly kind: 'approval-not-granted'
+      readonly outcome: 'rejected' | 'cancelled' | 'unavailable'
+      readonly effectivePolicy: 'ask' | 'never'
+    }
+  | { readonly kind: 'tool-error'; readonly code?: string }
+  | { readonly kind: 'sandbox-unavailable'; readonly mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; readonly code: string }
+  | {
+      readonly kind: 'runner-failed'
+      readonly mode: 'read-only' | 'workspace-write' | 'danger-full-access'
+      readonly enforcement?: 'full' | 'partial'
+      readonly process?: ProcessTailV1
+    }
+  | {
+      readonly kind: 'sandbox-denied'
+      readonly mode: 'read-only' | 'workspace-write' | 'danger-full-access'
+      readonly enforcement?: 'full' | 'partial'
+      readonly process?: ProcessTailV1
+    }
+  | { readonly kind: 'timed-out'; readonly process: ProcessTailV1 }
+  | { readonly kind: 'aborted'; readonly code?: string }
+  | { readonly kind: 'process-signalled'; readonly signal: string; readonly exitCode: number | null }
+  | { readonly kind: 'process-exited'; readonly exitCode: number }
+
+export interface ToolAttemptV1 {
+  readonly request: ToolRequestRefV1
+  readonly outcome: ToolAttemptOutcomeV1
+}
+
+export interface ToolTrajectorySectionV1 {
+  readonly turn: number
+  readonly excludedPendingRequest: ToolRequestKeyV1
+  readonly attempts: readonly ToolAttemptV1[]
+}
+
+export type ConfinementProjectionV1 =
+  | { readonly kind: 'unconfined-composition' }
+  | {
+      readonly kind: 'sandbox-policy'
+      readonly workspaceRoot: string
+      readonly standingMode: 'read-only' | 'workspace-write' | 'danger-full-access'
+      readonly lastObservedEnforcement?: 'full' | 'partial'
+    }
+
+export interface PendingApprovalSectionV1 {
+  readonly request: ToolRequestRefV1
+  readonly approvalAsked: EventRefV1
+  readonly approvalRequestId: string
+  readonly callId: string
+  readonly toolName: string
+  readonly action: ActionSnapshot
+  readonly actionHash: string
+  readonly projectorId: string
+  readonly confinement: ConfinementProjectionV1
+  readonly requestedSandboxMode?: 'workspace-write' | 'danger-full-access'
+  readonly description?: string
+  readonly justification?: string
+  readonly approvalReason?: string
+  readonly earlierSandboxDenials: readonly {
+    readonly callId: string
+    readonly requestEvent: EventRefV1
+  }[]
+}
+
+export type DelegationToolDescriptorV1 =
+  | {
+      readonly classification: 'ordinary'
+      readonly toolName: string
+      readonly toolSchemaFingerprint: string
+      readonly classificationId: string
+    }
+  | {
+      readonly classification: 'delegation'
+      readonly projectorId: string
+      readonly toolName: string
+      readonly toolSchemaFingerprint: string
+      readonly operation: 'start' | 'followup' | 'orchestrate' | 'interrupt' | 'extension'
+      readonly receiptPolicy:
+        | { readonly kind: 'none' }
+        | { readonly kind: 'required-on-completed'; readonly receiptKinds: readonly string[] }
+      readonly configuration?: JsonValue
+    }
+
+export interface DelegationToolClassificationCatalogV1 {
+  readonly version: 1
+  readonly eventProjectionPolicyId: 'dsh-session-facts-v1'
+  readonly argumentSemanticsId: string
+  readonly fingerprint: string
+  readonly descriptors: readonly DelegationToolDescriptorV1[]
 }

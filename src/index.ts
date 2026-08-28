@@ -42,10 +42,24 @@ export type {
 export { assertDossierShape, recomputeDossierHash } from './domain/dossier.js'
 export type {
   ApprovalReviewPacketCodecV1,
+  CodeDispatchRequestRefV1,
+  ConfinementProjectionV1,
+  DelegationToolClassificationCatalogV1,
+  DelegationToolDescriptorV1,
   DossierFreezeV1,
   EventRefV1,
   GuardianDossierV1,
+  InstructionMessageV1,
+  InstructionSectionV1,
+  NativeToolRequestRefV1,
+  PendingApprovalSectionV1,
+  ProcessTailV1,
   SourceVerifiedDossierV1,
+  ToolAttemptOutcomeV1,
+  ToolAttemptV1,
+  ToolRequestKeyV1,
+  ToolRequestRefV1,
+  ToolTrajectorySectionV1,
 } from './domain/dossier.js'
 
 export {
