@@ -61,6 +61,21 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   git -C "${UPSTREAM_REPO}" worktree remove --force "${WORKTREE_DIR}" 2>/dev/null || true
   git -C "${UPSTREAM_REPO}" worktree add --detach "${WORKTREE_DIR}" "${UPSTREAM_COMMIT}"
 
+  # A fresh `git worktree` does not carry the repo's ignored node_modules. The
+  # 0.1.2 monorepo builds packages through the root aggregate (`build:lib:host`),
+  # so install the workspace once before compiling the patched package.
+  if [[ ! -d "${WORKTREE_DIR}/node_modules" ]]; then
+    echo "==> installing upstream workspace dependencies in throwaway worktree"
+    (
+      cd "${WORKTREE_DIR}"
+      if [[ -f pnpm-lock.yaml ]]; then
+        pnpm install --frozen-lockfile
+      else
+        pnpm install
+      fi
+    )
+  fi
+
   echo "==> applying overlay into worktree"
   PKG_DIR="${WORKTREE_DIR}/${PKG_PATH}"
   cp "${PATCH_DIR}/overlay/src/index.ts" "${PKG_DIR}/src/index.ts"
@@ -75,7 +90,10 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> rebuilding lib/ from patched sources"
   (
     cd "${WORKTREE_DIR}"
-    pnpm --filter "${PACKAGE_NAME}" build
+    # Packages in 0.1.2 do not carry per-package build scripts; the patched
+    # source is compiled by the root host aggregate (tsc -b + tsdown), which
+    # emits lib/ for this package like every other workspace package.
+    pnpm run build:lib:host
   )
 
   echo "==> copying built package out of the worktree"

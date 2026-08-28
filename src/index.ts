@@ -78,6 +78,29 @@ export type {
   ActionProjector,
 } from './ports/action-projector.js'
 
+// Approval-gate ports (DSH-neutral).
+export type {
+  AllowCacheKeyV1,
+  AllowCacheV1,
+  ApprovalToolCatalog,
+  ExactDenialBreakerKeyV1,
+  ExactDenialBreakerV1,
+  GateMachineDecisionV1,
+  GateMachinePolicyV1,
+  GateMachineRequestV1,
+  SealedDispositionKind,
+  SealedDispositionLookupV1,
+  SealedDispositionV1,
+  ToolApprovalClass,
+  ToolApprovalClassificationResult,
+  ToolApprovalClassifier,
+  ToolApprovalDescriptor,
+  TrustEnvelopeConfigV1,
+  TrustEnvelopeEvaluationV1,
+  TrustEnvelopeRejectReasonV1,
+  TrustEnvelopeToolFamily,
+} from './approval-gate/index.js'
+
 // Reviewer composition (real DSH types).
 export {
   REVIEWER_SECTION,
@@ -106,6 +129,15 @@ export {
 export type { CaptureBridge } from './dsh/action-capture.js'
 export { createApprovalAnswerer } from './dsh/approval-answerer.js'
 export type { ApprovalAnswerer, ApprovalAnswererOptions } from './dsh/approval-answerer.js'
+export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
+export type {
+  MachinePolicyAdapterOptions,
+  PatchedApprovalRequestLike,
+  PatchedMachineApprovalPolicyLike,
+} from './dsh/machine-policy-adapter.js'
+
+// Application gate pieces (DSH-neutral).
+export { createDelegatingGate } from './application/delegating-gate.js'
 
 // Cordis plugin entry and serializable config.
 export { Config, inject, name, normalizeConfig } from './config.js'

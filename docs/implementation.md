@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 82 项测试通过（0.1.1-rc.2 基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架；0.1.2-alpha.1 迁移、本体 `registerMachinePolicy` 适配、trustEnvelope/breaker/allow-cache、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
+> 当前代码状态（2026-08-28，宿主 v2）：应用层仍运行在 `dsh-managed-agent` 的 `ctx.managedAgents` Guarded Continuable 服务上，typecheck 与 89 项测试通过（本机仍为 0.1.1-rc.2 安装基线）。本阶段新增了 patch 包结构与 `src/approval-gate/` 端口骨架，同时把 `package.json` 的 DSH 依赖面迁到 0.1.2-alpha.1、补上 DSH machine-policy adapter 和 transitional delegating gate；0.1.2 fork 的实机构建/挂载、trustEnvelope/breaker/allow-cache、卷宗 compiler 和真实 Profile/Web 验收尚未实现。当前 `policy-v1` 仍是最小保守占位策略。
 >
 > 当前事实、候选契约和施工路线的职责划分见 [文档地图](README.md)。目标部署是 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 + `dsh-managed-agent`（独立仓库依赖插件）+ 本插件。
 
@@ -25,6 +25,16 @@
 | `sealed-decision.ts` | 类型/端口：前置裁决密封与重放身份 |
 | `machine-policy.ts` | 类型/端口：DSH-neutral `GateMachinePolicyV1` |
 
+### machine-policy 接入（P1 起步，新增）
+
+| 文件 | 职责 |
+|---|---|
+| `src/dsh/machine-policy-adapter.ts` | 把 patched `ApprovalRequestEvent` 映射到 DSH-neutral `GateMachineRequestV1`，保持稳定的 `dsh-approve-for-me/v1` id |
+| `src/application/delegating-gate.ts` | transitional gate：当前一律 `'delegate'`，在 P2 管线落地前不改变授权行为 |
+| `src/plugin.ts` | 若宿主 approval 服务提供了 `registerMachinePolicy()` 则注册 adapter；disposer 归入插件 dispose |
+
+当前 machine policy 尚不认领裁决，只完成“存在机器决策槽并正确映射”的接入；实际 allow/deny/human 管线在 P2 实现。
+
 ### 既有骨架（0.1.1-rc.2 基线）
 
 | 文件 | 职责 |
@@ -44,14 +54,16 @@
 ### 验证
 
 ```bash
-npm run check   # 0.1.1-rc.2 基线：typecheck + 82 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 89 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```
 
-## 真实契约消费方式（0.1.1-rc.2 基线）
+> 说明：`package.json` 已经声明 0.1.2-alpha.1 目标版本，但本机 node_modules 与 `package-lock.json` 仍是 0.1.1-rc.2 安装基线；等 0.1.2 fork/官方包可在本地构建或取得后再重新生成 lock 并做真实类型验收。
 
-依赖边界（均为精确版本 peer）：
+## 真实契约消费方式（本机 0.1.1-rc.2 安装基线）
+
+`package.json` 已声明目标依赖为 0.1.2-alpha.1（见下一段）；以下仍是本机 node_modules 实际安装的基线：
 
 ```text
 @deepseek-ai/cordis 4.0.1             @deepseek-ai/dsh-sandbox-policy  0.1.1-rc.2
@@ -63,7 +75,7 @@ node --check patch/dsh-user-approval/scripts/*.mjs
 dsh-managed-agent         0.1.0-dev.0
 ```
 
-v2 目标改为 0.1.2-alpha.1 + fork tarball；迁移在 P0 完成。
+v2 目标改为 0.1.2-alpha.1 + fork tarball；本仓库 `package.json` 已完成版本声明，剩余 0.1.2 类型面/实机核验在 P0 完成（fork 构建脚本也已按 0.1.2 根聚合构建方式更新）。
 
 ## 下一阶段
 

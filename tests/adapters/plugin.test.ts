@@ -43,10 +43,13 @@ function decisionFor(request: ReturnType<typeof parseApprovalReviewRequest>) {
 interface InstallHarness {
   ctx: {
     managedAgents: { registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration }
+    approval: { registerMachinePolicy(policy: unknown): () => void }
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
   }
   registered: ManagedAgentProvider | undefined
+  machinePolicy: unknown | undefined
+  disposeMachinePolicy: ReturnType<typeof vi.fn>
   composition: { suppressions: number; restrictions: number; approvalNever: number; sandboxReadOnly: number; resultObservers: number }
   childTool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> } | undefined
   resultObserver: ((exec: unknown, result: unknown) => unknown) | undefined
@@ -72,7 +75,9 @@ function harness(): InstallHarness {
     resultObservers: 0,
   }
   const disposeRegistration = vi.fn(async () => {})
+  const disposeMachinePolicy = vi.fn(() => {})
   let registered: ManagedAgentProvider | undefined
+  let machinePolicy: unknown | undefined
   let childTool: InstallHarness['childTool']
   let resultObserver: InstallHarness['resultObserver']
   const child: { id: string; session: { id: string; append: (type: string, data: unknown) => void } } = {
@@ -154,6 +159,12 @@ function harness(): InstallHarness {
         }
       },
     },
+    approval: {
+      registerMachinePolicy(policy: unknown): () => void {
+        machinePolicy = policy
+        return disposeMachinePolicy
+      },
+    },
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
@@ -165,6 +176,8 @@ function harness(): InstallHarness {
   return {
     ctx: ctx as unknown as InstallHarness['ctx'],
     get registered() { return registered },
+    get machinePolicy() { return machinePolicy },
+    disposeMachinePolicy,
     composition,
     get childTool() { return childTool },
     get resultObserver() { return resultObserver },
@@ -216,6 +229,32 @@ describe('installApproveForMe composition root', () => {
 
     await plugin.dispose()
     expect(h.disposeRegistration).toHaveBeenCalledOnce()
+  })
+
+  it('registers the machine-policy adapter, resolves captured hashes, and disposes it exactly once', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
+
+    const policy = h.machinePolicy as { decide(request: { agent: { id: string }; toolName: string; callId?: string; requestId?: string }): Promise<string> }
+    const parent = { id: 'parent-1', session: { id: 'parent-1' } }
+    await h.listeners.preExecute!({
+      agent: parent,
+      callId: 'call-1',
+      name: 'bash',
+      arguments: { command: 'pwd' },
+    }, async () => ({ kind: 'ask' }))
+    // The transitional gate declines so the existing waterfall answerer still
+    // owns authorization until P2.
+    await expect(policy.decide({
+      agent: parent,
+      toolName: 'bash',
+      callId: 'call-1',
+      requestId: 'ask-1',
+    })).resolves.toBe('delegate')
+
+    await plugin.dispose()
+    expect(h.disposeMachinePolicy).toHaveBeenCalledOnce()
   })
 
   it('delegates to the downstream answerer in auto-then-user mode when capture is missing', async () => {

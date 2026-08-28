@@ -10,8 +10,12 @@ import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { createApprovalAnswerer } from './dsh/approval-answerer.js'
+import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
+import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
+import { createDelegatingGate } from './application/delegating-gate.js'
 import { createReviewerProvider } from './reviewer/provider.js'
+import { hashAction } from './domain/protocol.js'
 import type { RequestedPermission } from './domain/protocol.js'
 
 export interface ApproveForMePlugin {
@@ -63,6 +67,25 @@ export function installApproveForMe(
   })
   const answerer = createApprovalAnswerer({ coordinator, captures, mode: normalized.mode })
 
+  const machinePolicy = createMachinePolicyAdapter({
+    gate: createDelegatingGate(),
+    mode: normalized.mode,
+    resolveActionHash: ({ agent, callId, toolName }) => {
+      if (callId === undefined) {
+        throw new Error('cannot resolve action hash for an approval ask without a tool call id')
+      }
+      const captured = captures.lookup(agent, callId, toolName)
+      if (captured === undefined) {
+        throw new Error(`cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
+      }
+      return hashAction(captured)
+    },
+  })
+  const approvalService = ctx as unknown as {
+    approval?: { registerMachinePolicy?: (policy: PatchedMachineApprovalPolicyLike) => () => void }
+  }
+  const stopMachinePolicy = approvalService.approval?.registerMachinePolicy?.(machinePolicy)
+
   const stopPreExecute = ctx.on('tools/pre-execute', bridge.preExecute, { prepend: true })
   const stopResult = ctx.on('tools/result', bridge.observeResult)
   const stopAnswerer = ctx.on('approval/request', answerer, { prepend: true })
@@ -70,6 +93,7 @@ export function installApproveForMe(
   return {
     config: normalized,
     async dispose(): Promise<void> {
+      stopMachinePolicy?.()
       stopAnswerer()
       stopResult()
       stopPreExecute()
