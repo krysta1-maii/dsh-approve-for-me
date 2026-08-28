@@ -5,6 +5,14 @@ import type {
   ReviewerConfiguration,
   ReviewerProviderDataV1,
 } from './domain/protocol.js'
+import type {
+  TrustEnvelopeConfigV1,
+  TrustEnvelopeToolFamily,
+} from './approval-gate/trust-envelope.js'
+
+const TRUST_ENVELOPE_TOOLS: readonly TrustEnvelopeToolFamily[] = [
+  'bash', 'filesystem', 'patch', 'network', 'process', 'mcp', 'other',
+]
 
 /** Stable Cordis plugin identity. */
 export const name = 'dsh-approve-for-me'
@@ -23,6 +31,8 @@ export const inject = ['managedAgents', 'tools', 'systemPrompt', 'approval'] as 
 export interface Config {
   readonly mode?: 'auto' | 'auto-then-user'
   readonly timeoutMs?: number
+  readonly maxReviewsPerChild?: number
+  readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly reviewer: {
     readonly generation: string
     readonly provider: string
@@ -36,6 +46,10 @@ export interface Config {
 export const Config: z<Config> = z.object({
   mode: z.union(['auto', 'auto-then-user'] as const).default('auto'),
   timeoutMs: z.number().default(30_000),
+  maxReviewsPerChild: z.number().min(1),
+  // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
+  // keep the loader schema permissive so YAML partials remain expressible.
+  trustEnvelope: z.any(),
   reviewer: z.object({
     generation: z.string().min(1).required(),
     provider: z.string().min(1).required(),
@@ -51,7 +65,49 @@ export const Config: z<Config> = z.object({
 export interface NormalizedConfig {
   readonly mode: ReviewMode
   readonly timeoutMs: number
+  readonly maxReviewsPerChild: number
+  readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly preset: ReviewerProviderDataV1
+}
+
+const DEFAULT_MAX_REVIEWS_PER_CHILD = 64
+
+const DEFAULT_TRUST_ENVELOPE: Readonly<TrustEnvelopeConfigV1> = Object.freeze({
+  version: 1,
+  enabled: false,
+  tools: Object.freeze([]),
+  maxRequestedMode: 'read-only',
+  workspaceOnly: true,
+  requireJustification: false,
+  requireStrictWidening: false,
+})
+
+function normalizeTrustEnvelope(input?: Partial<TrustEnvelopeConfigV1>): TrustEnvelopeConfigV1 {
+  const enabled = input?.enabled ?? DEFAULT_TRUST_ENVELOPE.enabled
+  const tools = input?.tools ?? DEFAULT_TRUST_ENVELOPE.tools
+  const maxRequestedMode = input?.maxRequestedMode ?? DEFAULT_TRUST_ENVELOPE.maxRequestedMode
+  const workspaceOnly = input?.workspaceOnly ?? DEFAULT_TRUST_ENVELOPE.workspaceOnly
+  const requireJustification = input?.requireJustification ?? DEFAULT_TRUST_ENVELOPE.requireJustification
+  const requireStrictWidening = input?.requireStrictWidening ?? DEFAULT_TRUST_ENVELOPE.requireStrictWidening
+  if (typeof enabled !== 'boolean') throw new TypeError('trustEnvelope.enabled must be a boolean')
+  if (typeof workspaceOnly !== 'boolean') throw new TypeError('trustEnvelope.workspaceOnly must be a boolean')
+  if (typeof requireJustification !== 'boolean') throw new TypeError('trustEnvelope.requireJustification must be a boolean')
+  if (typeof requireStrictWidening !== 'boolean') throw new TypeError('trustEnvelope.requireStrictWidening must be a boolean')
+  if (maxRequestedMode !== 'read-only' && maxRequestedMode !== 'workspace-write') {
+    throw new TypeError('trustEnvelope.maxRequestedMode must be "read-only" or "workspace-write"')
+  }
+  if (!Array.isArray(tools) || tools.some(tool => !TRUST_ENVELOPE_TOOLS.includes(tool))) {
+    throw new TypeError('trustEnvelope.tools contains an unknown tool family')
+  }
+  return Object.freeze({
+    version: 1,
+    enabled,
+    tools: Object.freeze([...tools]),
+    maxRequestedMode,
+    workspaceOnly,
+    requireJustification,
+    requireStrictWidening,
+  })
 }
 
 /** Validate and normalize loader config before any provider registration. */
@@ -63,6 +119,10 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   const timeoutMs = config.timeoutMs ?? 30_000
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new TypeError('timeoutMs must be a positive safe integer')
+  }
+  const maxReviewsPerChild = config.maxReviewsPerChild ?? DEFAULT_MAX_REVIEWS_PER_CHILD
+  if (!Number.isSafeInteger(maxReviewsPerChild) || maxReviewsPerChild < 1) {
+    throw new TypeError('maxReviewsPerChild must be a positive safe integer')
   }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
@@ -79,6 +139,8 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   return Object.freeze({
     mode,
     timeoutMs,
+    maxReviewsPerChild,
+    trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     preset: createReviewerProviderData(reviewerConfig),
   })
 }
