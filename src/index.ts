@@ -39,11 +39,17 @@ export type {
   ReviewerRecoveryRecordV1,
   SessionLifecycleIdentityV1,
 } from './domain/records.js'
-export { assertDossierShape, recomputeDossierHash } from './domain/dossier.js'
+export {
+  assertDossierShape,
+  recomputeDossierHash,
+  validateDelegationToolCatalog,
+  validateToolTrajectorySection,
+} from './domain/dossier.js'
 export type {
   ApprovalReviewPacketCodecV1,
   CodeDispatchRequestRefV1,
   ConfinementProjectionV1,
+  DelegationCatalogValidationV1,
   DelegationToolClassificationCatalogV1,
   DelegationToolDescriptorV1,
   DossierFreezeV1,

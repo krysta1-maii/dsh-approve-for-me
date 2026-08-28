@@ -253,3 +253,52 @@ export interface DelegationToolClassificationCatalogV1 {
   readonly fingerprint: string
   readonly descriptors: readonly DelegationToolDescriptorV1[]
 }
+
+export type DelegationCatalogValidationV1 =
+  | { readonly kind: 'ok' }
+  | { readonly kind: 'invalid'; readonly reason: string }
+
+export function validateDelegationToolCatalog(
+  catalog: DelegationToolClassificationCatalogV1,
+  effectiveTools: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string }[],
+): DelegationCatalogValidationV1 {
+  if (catalog.version !== 1) return { kind: 'invalid', reason: 'catalog.version must be 1' }
+  if (catalog.eventProjectionPolicyId !== 'dsh-session-facts-v1') {
+    return { kind: 'invalid', reason: 'catalog.eventProjectionPolicyId must be dsh-session-facts-v1' }
+  }
+  const known = new Map<string, string>()
+  for (const descriptor of catalog.descriptors) {
+    if (known.has(descriptor.toolName)) return { kind: 'invalid', reason: `duplicate descriptor for ${descriptor.toolName}` }
+    known.set(descriptor.toolName, descriptor.toolSchemaFingerprint)
+  }
+  const covered = new Set<string>()
+  for (const tool of effectiveTools) {
+    const fingerprint = known.get(tool.toolName)
+    if (fingerprint === undefined) return { kind: 'invalid', reason: `missing descriptor for ${tool.toolName}` }
+    if (fingerprint !== tool.toolSchemaFingerprint) {
+      return { kind: 'invalid', reason: `schema fingerprint mismatch for ${tool.toolName}` }
+    }
+    covered.add(tool.toolName)
+  }
+  for (const descriptor of catalog.descriptors) {
+    if (!covered.has(descriptor.toolName)) {
+      return { kind: 'invalid', reason: `extra descriptor for ${descriptor.toolName}` }
+    }
+  }
+  return { kind: 'ok' }
+}
+
+export function validateToolTrajectorySection(section: ToolTrajectorySectionV1): DelegationCatalogValidationV1 {
+  if (!Number.isSafeInteger(section.turn) || section.turn < 0) return { kind: 'invalid', reason: 'section.turn must be a non-negative safe integer' }
+  if (section.excludedPendingRequest.callId.length === 0 || section.excludedPendingRequest.requestEventSeq < 0) {
+    return { kind: 'invalid', reason: 'excludedPendingRequest must be a non-empty callId with non-negative seq' }
+  }
+  const seen = new Set<string>()
+  for (const attempt of section.attempts) {
+    const callId = attempt.request.callId
+    if (callId.length === 0) return { kind: 'invalid', reason: 'attempt callId must be non-empty' }
+    if (seen.has(callId)) return { kind: 'invalid', reason: `duplicate attempt callId ${callId}` }
+    seen.add(callId)
+  }
+  return { kind: 'ok' }
+}
