@@ -66,9 +66,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/domain/dossier.ts` | `GuardianDossierV1` 顶层结构、`DossierFreezeV1`、`EventRefV1`、`SourceVerifiedDossierV1` module-private brand、`assertDossierShape()`（内部一致性一级）与 `recomputeDossierHash()`；并增加 `InstructionSectionV1`、`ToolTrajectorySectionV1`、`PendingApprovalSectionV1`、`DelegationToolClassificationCatalogV1`；实现 `validateDelegationToolCatalog()`（闭集/指纹/重复）与 `validateToolTrajectorySection()`（callId 唯一、excluded key） |
+| `src/domain/dossier.ts` | `GuardianDossierV1` 顶层结构、`DossierFreezeV1`、`EventRefV1`、`SourceVerifiedDossierV1` module-private brand、`assertDossierShape()`（内部一致性一级）与 `recomputeDossierHash()`；并增加 `InstructionSectionV1`、`ToolTrajectorySectionV1`、`PendingApprovalSectionV1`、`DelegationToolClassificationCatalogV1`、`ParentSessionFactSnapshotV1`、`PrincipalDelegationProjector`、`GuardianDossierCompiler` 等编译端口；实现 `validateDelegationToolCatalog()` 与 `validateToolTrajectorySection()` |
 
-当前已有顶层/主要 section 类型与闭集/轨迹校验；source-backed compiler、delegation 双射验证、完整 interaction/delegation entries 尚未实现。
+当前已有顶层/主要 section 类型、闭集/轨迹校验与 D1 编译端口契约；尚缺真实 source-backed compiler 实现与 delegation 双射验证。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 

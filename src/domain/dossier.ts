@@ -302,3 +302,159 @@ export function validateToolTrajectorySection(section: ToolTrajectorySectionV1):
   }
   return { kind: 'ok' }
 }
+
+export interface PrincipalSessionIdentityV1 extends SessionLifecycleIdentityV1 {
+  readonly parentSessionId?: string
+  readonly headerDelegationDepth?: number
+  readonly runtimeSubagentDepth?: number
+  readonly effectiveDelegationDepth: number
+}
+
+export interface SessionFactEventEnvelopeV1 {
+  readonly seq: number
+  readonly time: number
+  readonly type: string
+  readonly ignorable?: true
+  readonly sourceEventSeqs?: readonly number[]
+  readonly surfaceOp?: JsonValue
+  readonly surfaceState?: 'visible' | 'superseded'
+}
+
+export type SessionFactEventV1 =
+  | (SessionFactEventEnvelopeV1 & {
+      readonly retention: 'included'
+      readonly data: JsonValue
+    })
+  | (SessionFactEventEnvelopeV1 & {
+      readonly retention: 'excluded-content'
+      readonly exclusion:
+        | 'child-origin-message'
+        | 'tool-result-content'
+        | 'delegation-result-content'
+        | 'job-output-content'
+      readonly source?: {
+        readonly kind: string
+        readonly form?: string
+        readonly senderSessionId?: string
+      }
+      readonly originalBytes?: number
+    })
+
+export type PrincipalDelegationReceiptV1 =
+  | { readonly kind: 'continuable-child-started'; readonly childSessionId: string; readonly directParentSessionId: string }
+  | { readonly kind: 'foreground-run-settled'; readonly runId: string }
+  | { readonly kind: 'background-job-started'; readonly jobId: string }
+  | { readonly kind: 'followup-delivered'; readonly messageId: string }
+  | { readonly kind: 'interrupt-accepted' }
+
+export type PrincipalDelegationOperationV1 = 'start' | 'followup' | 'orchestrate' | 'interrupt' | 'extension'
+
+export interface PrincipalDelegationEntryV1 {
+  readonly projectorId: string
+  readonly order: readonly [number, number, number]
+  readonly attempt: ToolAttemptV1
+  readonly operation: PrincipalDelegationOperationV1
+  readonly receipt?: PrincipalDelegationReceiptV1
+}
+
+export interface DelegationReceiptFactRecordV1 {
+  readonly session: SessionLifecycleIdentityV1
+  readonly requestEventSeq: number
+  readonly resultEvent: EventRefV1
+  readonly callId: string
+  readonly classificationCatalogFingerprint: string
+  readonly projectorId: string
+  readonly receipt: PrincipalDelegationReceiptV1
+}
+
+export interface ToolExecutionFactRecordV1 {
+  readonly version: 1
+  readonly session: SessionLifecycleIdentityV1
+  readonly request: {
+    readonly kind: 'model-tool-call' | 'code-dispatch'
+    readonly eventSeq: number
+    readonly eventType: 'tool/call' | 'tool/code-dispatch-start'
+    readonly callId: string
+    readonly toolName: string
+    readonly parentCallId?: string
+  }
+  readonly toolClassification: {
+    readonly classificationCatalogFingerprint: string
+    readonly descriptor: DelegationToolDescriptorV1
+  }
+  readonly projection: {
+    readonly projectorId: string
+    readonly action: ActionSnapshot
+    readonly actionHash: string
+    readonly observedAt: number
+  }
+  readonly result?: {
+    readonly eventSeq: number
+    readonly eventType: 'tool/result' | 'tool/code-dispatch'
+  }
+  readonly delegationReceipt?: DelegationReceiptFactRecordV1
+}
+
+export interface ApprovalSnapshotRecordV1 {
+  readonly version: 1
+  readonly session: SessionLifecycleIdentityV1
+  readonly approvalRequestId: string
+  readonly approvalAskedSeq: number
+  readonly environment: JsonValue
+}
+
+export interface ParentSessionFactSnapshotV1 {
+  readonly version: 1
+  readonly session: PrincipalSessionIdentityV1
+  readonly eventProjection: {
+    readonly policyId: 'dsh-session-facts-v1'
+    readonly classificationCatalog: DelegationToolClassificationCatalogV1
+  }
+  readonly approvalBinding: {
+    readonly event: EventRefV1
+    readonly approvalRequestId: string
+    readonly callId: string
+    readonly toolName: string
+    readonly reason?: string
+  }
+  readonly throughSeq: number
+  readonly events: readonly SessionFactEventV1[]
+  readonly delegationReceipts: readonly DelegationReceiptFactRecordV1[]
+  readonly executionFacts: readonly ToolExecutionFactRecordV1[]
+  readonly approvalSnapshots: readonly ApprovalSnapshotRecordV1[]
+}
+
+export interface PrincipalDelegationProjector {
+  readonly catalog: DelegationToolClassificationCatalogV1
+  project(input: {
+    readonly principalSessionId: string
+    readonly attempt: ToolAttemptV1
+    readonly descriptor: Extract<DelegationToolDescriptorV1, { readonly classification: 'delegation' }>
+    readonly receipt?: DelegationReceiptFactRecordV1
+  }): { kind: 'delegation'; readonly entry: PrincipalDelegationEntryV1 }
+    | { kind: 'invalid'; readonly reason: string }
+}
+
+export interface DossierMetricsV1 {
+  readonly eventCount: number
+  readonly includedEventCount: number
+  readonly excludedEventCount: number
+  readonly delegationEntryCount: number
+  readonly attemptCount: number
+  readonly totalBytes: number
+}
+
+export type DossierCompilationResultV1 =
+  | { readonly kind: 'ready'; readonly verified: SourceVerifiedDossierV1; readonly metrics: DossierMetricsV1 }
+  | { readonly kind: 'incomplete'; readonly reason: string }
+
+export interface GuardianDossierCompilerDependencies {
+  readonly delegationProjector: PrincipalDelegationProjector
+}
+
+export interface GuardianDossierCompiler {
+  compile(input: {
+    readonly facts: ParentSessionFactSnapshotV1
+    readonly signal?: AbortSignal
+  }): DossierCompilationResultV1
+}
