@@ -127,6 +127,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const invalidParentIdentity = {
+      ...complete,
+      session: { ...complete.session, createdAt: 1.5 },
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: invalidParentIdentity as ParentSessionFactSnapshotV1 }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-parent-session-identity' })
     const regressiveEventTime = {
       ...complete,
       events: complete.events.map(event => event.seq === 7 ? { ...event, time: 0 } : event),

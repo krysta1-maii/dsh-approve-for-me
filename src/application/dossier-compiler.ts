@@ -32,6 +32,15 @@ function canonicalSize(value: unknown): { readonly bytes: number; readonly chara
   return Object.freeze({ bytes: new TextEncoder().encode(json).byteLength, characters: json.length })
 }
 
+function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']): boolean {
+  return typeof session.sessionId === 'string' && session.sessionId.length > 0
+    && Number.isSafeInteger(session.sessionFormatVersion) && session.sessionFormatVersion >= 0
+    && Number.isSafeInteger(session.createdAt) && session.createdAt >= 0
+    && (session.cwd === undefined || (typeof session.cwd === 'string' && session.cwd.length > 0))
+    && Number.isSafeInteger(session.effectiveDelegationDepth) && session.effectiveDelegationDepth >= 0
+    && (session.parentSessionId === undefined || (typeof session.parentSessionId === 'string' && session.parentSessionId.length > 0))
+}
+
 function directUserMessage(event: SessionFactEventV1, turn: number | undefined): DirectUserMessageV1 | undefined {
   if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
   const data = record(event.data)
@@ -212,6 +221,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (facts.version !== 1 || facts.eventProjection.policyId !== 'dsh-session-facts-v1'
       || canonicalJson(facts.eventProjection.classificationCatalog) !== canonicalJson(this.deps.delegationProjector.catalog)) {
       return { kind: 'incomplete', reason: 'event-projection-policy-mismatch' }
+    }
+    if (!validPrincipalSession(facts.session)) {
+      return { kind: 'incomplete', reason: 'invalid-parent-session-identity' }
     }
     if (facts.session.effectiveDelegationDepth !== 0 || facts.session.parentSessionId !== undefined) {
       return { kind: 'incomplete', reason: 'unsupported-delegated-requester' }
