@@ -1,0 +1,51 @@
+name: Phase 0 target-host fork
+
+on:
+  pull_request:
+    paths:
+      - 'patch/dsh-user-approval/**'
+      - '.github/workflows/phase0-target-host.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'patch/dsh-user-approval/**'
+      - '.github/workflows/phase0-target-host.yml'
+
+jobs:
+  build-and-verify-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out approve-for-me
+        uses: actions/checkout@v4
+        with:
+          path: dsh-approve-for-me
+      - name: Check out pinned DeepSeek Harness
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
+          path: deepseek-harness
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: deepseek-harness/pnpm-lock.yaml
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Install target host dependencies
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+      - name: Build and test patched fork
+        working-directory: dsh-approve-for-me
+        run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" npm run build:approval-fork
+      - name: Verify target host and artifact
+        working-directory: dsh-approve-for-me
+        run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" node patch/dsh-user-approval/scripts/verify-target-host.mjs "$GITHUB_WORKSPACE/deepseek-harness" .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz patch/dsh-user-approval/upstream.json
+      - name: Upload verified fork
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-user-approval-afm-0.1.2-alpha.1
+          path: |
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz.sha256

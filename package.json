@@ -34,6 +34,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run build",
+    "build:approval-fork": "patch/dsh-user-approval/scripts/build-fork.sh",
+    "verify:approval-fork": "node patch/dsh-user-approval/scripts/verify-fork.mjs .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz patch/dsh-user-approval/upstream.json",
+    "verify:target-host": "node patch/dsh-user-approval/scripts/verify-target-host.mjs ../deepseek-harness .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz patch/dsh-user-approval/upstream.json",
     "prepack": "npm run build"
   },
   "peerDependencies": {

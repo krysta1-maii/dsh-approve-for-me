@@ -41,9 +41,9 @@ if [[ ! -d "${UPSTREAM_REPO}/.git" ]]; then
 fi
 
 ACTUAL_COMMIT="$(git -C "${UPSTREAM_REPO}" rev-parse HEAD)"
-# upstream.json stores a shortened commit; accept either an exact full SHA or
-# the same shortened prefix.
-if [[ "${ACTUAL_COMMIT}" != "${UPSTREAM_COMMIT}" && "${ACTUAL_COMMIT:0:${#UPSTREAM_COMMIT}}" != "${UPSTREAM_COMMIT}" ]]; then
+# The patch is tied to one immutable upstream commit. A shortened SHA would
+# accept a collision and undermine reproducible fork builds.
+if [[ "${ACTUAL_COMMIT}" != "${UPSTREAM_COMMIT}" ]]; then
   echo "error: upstream HEAD is ${ACTUAL_COMMIT}, expected ${UPSTREAM_COMMIT}" >&2
   exit 2
 fi
@@ -93,6 +93,12 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> marking package.json in worktree"
   node "${PATCH_DIR}/scripts/mark-package.mjs" "${PKG_DIR}/package.json" "${UPSTREAM_JSON}"
 
+  echo "==> testing patched source overlay"
+  (
+    cd "${WORKTREE_DIR}"
+    pnpm exec vitest run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
+  )
+
   echo "==> rebuilding patched package lib/ from sources"
   (
     cd "${WORKTREE_DIR}"
@@ -115,25 +121,15 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> copying built package out of the worktree"
   cp -R "${PKG_DIR}/." "${BUILD_DIR}/"
 else
-  echo "warning: SKIP_BUILD=1 — lib/ reused from the upstream checkout, which may not include the patch"
-  cp -R "${UPSTREAM_REPO}/${PKG_PATH}/." "${BUILD_DIR}/"
-  cp "${PATCH_DIR}/overlay/src/index.ts" "${BUILD_DIR}/src/index.ts"
-  cp "${PATCH_DIR}/overlay/src/types.ts" "${BUILD_DIR}/src/types.ts"
-  cp "${PATCH_DIR}/overlay/src/invariant.ts" "${BUILD_DIR}/src/invariant.ts"
-  mkdir -p "${BUILD_DIR}/tests"
-  cp "${PATCH_DIR}/overlay/tests/approval-machine-policy.spec.ts" "${BUILD_DIR}/tests/approval-machine-policy.spec.ts"
-  node "${PATCH_DIR}/scripts/mark-package.mjs" "${BUILD_DIR}/package.json" "${UPSTREAM_JSON}"
+  echo "error: SKIP_BUILD=1 cannot produce a verifiable fork; build patched sources instead" >&2
+  exit 2
 fi
 
 echo "==> packing"
 # pnpm rewrites `workspace:^` ranges only when packing from inside the
-# workspace that installed those dependencies; pack from the upstream worktree
-# package dir after a real build, or from the already-built copied dir when
-# SKIP_BUILD reuses an upstream checkout.
-PACK_SOURCE="${BUILD_DIR}"
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  PACK_SOURCE="${WORKTREE_DIR}/${PKG_PATH}"
-fi
+# workspace that installed those dependencies; always pack from the verified
+# patched worktree package. SKIP_BUILD is intentionally rejected above.
+PACK_SOURCE="${WORKTREE_DIR}/${PKG_PATH}"
 (
   cd "${PACK_SOURCE}"
   pnpm pack --pack-destination "${BUILD_ROOT}"
@@ -145,4 +141,5 @@ mv "${NPM_TARBALL}" "${BUILD_ROOT}/${TARBALL}"
 echo "==> verifying"
 node "${PATCH_DIR}/scripts/verify-fork.mjs" "${BUILD_ROOT}/${TARBALL}" "${UPSTREAM_JSON}"
 
+sha256sum "${BUILD_ROOT}/${TARBALL}" | tee "${BUILD_ROOT}/${TARBALL}.sha256"
 echo "==> done: ${BUILD_ROOT}/${TARBALL}"

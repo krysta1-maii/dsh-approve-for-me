@@ -56,9 +56,11 @@ stock DSH 0.1.2-alpha.1（不修改）
 ### P0：0.1.2 基线迁移
 
 - 本体与 `dsh-managed-agent` 的 peer deps/类型面迁到 0.1.2-alpha.1（`CallId→ToolCallId`、`tools/ptc-dispatch-log`、scoped `this` 等）；
-- 在 patched fork 上运行 `approval-machine-policy.spec.ts`。
+- `upstream.json` 固定完整 40 位 SHA；fork 构建拒绝短 SHA 和 `SKIP_BUILD=1`，并在打包前运行 `approval-machine-policy.spec.ts`；
+- `verify-target-host.mjs` 校验目标 host 的版本、精确 commit/tag、fork marker/API 与 SHA-256；
+- CI 从 `deepseek-harness@cd5ef8148158c3a752a658978873241fdf8e2bbc` 构建、校验并上传 tarball 和 checksum。根目录的 rc.2 lockfile 绿测仅是遗留回归基线，不能替代该 lane。
 
-退出条件：两仓库在 0.1.2 上 typecheck/tests 全绿；patch 的 CI 版本门禁生效。
+退出条件：两仓库在 0.1.2 上 typecheck/tests 全绿；patch 的 CI 版本门禁生效；目标 Profile 的已安装包也通过 marker 校验。
 
 ### P1：机器决策槽接入
 

@@ -30,27 +30,32 @@ overlay/tests/approval-machine-policy.spec.ts
 scripts/build-fork.sh                # 生成 fork tarball
 scripts/mark-package.mjs             # 写入 dshApprovalPatch 标记
 scripts/verify-fork.mjs              # 校验 tarball 的 name/version/标记/已编译 API
+scripts/verify-target-host.mjs        # 校验目标 DSH commit/tag、tarball 和可选 Profile 安装位置
 ```
 
 ## 构建
 
-前置条件：sibling 目录有 `deepseek-harness` 且 HEAD 等于 `upstream.json` 的 commit；可用 `pnpm`。
+前置条件：sibling 目录有 `deepseek-harness`，其 HEAD **精确等于** `upstream.json` 中完整 40 位 commit；可用 `pnpm`。构建脚本拒绝短 SHA、tag 漂移或任意其他提交。
 
 ```bash
 patch/dsh-user-approval/scripts/build-fork.sh
 # 产物：.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
 ```
 
-脚本在临时 worktree 中覆盖源码、重建 `lib/`、打标记并校验，不污染上游 checkout。
+脚本在临时 worktree 中覆盖源码、运行 overlay 测试、重建 `lib/`、打标记、校验并输出 `.sha256`，不污染上游 checkout。`SKIP_BUILD=1` 被明确拒绝，因为它不能证明编译产物包含 patch。
 
 ## 安装与校验
 
 ```bash
-# 用 fork tarball 覆盖 profile 依赖中的官方包（由安装器执行）
-npm install -D --force .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
-node patch/dsh-user-approval/scripts/verify-fork.mjs \
-  .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz \
-  patch/dsh-user-approval/upstream.json
+# 先在本仓库验证构建产物
+npm run build:approval-fork
+npm run verify:approval-fork
+
+# 再由目标 Profile 安装器把同一 tarball 替换到
+# @deepseek-ai/dsh-user-approval；安装后必须重新读取安装位置的
+# package.json 并校验 dshApprovalPatch marker、patchVersion、完整 upstreamCommit。
+# 不要把本仓库的 node_modules、全局 0.1.1-rc.2 CLI 或另起的 Web server
+# 当成目标 Profile 验收。
 ```
 
 ## 上游跟进
