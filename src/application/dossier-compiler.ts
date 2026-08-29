@@ -1,4 +1,4 @@
-import { canonicalJson } from '../domain/json.js'
+import { canonicalJson, parseUniqueJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type {
   DirectUserMessageV1,
@@ -49,7 +49,7 @@ function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']):
 function actionArgumentsMatchCall(actionArguments: JsonValue, rawArguments: unknown): boolean {
   if (typeof rawArguments !== 'string') return false
   try {
-    return canonicalJson(JSON.parse(rawArguments) as JsonValue) === canonicalJson(actionArguments)
+    return canonicalJson(parseUniqueJson(rawArguments)) === canonicalJson(actionArguments)
   } catch {
     return false
   }

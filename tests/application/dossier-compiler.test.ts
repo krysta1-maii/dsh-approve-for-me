@@ -136,6 +136,16 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: schemaDriftInHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-effective-tool-binding' })
+    const duplicateArgumentKey = {
+      ...complete,
+      events: complete.events.map(event => {
+        if (event.seq === 6) return { ...event, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{\"command\":\"pwd\",\"command\":\"pwd\"}' }] } } }
+        if (event.seq === 7) return { ...event, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{\"command\":\"pwd\",\"command\":\"pwd\"}' } }
+        return event
+      }),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: duplicateArgumentKey }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
     const historicalSchemaDrift = {
       ...complete,
       approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked' as const, turn: 1, step: 0 } },
