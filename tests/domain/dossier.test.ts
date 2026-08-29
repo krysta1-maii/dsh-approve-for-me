@@ -50,6 +50,14 @@ describe('Guardian dossier shape', () => {
       ...dossier(),
       freeze: { ...dossier().freeze, parent: { ...dossier().freeze.parent, cwd: '' } },
     })).toThrow(/cwd/)
+    expect(() => assertDossierShape({
+      ...dossier(),
+      freeze: { ...dossier().freeze, parent: { ...dossier().freeze.parent, sessionFormatVersion: -1 } },
+    })).toThrow(/parent/)
+    expect(() => assertDossierShape({
+      ...dossier(),
+      freeze: { ...dossier().freeze, parent: { ...dossier().freeze.parent, createdAt: 1.5 } },
+    })).toThrow(/parent/)
   })
 
   it('rejects sections that are not canonical JSON', () => {

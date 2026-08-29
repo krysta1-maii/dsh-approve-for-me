@@ -76,7 +76,9 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
     throw new TypeError('dossier.freeze.parent must be an object')
   }
   const parent = freeze.parent as Record<string, unknown>
-  if (typeof parent.sessionId !== 'string' || typeof parent.sessionFormatVersion !== 'number' || typeof parent.createdAt !== 'number'
+  if (typeof parent.sessionId !== 'string' || parent.sessionId.length === 0
+    || !Number.isSafeInteger(parent.sessionFormatVersion) || (parent.sessionFormatVersion as number) < 0
+    || !Number.isSafeInteger(parent.createdAt) || (parent.createdAt as number) < 0
     || (parent.cwd !== undefined && (typeof parent.cwd !== 'string' || parent.cwd.length === 0))) {
     throw new TypeError('dossier.freeze.parent must carry valid sessionId/sessionFormatVersion/createdAt/cwd')
   }
