@@ -190,7 +190,7 @@ export class DefaultGatePipeline implements GatePipeline {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
         const now = this.deps.now?.() ?? Date.now()
-        if (!replay.disposition.replayable || replay.disposition.deadlineAt < now) return 'unavailable'
+        if (!replay.disposition.replayable || replay.disposition.deadlineAt <= now) return 'unavailable'
         // A sealed outcome is a single-use replay for an ask identity. Consuming
         // here closes the infinite-replay hole; if another path raced us, the
         // registry reports consumed and the gate fails closed.
@@ -212,6 +212,7 @@ export class DefaultGatePipeline implements GatePipeline {
       configurationFingerprint: facts.configurationFingerprint,
     })
     if (request.signal?.aborted) return 'cancelled'
+    if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
     const mapped = this.mapDisposition(sealed.disposition)
     const record = recordFor(request, facts, sealed.disposition, sealed.reviewRunId)
 

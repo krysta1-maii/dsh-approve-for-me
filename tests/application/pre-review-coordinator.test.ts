@@ -46,7 +46,7 @@ function input(overrides: Partial<Parameters<DefaultPreReviewCoordinator<{ id: s
     generation: 'generation-1',
     configurationFingerprint: `sha256:${'b'.repeat(64)}`,
     issuedAt: 100,
-    deadlineAt: 200,
+    deadlineAt: Number.MAX_SAFE_INTEGER,
     ...overrides,
   }
 }
@@ -93,6 +93,25 @@ describe('DefaultPreReviewCoordinator', () => {
       name: 'GateFailure',
       code: 'integrity',
     })
+    expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) }).kind).toBe('missing')
+  })
+
+  it('rejects an expired pre-review before calling Guardian', async () => {
+    const seals = new InMemorySealedDispositionRegistry()
+    const reviewer = reviewReturning(decision())
+    const review = (reviewer as unknown as { review: ReturnType<typeof vi.fn> }).review
+    const coordinator = new DefaultPreReviewCoordinator(reviewer, seals, () => 200)
+    await expect(coordinator.preReview(input({ deadlineAt: 200 }))).rejects.toMatchObject({ code: 'deadline' })
+    expect(review).not.toHaveBeenCalled()
+    expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) }).kind).toBe('missing')
+  })
+
+  it('rejects a Guardian decision that arrives after the absolute deadline', async () => {
+    let now = 150
+    const reviewer = { review: vi.fn(async () => { now = 201; return decision() }) } as unknown as ReviewCoordinator<{ id: string }, string>
+    const seals = new InMemorySealedDispositionRegistry()
+    const coordinator = new DefaultPreReviewCoordinator(reviewer, seals, () => now)
+    await expect(coordinator.preReview(input({ deadlineAt: 200 }))).rejects.toMatchObject({ code: 'deadline' })
     expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) }).kind).toBe('missing')
   })
 

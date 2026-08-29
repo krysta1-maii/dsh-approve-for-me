@@ -196,6 +196,14 @@ describe('DefaultGatePipeline', () => {
     expect(preReview.preReview).not.toHaveBeenCalled()
   })
 
+  it('does not confirm or cache an expired initial Guardian disposition', async () => {
+    const preReview = { preReview: vi.fn(async () => ({ ...sealed('allow'), deadlineAt: 200 })) }
+    const { pipeline, records, deps } = makePipeline({ preReview, now: () => 201 })
+    await expect(pipeline.decide(request())).resolves.toBe('unavailable')
+    expect(records.createConfirmed).not.toHaveBeenCalled()
+    expect(deps.allowCache.recordGuardianAllow).not.toHaveBeenCalled()
+  })
+
   it('maps Guardian allow/deny/human and records accordingly', async () => {
     const allow = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('allow')) } })
     await expect(allow.pipeline.decide(request())).resolves.toBe('allowed-once')

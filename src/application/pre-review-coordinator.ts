@@ -56,6 +56,13 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
   ) {}
 
   async preReview(input: PreReviewInput<Parent, SessionId>): Promise<SealedDispositionV1> {
+    if (!Number.isSafeInteger(input.issuedAt) || input.issuedAt < 0
+      || !Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= input.issuedAt) {
+      throw new GateFailure('integrity', 'pre-review requires a valid absolute deadline')
+    }
+    if (this.now() >= input.deadlineAt) {
+      throw new GateFailure('deadline', 'pre-review deadline expired before Guardian review')
+    }
     if (input.verifiedDossier === undefined) {
       throw new GateFailure('integrity', 'a source-verified dossier is required before Guardian review')
     }
@@ -69,6 +76,9 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     })
     if (input.signal?.aborted) {
       throw new GateFailure('abort', 'approval review completed after its lifecycle was cancelled')
+    }
+    if (this.now() >= input.deadlineAt) {
+      throw new GateFailure('deadline', 'pre-review deadline expired during Guardian review')
     }
     const actionHash = hashAction(input.action)
     if (
