@@ -106,6 +106,7 @@ export class DshExecutionFactProjectionBridge {
 
   /** Records the bounded approval audit after DSH has committed it to history. */
   observeSessionEvent(agent: Agent, event: EventLike): Promise<void> {
+    if (event.type === 'tool/result') return this.attachResult(agent, event)
     if (this.approvals === undefined || event.type !== 'approval/asked') return Promise.resolve()
     const data = event.data as Record<string, unknown>
     const requestId = string(data.id)
@@ -119,6 +120,35 @@ export class DshExecutionFactProjectionBridge {
     const write = this.writeApprovalSnapshot(lifecycle, event.seq, requestId, callId, toolName)
     this.approvalWrites.set(key, write)
     return write
+  }
+
+  /** Attaches only an unambiguous canonical native result correlation. */
+  private async attachResult(agent: Agent, event: EventLike): Promise<void> {
+    const lifecycle = this.lifecycle(agent)
+    const data = event.data as Record<string, unknown>
+    const message = data.message as { readonly content?: unknown } | undefined
+    const blocks = message?.content
+    const turn = data.turn
+    const step = data.step
+    if (lifecycle === undefined || !Array.isArray(blocks) || blocks.length !== 1
+      || !Number.isSafeInteger(turn) || (turn as number) < 0
+      || !Number.isSafeInteger(step) || (step as number) < 0) return
+    const block = blocks[0] as { readonly type?: unknown; readonly toolCallId?: unknown } | undefined
+    const callId = block?.type === 'tool-result' ? string(block.toolCallId) : undefined
+    if (callId === undefined) return
+    const session = agent.session as unknown as SessionLike
+    const candidates = (await this.repository.list(lifecycle)).filter(record => {
+      const call = session.events[record.request.eventSeq]
+      const callData = call?.data as Record<string, unknown> | undefined
+      return record.request.kind === 'model-tool-call' && record.request.callId === callId
+        && record.request.eventSeq < event.seq && call?.type === 'tool/call'
+        && callData?.turn === turn && callData?.step === step
+    })
+    if (candidates.length !== 1) return
+    await this.repository.attachResult({
+      session: lifecycle, callId, requestEventSeq: candidates[0]!.request.eventSeq,
+      result: { eventSeq: event.seq, eventType: 'tool/result' },
+    })
   }
 
   /**
