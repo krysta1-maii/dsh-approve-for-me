@@ -296,7 +296,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'invalid-request-context' }
     }
     const instructions = instructionsFrom(facts)
-    if (instructions === undefined) return { kind: 'incomplete', reason: 'invalid-instruction-evidence' }
+    if (instructions === undefined || instructions.some(instruction => instruction.event.seq >= execution.request.eventSeq)) {
+      return { kind: 'incomplete', reason: 'invalid-instruction-evidence' }
+    }
     const interaction = interactionFrom(facts)
     if (interaction === undefined || interaction.length === 0
       || interaction.some(item => item.directUserMessages.some(message => message.event.seq >= execution.request.eventSeq))) {
