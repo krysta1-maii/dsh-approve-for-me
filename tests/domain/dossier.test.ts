@@ -21,7 +21,7 @@ function dossier(): GuardianDossierV1 {
     interaction: { version: 1, userMessages: [] },
     currentTurnTools: { version: 1, attempts: [] },
     pendingApproval: { version: 1, callId: 'call-1' },
-    completeness: { ready: true, missing: [] },
+    completeness: { complete: true, sourceThroughSeq: 10, omissions: [] },
   }
 }
 
@@ -41,6 +41,10 @@ describe('Guardian dossier shape', () => {
       ...dossier(),
       freeze: { ...dossier().freeze, throughSeq: -1 },
     })).toThrow(/throughSeq/)
+    expect(() => assertDossierShape({
+      ...dossier(),
+      completeness: { complete: true, sourceThroughSeq: 9, omissions: [] },
+    })).toThrow(/completeness/)
   })
 
   it('rejects sections that are not canonical JSON', () => {

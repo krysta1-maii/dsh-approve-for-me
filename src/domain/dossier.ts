@@ -23,6 +23,12 @@ export interface DossierFreezeV1 {
  * D1 top-level dossier shape. Sections are still represented as canonical JSON
  * in this stage; the source-backed compiler will progressively subtype them.
  */
+export interface DossierCompletenessV1 {
+  readonly complete: true
+  readonly sourceThroughSeq: number
+  readonly omissions: readonly []
+}
+
 export interface GuardianDossierV1 {
   readonly version: 1
   readonly kind: 'guardian-dossier'
@@ -32,7 +38,7 @@ export interface GuardianDossierV1 {
   readonly interaction: JsonValue
   readonly currentTurnTools: JsonValue
   readonly pendingApproval: JsonValue
-  readonly completeness: JsonValue
+  readonly completeness: DossierCompletenessV1
 }
 
 const sourceVerifiedDossierV1Brand: unique symbol = Symbol('dsh-approve-for-me/source-verified-dossier-v1')
@@ -78,9 +84,20 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
       throw new TypeError(`dossier.freeze.${key} must be a non-negative safe integer`)
     }
   }
-  for (const key of ['environment', 'instructions', 'interaction', 'currentTurnTools', 'pendingApproval', 'completeness'] as const) {
+  for (const key of ['environment', 'instructions', 'interaction', 'currentTurnTools', 'pendingApproval'] as const) {
     if (value[key] === undefined) throw new TypeError(`dossier.${key} is required`)
     canonicalJson(value[key]) // rejects non-canonical JSON
+  }
+  const completeness = value.completeness
+  if (completeness === null || typeof completeness !== 'object' || Array.isArray(completeness)) {
+    throw new TypeError('dossier.completeness must be an object')
+  }
+  const sourceThroughSeq = (completeness as Record<string, unknown>).sourceThroughSeq
+  const omissions = (completeness as Record<string, unknown>).omissions
+  if ((completeness as Record<string, unknown>).complete !== true
+    || !Number.isSafeInteger(sourceThroughSeq) || (sourceThroughSeq as number) < 0
+    || sourceThroughSeq !== freeze.throughSeq || !Array.isArray(omissions) || omissions.length !== 0) {
+    throw new TypeError('dossier.completeness must be a complete empty-omission snapshot through freeze')
   }
   return Object.freeze({
     version: 1,
@@ -101,7 +118,7 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
     interaction: value.interaction as JsonValue,
     currentTurnTools: value.currentTurnTools as JsonValue,
     pendingApproval: value.pendingApproval as JsonValue,
-    completeness: value.completeness as JsonValue,
+    completeness: Object.freeze({ complete: true as const, sourceThroughSeq: sourceThroughSeq as number, omissions: Object.freeze([]) as readonly [] }),
   })
 }
 

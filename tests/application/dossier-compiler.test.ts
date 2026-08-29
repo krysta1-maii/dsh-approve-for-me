@@ -101,7 +101,7 @@ describe('DefaultDossierCompiler', () => {
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
     if (result.kind === 'ready') {
-      expect(result.verified.dossier.completeness).toMatchObject({ ready: true, sourceThroughSeq: 4 })
+      expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 4 })
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 4, frozenAt: 5 })
       expect(result.verified.dossier.environment).toMatchObject({ requestHeader: { config: { model: 'model-1' } } })
       expect(result.metrics).toMatchObject({

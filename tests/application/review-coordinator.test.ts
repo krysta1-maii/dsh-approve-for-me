@@ -96,7 +96,7 @@ const verifiedDossier = () => sealSourceVerifiedDossier({
   version: 1 as const,
   kind: 'guardian-dossier' as const,
   freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
-  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { ready: true },
+  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { complete: true, sourceThroughSeq: 1, omissions: [] },
 })
 const providerData = (generation = 'generation-1') => createReviewerProviderData({
   generation,

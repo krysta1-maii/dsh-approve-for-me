@@ -60,6 +60,7 @@ export type {
   DossierCompilationResultV1,
   DossierMetricsV1,
   DossierSectionMetricsV1,
+  DossierCompletenessV1,
   ConfinementProjectionV1,
   DelegationCatalogValidationV1,
   DelegationToolClassificationCatalogV1,

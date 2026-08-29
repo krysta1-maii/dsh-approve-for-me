@@ -197,11 +197,11 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         confinement: { kind: 'unconfined-composition' },
         earlierSandboxDenials: [],
       }),
-      completeness: Object.freeze({ ready: true, sourceThroughSeq: facts.throughSeq, omissions: [] }),
+      completeness: Object.freeze({ complete: true, sourceThroughSeq: facts.throughSeq, omissions: [] }),
     })
     // A dossier that advertises missing evidence must never be branded
     // source-verified. Callers may only send a complete dossier to Guardian.
-    if ((dossier.completeness as { readonly ready?: unknown }).ready !== true) {
+    if ((dossier.completeness as { readonly complete?: unknown }).complete !== true) {
       return { kind: 'incomplete', reason: 'dossier-completeness-not-ready' }
     }
     const dossierSize = canonicalSize(dossier)
