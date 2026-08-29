@@ -42,6 +42,7 @@ export type FilesystemToolNames = Readonly<Partial<Record<FilesystemOperation, s
 const DEFAULT_FILESYSTEM_TOOL_NAMES: Readonly<Required<FilesystemToolNames>> = Object.freeze({
   read: 'read', list: 'list', glob: 'glob', write: 'write', edit: 'edit', delete: 'delete', move: 'move', mkdir: 'mkdir',
 })
+const FILESYSTEM_OPERATIONS = new Set<FilesystemOperation>(['read', 'list', 'glob', 'write', 'edit', 'delete', 'move', 'mkdir'])
 
 function shellArguments(execution: ToolExecution): { readonly command: string; readonly argv?: readonly string[]; readonly environment?: Readonly<Record<string, string>> } {
   const raw = execution.arguments
@@ -151,6 +152,9 @@ export function createFilesystemActionProjector(
 ): ToolFamilyActionProjector<ToolExecution> {
   const byToolName = new Map<string, FilesystemOperation>()
   for (const [operation, toolName] of Object.entries(toolNames) as [FilesystemOperation, string | undefined][]) {
+    if (!FILESYSTEM_OPERATIONS.has(operation)) {
+      throw new TypeError(`filesystem projector has an unknown operation binding ${operation}`)
+    }
     if (toolName === undefined) continue
     if (typeof toolName !== 'string' || toolName.length === 0 || byToolName.has(toolName)) {
       throw new TypeError('filesystem projector requires unique non-empty explicitly-bound tool names')

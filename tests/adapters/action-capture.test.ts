@@ -111,6 +111,7 @@ describe('filesystem semantic projection', () => {
     const projector = createFilesystemActionProjector()
     expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { name: 'write', arguments: { path: 'x', content: 'x'.repeat(65_536) } }))).toThrow(/budget/)
     expect(() => createFilesystemActionProjector({ read: 'same', write: 'same' })).toThrow(/unique/)
+    expect(() => createFilesystemActionProjector({ unknown: 'mystery' } as never)).toThrow(/unknown operation/)
   })
 })
 
