@@ -69,6 +69,8 @@ export interface GateDecisionRecord {
   readonly reviewRunId: string
   readonly requestId: string
   readonly parentSessionId: string
+  /** Canonical full lifecycle identity; bare session IDs are reusable. */
+  readonly parentLifecycleFingerprint: string
   readonly callId: string
   readonly actionHash: string
   readonly generation: string
@@ -116,6 +118,7 @@ function recordFor(
     reviewRunId,
     requestId: request.requestId ?? '',
     parentSessionId: request.parentSessionId,
+    parentLifecycleFingerprint: facts.breakerKey.parentLifecycleFingerprint,
     callId: request.callId ?? '',
     actionHash: request.actionHash,
     generation: facts.generation,

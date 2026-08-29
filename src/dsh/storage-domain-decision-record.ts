@@ -58,6 +58,7 @@ function recordKey(record: GateDecisionRecord): string {
   // session/call identifiers in a backend's file layout.
   const identity = canonicalJson({
     parentSessionId: record.parentSessionId,
+    parentLifecycleFingerprint: record.parentLifecycleFingerprint,
     requestId: record.requestId,
     callId: record.callId,
     actionHash: record.actionHash,

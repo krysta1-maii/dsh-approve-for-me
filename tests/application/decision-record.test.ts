@@ -9,6 +9,7 @@ function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord
     reviewRunId: 'run-1',
     requestId: 'ask-1',
     parentSessionId: 'parent-1',
+    parentLifecycleFingerprint: 'lifecycle-1',
     callId: 'call-1',
     actionHash: hash('a'),
     generation: 'generation-1',
@@ -29,6 +30,12 @@ describe('InMemoryGateDecisionRecordStore', () => {
     const store = new InMemoryGateDecisionRecordStore()
     await store.createConfirmed(record())
     await expect(store.createConfirmed(record({ disposition: 'deny' }))).resolves.toBe('conflict')
+  })
+
+  it('does not collide when a reused session id has another lifecycle', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
+    await expect(store.createConfirmed(record({ parentLifecycleFingerprint: 'lifecycle-2' }))).resolves.toBe('confirmed')
   })
 
   it('allows a best-effort record to be promoted to confirmed', async () => {

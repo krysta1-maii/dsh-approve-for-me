@@ -5,7 +5,7 @@ import type { GateDecisionRecord, StorageDomainFacility } from '../../src/index.
 function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord {
   return {
     reviewRunId: 'run-1', requestId: 'ask-1', parentSessionId: 'session-1',
-    callId: 'call-1', actionHash: `sha256:${'a'.repeat(64)}`,
+    parentLifecycleFingerprint: 'lifecycle-1', callId: 'call-1', actionHash: `sha256:${'a'.repeat(64)}`,
     generation: 'gen-1', configurationFingerprint: `sha256:${'b'.repeat(64)}`,
     disposition: 'allow', ...overrides,
   }
@@ -36,6 +36,14 @@ describe('DshStorageDomainGateDecisionRecordStore', () => {
     await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
     await expect(store.createConfirmed(record({ disposition: 'deny' }))).resolves.toBe('conflict')
     expect(fake.put).toHaveBeenCalledOnce()
+  })
+
+  it('keys reused session ids by their full lifecycle fingerprint', async () => {
+    const fake = facility()
+    const store = new DshStorageDomainGateDecisionRecordStore(fake.facility)
+    await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
+    await expect(store.createConfirmed(record({ parentLifecycleFingerprint: 'lifecycle-2' }))).resolves.toBe('confirmed')
+    expect(fake.put).toHaveBeenCalledTimes(2)
   })
 
   it('fails closed when the domain cannot open', async () => {

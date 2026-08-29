@@ -45,7 +45,7 @@
 | `src/application/trust-envelope.ts` | `createTrustEnvelopeEvaluator`：工具族、mode ceiling、workspace、justification、strict widening 纯判定 |
 | `src/application/pre-review-coordinator.ts` | `DefaultPreReviewCoordinator`：用现有 Guardian `ReviewCoordinator` 产出并 sealed 一条前置裁决，之后只能 replay |
 | `src/application/gate-pipeline.ts` | `DefaultGatePipeline`：按 breaker → trustEnvelope → allowCache → seal replay → Guardian → 模式映射/记录三态执行 |
-| `src/application/decision-record.ts` | `InMemoryGateDecisionRecordStore`：最小决策记录，冲突/幂等语义；H4 将替换为 Storage Domain 持久化 |
+| `src/application/decision-record.ts` | `InMemoryGateDecisionRecordStore`：最小决策记录，按完整 parent lifecycle fingerprint 处理冲突/幂等；H4 将替换为 Storage Domain 持久化 |
 | `src/application/capture-gate-facts.ts` | `InMemoryGateActionFactStore`：按 actionHash 暂存 live authority/action/classification 等 gate facts |
 | `src/config.ts` | 增加 `maxReviewsPerChild`、`trustEnvelope`、`toolCatalog`、`caseCapture` 的配置声明/默认值/校验 |
 | `src/approval-gate/sealed-decision.ts` | 补上 `SealedDispositionRegistryV1` 端口 |

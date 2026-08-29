@@ -44,6 +44,7 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
   private keyFor(record: GateDecisionRecord): string {
     return [
       record.parentSessionId,
+      record.parentLifecycleFingerprint,
       record.callId,
       record.actionHash,
       record.requestId,
@@ -52,6 +53,7 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
 
   private sameDecision(a: GateDecisionRecord, b: GateDecisionRecord): boolean {
     return a.parentSessionId === b.parentSessionId
+      && a.parentLifecycleFingerprint === b.parentLifecycleFingerprint
       && a.callId === b.callId
       && a.actionHash === b.actionHash
       && a.requestId === b.requestId
