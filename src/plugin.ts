@@ -132,6 +132,7 @@ export function installApproveForMe(
   })
   const compiler = new DefaultDossierCompiler({
     delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
+    maxDossierBytes: normalized.maxDossierBytes,
   })
   const factStore = new SourceBackedGateFactResolver({
     factSource,

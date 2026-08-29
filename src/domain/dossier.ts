@@ -460,6 +460,8 @@ export type DossierCompilationResultV1 =
 
 export interface GuardianDossierCompilerDependencies {
   readonly delegationProjector: PrincipalDelegationProjector
+  /** Complete v1 dossiers exceeding this UTF-8 byte limit fail closed. */
+  readonly maxDossierBytes: number
 }
 
 export interface GuardianDossierCompiler {

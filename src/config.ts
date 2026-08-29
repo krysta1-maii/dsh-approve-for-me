@@ -35,6 +35,8 @@ export interface Config {
   readonly mode?: 'auto' | 'auto-then-user'
   readonly timeoutMs?: number
   readonly maxReviewsPerChild?: number
+  /** Maximum UTF-8 bytes of a complete serialized Guardian dossier. */
+  readonly maxDossierBytes?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
   readonly caseCapture?: GuardianCaseCaptureConfigV1
@@ -52,6 +54,7 @@ export const Config: z<Config> = z.object({
   mode: z.union(['auto', 'auto-then-user'] as const).default('auto'),
   timeoutMs: z.number().default(30_000),
   maxReviewsPerChild: z.number().min(1),
+  maxDossierBytes: z.number().min(1),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
@@ -73,6 +76,7 @@ export interface NormalizedConfig {
   readonly mode: ReviewMode
   readonly timeoutMs: number
   readonly maxReviewsPerChild: number
+  readonly maxDossierBytes: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
@@ -80,6 +84,8 @@ export interface NormalizedConfig {
 }
 
 const DEFAULT_MAX_REVIEWS_PER_CHILD = 64
+/** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
+const DEFAULT_MAX_DOSSIER_BYTES = 256_000
 
 const ZERO_HASH = `sha256:${'0'.repeat(64)}`
 
@@ -179,6 +185,10 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(maxReviewsPerChild) || maxReviewsPerChild < 1) {
     throw new TypeError('maxReviewsPerChild must be a positive safe integer')
   }
+  const maxDossierBytes = config.maxDossierBytes ?? DEFAULT_MAX_DOSSIER_BYTES
+  if (!Number.isSafeInteger(maxDossierBytes) || maxDossierBytes < 1) {
+    throw new TypeError('maxDossierBytes must be a positive safe integer')
+  }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
     modelRoute: {
@@ -195,6 +205,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     mode,
     timeoutMs,
     maxReviewsPerChild,
+    maxDossierBytes,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),

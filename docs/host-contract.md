@@ -81,6 +81,8 @@ interface ApproveForMeHostConfigV2 {
   readonly mode?: 'auto' | 'auto-then-user'
   /** 整个 Review Run 的总 deadline。 */
   readonly timeoutMs?: number
+  /** Complete serialized Guardian dossier 的 UTF-8 硬上限，超限 fail-closed。 */
+  readonly maxDossierBytes?: number
   readonly reviewer: {
     readonly generation: string
     readonly provider: string

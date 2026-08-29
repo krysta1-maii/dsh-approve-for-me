@@ -79,6 +79,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
   }): DossierCompilationResultV1 {
     const { facts } = input
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
+    if (!Number.isSafeInteger(this.deps.maxDossierBytes) || this.deps.maxDossierBytes < 1) {
+      return { kind: 'incomplete', reason: 'invalid-dossier-budget' }
+    }
     if (facts.version !== 1) return { kind: 'incomplete', reason: 'event-projection-policy-mismatch' }
     if (facts.session.effectiveDelegationDepth !== 0 || facts.session.parentSessionId !== undefined) {
       return { kind: 'incomplete', reason: 'unsupported-delegated-requester' }
@@ -195,6 +198,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     // source-verified. Callers may only send a complete dossier to Guardian.
     if ((dossier.completeness as { readonly ready?: unknown }).ready !== true) {
       return { kind: 'incomplete', reason: 'dossier-completeness-not-ready' }
+    }
+    if (new TextEncoder().encode(canonicalJson(dossier)).byteLength > this.deps.maxDossierBytes) {
+      return { kind: 'incomplete', reason: 'budget-overflow' }
     }
     return {
       kind: 'ready',

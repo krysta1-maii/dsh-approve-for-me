@@ -47,7 +47,7 @@
 | `src/application/gate-pipeline.ts` | `DefaultGatePipeline`：按 breaker → trustEnvelope → allowCache → seal replay → Guardian → 模式映射/记录三态执行 |
 | `src/application/decision-record.ts` | `InMemoryGateDecisionRecordStore`：最小决策记录，按完整 parent lifecycle fingerprint 处理冲突/幂等；H4 将替换为 Storage Domain 持久化 |
 | `src/application/capture-gate-facts.ts` | `InMemoryGateActionFactStore`：按 actionHash 暂存 live authority/action/classification 等 gate facts |
-| `src/config.ts` | 增加 `maxReviewsPerChild`、`trustEnvelope`、`toolCatalog`、`caseCapture` 的配置声明/默认值/校验 |
+| `src/config.ts` | 增加 `maxReviewsPerChild`、`maxDossierBytes`、`trustEnvelope`、`toolCatalog`、`caseCapture` 的配置声明/默认值/校验；`maxDossierBytes` 默认 256,000 UTF-8 bytes，完整卷宗超限失败关闭 |
 | `src/approval-gate/sealed-decision.ts` | 补上 `SealedDispositionRegistryV1` 端口 |
 | `src/approval-gate/trust-envelope.ts` | 补上 `TrustEnvelopeInputV1` / `TrustEnvelopeEvaluatorV1` 端口 |
 

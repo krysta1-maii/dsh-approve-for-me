@@ -66,6 +66,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
 }
 
 const deps: GuardianDossierCompilerDependencies = {
+  maxDossierBytes: 256_000,
   delegationProjector: {
     catalog: catalog(),
     project() {
@@ -104,6 +105,8 @@ describe('DefaultDossierCompiler', () => {
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 4, frozenAt: 5 })
       expect(result.verified.dossier.environment).toMatchObject({ requestHeader: { config: { model: 'model-1' } } })
     }
+    expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
+      .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
   })
 
   it('fails closed rather than omit unsupported historical events', () => {
