@@ -1,4 +1,5 @@
-import { canonicalJson } from './json.js'
+import { createHash } from 'node:crypto'
+import { canonicalJson, snapshotJson } from './json.js'
 import type { JsonValue } from './json.js'
 import { hashGuardianDossier } from './records.js'
 import type { SessionLifecycleIdentityV1 } from './records.js'
@@ -289,6 +290,52 @@ export interface DelegationToolClassificationCatalogV1 {
 export type DelegationCatalogValidationV1 =
   | { readonly kind: 'ok' }
   | { readonly kind: 'invalid'; readonly reason: string }
+
+/** A model-visible native tool schema frozen from a canonical request header. */
+export interface EffectiveToolBindingV1 {
+  readonly toolName: string
+  readonly toolSchemaFingerprint: string
+}
+
+const EFFECTIVE_TOOL_SCHEMA_HASH_DOMAIN = 'dsh-approve-for-me/effective-tool-schema/v1\0'
+
+/**
+ * Produces the stable schema commitment used to bind a catalog descriptor to
+ * the exact tool schema that was visible to the model. The parser is purposely
+ * DSH-neutral so unknown host values never cross the domain boundary.
+ */
+export function effectiveToolBindingFromSchemaV1(input: unknown): EffectiveToolBindingV1 | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const schema = input as Record<string, unknown>
+  if (typeof schema.name !== 'string' || schema.name.length === 0 || typeof schema.description !== 'string'
+    || schema.parameters === null || typeof schema.parameters !== 'object' || Array.isArray(schema.parameters)) return undefined
+  try {
+    const canonical = canonicalJson({ name: schema.name, description: schema.description, parameters: snapshotJson(schema.parameters) })
+    return Object.freeze({
+      toolName: schema.name,
+      toolSchemaFingerprint: `sha256:${createHash('sha256').update(EFFECTIVE_TOOL_SCHEMA_HASH_DOMAIN).update(canonical).digest('hex')}`,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/** Parses the complete closed set of native schemas from a frozen header. */
+export function effectiveToolBindingsFromRequestHeaderV1(input: unknown): readonly EffectiveToolBindingV1[] | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const tools = (input as Record<string, unknown>).tools
+  if (tools === undefined) return Object.freeze([])
+  if (!Array.isArray(tools)) return undefined
+  const seen = new Set<string>()
+  const bindings: EffectiveToolBindingV1[] = []
+  for (const tool of tools) {
+    const binding = effectiveToolBindingFromSchemaV1(tool)
+    if (binding === undefined || seen.has(binding.toolName)) return undefined
+    seen.add(binding.toolName)
+    bindings.push(binding)
+  }
+  return Object.freeze(bindings)
+}
 
 export function validateDelegationToolCatalog(
   catalog: DelegationToolClassificationCatalogV1,

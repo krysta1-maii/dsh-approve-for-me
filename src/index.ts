@@ -41,6 +41,8 @@ export type {
 } from './domain/records.js'
 export {
   assertDossierShape,
+  effectiveToolBindingFromSchemaV1,
+  effectiveToolBindingsFromRequestHeaderV1,
   recomputeDossierHash,
   sealSourceVerifiedDossier,
   validateDelegationToolCatalog,
@@ -58,6 +60,7 @@ export type {
   TurnEndSummaryV1,
   DelegationReceiptFactRecordV1,
   DossierCompilationResultV1,
+  EffectiveToolBindingV1,
   DossierMetricsV1,
   DossierSectionMetricsV1,
   DossierCompletenessV1,
