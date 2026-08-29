@@ -481,6 +481,14 @@ describe('DefaultDossierCompiler', () => {
         currentTurnTools: { attempts: [{ request: { callId: 'call-0', issuedIn: { turn: 1, step: 0 } }, outcome: { kind: 'completed' } }] },
       })
     }
+    const unclosedPriorStep = {
+      ...priorCompletedStep,
+      events: priorCompletedStep.events.map(event => event.seq === 7
+        ? { ...event, type: 'request/header' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'change' } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: unclosedPriorStep }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' })
   })
 
   it('fails closed rather than omit unsupported historical events', () => {
