@@ -316,7 +316,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || facts.approvalBinding.event.step !== step) {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
-    const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' } }[] = []
+    const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' | 'tool-error' } }[] = []
     const assistantCalls: { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[] = []
     for (const [blockIndex, event] of callEvents.entries()) {
       const data = event.retention === 'included' ? record(event.data) : undefined
@@ -342,12 +342,13 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         ? Object.freeze({ kind: 'pending' as const })
         : (() => {
             const resultEvent = facts.events[candidate.result.eventSeq]
-            if (candidate.result.eventType !== 'tool/result' || candidate.result.outcome.kind !== 'completed'
+            if (candidate.result.eventType !== 'tool/result'
+              || (candidate.result.outcome.kind !== 'completed' && candidate.result.outcome.kind !== 'tool-error')
               || candidate.result.eventSeq <= event.seq || candidate.result.eventSeq >= facts.throughSeq
               || resultEvent?.type !== 'tool/result' || resultEvent.retention !== 'excluded-content'
               || resultEvent.exclusion !== 'tool-result-content' || resultEvent.sourceEventSeqs?.length !== 1
               || resultEvent.sourceEventSeqs[0] !== event.seq) return undefined
-            return Object.freeze({ kind: 'completed' as const })
+            return Object.freeze(candidate.result.outcome)
           })()
       if (outcome === undefined) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       assistantCalls.push({ callId, toolName, rawArguments: data.arguments })

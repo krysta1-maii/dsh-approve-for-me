@@ -1,6 +1,6 @@
 # Guardian 案件卷宗接口与编译规范
 
-> 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存，并跟进宿主 v2：`ApprovalRequest.requestId`（官方包 patch）成为 asked 绑定的首要键；2026-08-29 已实现并接入受限 v1 的 source-backed compiler。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；实现目前只接受同一开放 turn/step 的 ordinary native calls：前序调用可为严格绑定的 pending 或成功 completed 状态；失败结果、跨 turn/step 历史与 delegation 仍不接受；剩余接口仍是待实现契约。
+> 状态：2026-08-27 建立设计草案并收敛主 Agent／子代理归因边界；2026-08-28 补充最小决策记录与 opt-in 完整案例留存，并跟进宿主 v2：`ApprovalRequest.requestId`（官方包 patch）成为 asked 绑定的首要键；2026-08-29 已实现并接入受限 v1 的 source-backed compiler。本文定义 `dsh-approve-for-me` 首期实验性案件卷宗的事实来源、逻辑结构、候选接口、编译规则和失败边界；实现目前只接受同一开放 turn/step 的 ordinary native calls：前序调用可为严格绑定的 pending、成功 completed 或最小 tool-error 状态；其他失败类别、跨 turn/step 历史与 delegation 仍不接受；剩余接口仍是待实现契约。
 >
 > 本规范只定义“向 Guardian 提供哪些事实以及如何确定性地编译这些事实”。宿主组合、失败映射、Review Run 与生命周期见 [宿主接口与生命周期契约](host-contract.md)；Guardian 如何评估风险、判断用户授权和产生裁决，属于独立的 Reviewer policy／decision specification，不在本文定义。仓库文档的权威顺序见 [文档地图](README.md)。
 

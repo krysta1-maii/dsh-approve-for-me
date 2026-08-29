@@ -424,7 +424,7 @@ export interface ToolExecutionFactRecordV1 {
     readonly eventSeq: number
     readonly eventType: 'tool/result' | 'tool/code-dispatch'
     /** Only the safe terminal outcome category; never tool output. */
-    readonly outcome: Extract<ToolAttemptOutcomeV1, { readonly kind: 'completed' }>
+    readonly outcome: Extract<ToolAttemptOutcomeV1, { readonly kind: 'completed' | 'tool-error' }>
   }
   readonly delegationReceipt?: DelegationReceiptFactRecordV1
 }

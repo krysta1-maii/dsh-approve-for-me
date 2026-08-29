@@ -31,7 +31,7 @@ function string(value: unknown): string | undefined {
  */
 export class DshExecutionFactProjectionBridge {
   private readonly approvalWrites = new Map<string, Promise<void>>()
-  private readonly completedExecutions = new Set<string>()
+  private readonly terminalOutcomes = new Map<string, Extract<ToolExecutionFactRecordV1['result'], { readonly outcome: unknown }>['outcome']>()
 
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
@@ -108,7 +108,10 @@ export class DshExecutionFactProjectionBridge {
 
   /** Records a success marker before the agent loop appends its durable result event. */
   observeResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): undefined {
-    if (result.isError || exec.agent === undefined) return undefined
+    if (exec.agent === undefined) return undefined
+    const outcome = result.isError
+      ? Object.freeze({ kind: 'tool-error' as const, ...(result.error.info?.code === undefined ? {} : { code: result.error.info.code }) })
+      : Object.freeze({ kind: 'completed' as const })
     const lifecycle = this.lifecycle(exec.agent)
     const session = exec.agent.session as unknown as SessionLike
     const callId = String(exec.callId)
@@ -117,7 +120,7 @@ export class DshExecutionFactProjectionBridge {
       const data = event.data as Record<string, unknown>
       return event.type === 'tool/call' && data.callId === callId && data.name === exec.name
     })
-    if (candidates.length === 1) this.completedExecutions.add(this.resultKey(lifecycle, callId, candidates[0]!.seq))
+    if (candidates.length === 1) this.terminalOutcomes.set(this.resultKey(lifecycle, callId, candidates[0]!.seq), outcome)
     return undefined
   }
 
@@ -151,10 +154,16 @@ export class DshExecutionFactProjectionBridge {
       || !Number.isSafeInteger(turn) || (turn as number) < 0
       || !Number.isSafeInteger(step) || (step as number) < 0) return
     const block = blocks[0] as { readonly type?: unknown; readonly toolCallId?: unknown; readonly isError?: unknown } | undefined
-    const callId = block?.type === 'tool-result' && block.isError !== true ? string(block.toolCallId) : undefined
+    const callId = block?.type === 'tool-result' ? string(block.toolCallId) : undefined
+    const isError = block?.isError
     if (callId === undefined || message?.source?.kind !== 'tool' || message.source.callId !== callId
       || event.sourceEventSeqs?.length !== 1 || !Number.isSafeInteger(event.sourceEventSeqs[0])) return
     const requestEventSeq = event.sourceEventSeqs[0]!
+    const terminalOutcome = this.terminalOutcomes.get(this.resultKey(lifecycle, callId, requestEventSeq))
+    const error = data.error as { readonly code?: unknown } | undefined
+    if (terminalOutcome === undefined || (terminalOutcome.kind === 'completed' && isError === true)
+      || (terminalOutcome.kind === 'tool-error' && isError !== true)
+      || (terminalOutcome.kind === 'tool-error' && terminalOutcome.code !== undefined && error?.code !== terminalOutcome.code)) return
     const session = agent.session as unknown as SessionLike
     const candidates = (await this.repository.list(lifecycle)).filter(record => {
       const call = session.events[record.request.eventSeq]
@@ -163,12 +172,12 @@ export class DshExecutionFactProjectionBridge {
         && record.request.eventSeq === requestEventSeq && record.request.eventSeq < event.seq && call?.type === 'tool/call'
         && callData?.turn === turn && callData?.step === step
     })
-    if (candidates.length !== 1 || !this.completedExecutions.has(this.resultKey(lifecycle, callId, requestEventSeq))) return
+    if (candidates.length !== 1) return
     const outcome = await this.repository.attachResult({
       session: lifecycle, callId, requestEventSeq,
-      result: { eventSeq: event.seq, eventType: 'tool/result', outcome: { kind: 'completed' } },
+      result: { eventSeq: event.seq, eventType: 'tool/result', outcome: terminalOutcome },
     })
-    if (outcome === 'updated' || outcome === 'identical') this.completedExecutions.delete(this.resultKey(lifecycle, callId, requestEventSeq))
+    if (outcome === 'updated' || outcome === 'identical') this.terminalOutcomes.delete(this.resultKey(lifecycle, callId, requestEventSeq))
   }
 
   private resultKey(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string }, callId: string, requestEventSeq: number): string {

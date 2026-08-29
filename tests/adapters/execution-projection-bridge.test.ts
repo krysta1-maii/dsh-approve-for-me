@@ -75,6 +75,20 @@ describe('DshExecutionFactProjectionBridge', () => {
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
 
+  it('attaches a matching tool error without copying result content', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, error: { code: 'TOOL_FAILED' }, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: true, content: [] }] } } },
+    ])
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository)
+    await bridge.project(execution(owner))
+    bridge.observeResult(execution(owner), { isError: true, error: { message: 'failed', info: { name: 'Error', code: 'TOOL_FAILED' } }, content: [] })
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
+      .resolves.toMatchObject({ result: { outcome: { kind: 'tool-error', code: 'TOOL_FAILED' } } })
+  })
+
   it('does not attach an ambiguous native result', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const owner = agent([
