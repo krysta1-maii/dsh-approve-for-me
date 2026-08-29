@@ -239,6 +239,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (executions.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     const execution = executions[0]!
     if (!sameLifecycle(execution.session, facts.session)
+      || execution.projection.action.toolName !== execution.request.toolName
       || execution.projection.actionHash !== hashAction(execution.projection.action)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     }

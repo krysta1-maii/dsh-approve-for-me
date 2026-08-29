@@ -277,6 +277,16 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: corruptedActionHash }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const mismatchedActionTool = createActionSnapshot({ toolName: 'read', arguments: { command: 'pwd' } })
+    const crossToolProjection = {
+      ...complete,
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        projection: { ...complete.executionFacts[0]!.projection, action: mismatchedActionTool, actionHash: hashAction(mismatchedActionTool) },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: crossToolProjection }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const conflictingCatalogDescriptor = {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, toolClassification: { ...complete.executionFacts[0]!.toolClassification, descriptor: { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'other-fp', classificationId: 'class-1' } } }],
