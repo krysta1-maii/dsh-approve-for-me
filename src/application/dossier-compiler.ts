@@ -353,9 +353,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         && event.seq >= callEvents[0]!.seq)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
-    const attempts = pendingAttempts.map((attempt, index) => Object.freeze({
+    const attempts = pendingAttempts.map(attempt => Object.freeze({
       ...attempt,
-      request: Object.freeze({ ...attempt.request, issuedIn: assistantMessage, blockIndex: index }),
+      request: Object.freeze({ ...attempt.request, issuedIn: assistantMessage }),
     }))
     if (facts.events.some(event => event.type === 'request/header' && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
