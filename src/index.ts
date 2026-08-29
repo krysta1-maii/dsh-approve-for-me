@@ -221,9 +221,10 @@ export { createManagedReviewerPort } from './dsh/managed-controller.js'
 export {
   createCaptureBridge,
   createDefaultActionProjector,
+  createFilesystemActionProjector,
   createShellProcessActionProjector,
 } from './dsh/action-capture.js'
-export type { CaptureBridge } from './dsh/action-capture.js'
+export type { CaptureBridge, FilesystemToolNames } from './dsh/action-capture.js'
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'

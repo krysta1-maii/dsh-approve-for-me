@@ -30,6 +30,18 @@ export function createDefaultActionProjector(
 const SHELL_PROCESS_PROJECTOR_ID = 'dsh-approve-for-me/shell-process-v1'
 const SHELL_PROCESS_FAMILY = 'shell-process-v1'
 const MAX_SHELL_ARGUMENT_BYTES = 65_536
+const FILESYSTEM_PROJECTOR_ID = 'dsh-approve-for-me/filesystem-v1'
+const FILESYSTEM_FAMILY = 'filesystem-v1'
+const MAX_FILESYSTEM_ARGUMENT_BYTES = 65_536
+
+type FilesystemOperation = 'read' | 'list' | 'glob' | 'write' | 'edit' | 'delete' | 'move' | 'mkdir'
+
+/** Explicit tool-name binding: semantics are never inferred from arbitrary arguments. */
+export type FilesystemToolNames = Readonly<Partial<Record<FilesystemOperation, string>>>
+
+const DEFAULT_FILESYSTEM_TOOL_NAMES: Readonly<Required<FilesystemToolNames>> = Object.freeze({
+  read: 'read', list: 'list', glob: 'glob', write: 'write', edit: 'edit', delete: 'delete', move: 'move', mkdir: 'mkdir',
+})
 
 function shellArguments(execution: ToolExecution): { readonly command: string; readonly argv?: readonly string[]; readonly environment?: Readonly<Record<string, string>> } {
   const raw = execution.arguments
@@ -82,6 +94,82 @@ export function createShellProcessActionProjector(
         arguments: execution.arguments,
         projectorId: SHELL_PROCESS_PROJECTOR_ID,
         semantics: { family: SHELL_PROCESS_FAMILY, value: { ...semantic, cwd } },
+        ...(projectPermissions === undefined ? {} : { requestedPermissions: projectPermissions(execution) }),
+      }
+    },
+  })
+}
+
+type FilesystemTargetRole = 'target' | 'source' | 'destination' | 'root'
+
+function filesystemPath(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 16_384 || value.startsWith('/') || value.includes('\\')
+    || value.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')) {
+    throw new TypeError(`filesystem projection requires a bounded workspace-relative ${field}`)
+  }
+  return value
+}
+
+function filesystemArguments(execution: ToolExecution, operation: FilesystemOperation): {
+  readonly operation: FilesystemOperation
+  readonly targets: readonly { readonly path: string; readonly role: FilesystemTargetRole }[]
+  readonly recursive: boolean
+  readonly reversible: boolean
+} {
+  const raw = execution.arguments
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new TypeError('filesystem arguments must be an object')
+  if (Buffer.byteLength(canonicalJson(snapshotJson(raw)), 'utf8') > MAX_FILESYSTEM_ARGUMENT_BYTES) {
+    throw new TypeError('filesystem arguments exceed the semantic projection budget')
+  }
+  const value = raw as Record<string, unknown>
+  const recursive = value.recursive === undefined ? false : value.recursive
+  if (typeof recursive !== 'boolean') throw new TypeError('filesystem recursive must be a boolean')
+  const target = (field: string, role: FilesystemTargetRole) => ({ path: filesystemPath(value[field], field), role })
+  const targets = operation === 'move'
+    ? [target('source', 'source'), target('destination', 'destination')]
+    : operation === 'list' || operation === 'glob'
+      ? [target('root', 'root')]
+      : [target('path', 'target')]
+  if (new Set(targets.map(item => item.path)).size !== targets.length) {
+    throw new TypeError('filesystem projection rejects duplicate targets')
+  }
+  if ((operation === 'read' || operation === 'glob') && recursive) {
+    throw new TypeError(`filesystem ${operation} does not accept recursive traversal`)
+  }
+  return {
+    operation,
+    targets: Object.freeze(targets.map(target => Object.freeze(target))),
+    recursive,
+    reversible: operation === 'read' || operation === 'list' || operation === 'glob',
+  }
+}
+
+/** Build a fail-closed semantic projector for explicitly-bound filesystem tools. */
+export function createFilesystemActionProjector(
+  toolNames: FilesystemToolNames = DEFAULT_FILESYSTEM_TOOL_NAMES,
+  projectPermissions?: (execution: ToolExecution) => readonly RequestedPermission[],
+): ToolFamilyActionProjector<ToolExecution> {
+  const byToolName = new Map<string, FilesystemOperation>()
+  for (const [operation, toolName] of Object.entries(toolNames) as [FilesystemOperation, string | undefined][]) {
+    if (toolName === undefined) continue
+    if (typeof toolName !== 'string' || toolName.length === 0 || byToolName.has(toolName)) {
+      throw new TypeError('filesystem projector requires unique non-empty explicitly-bound tool names')
+    }
+    byToolName.set(toolName, operation)
+  }
+  if (byToolName.size === 0) throw new TypeError('filesystem projector requires at least one tool binding')
+  return Object.freeze({
+    family: FILESYSTEM_FAMILY,
+    projectorId: FILESYSTEM_PROJECTOR_ID,
+    toolNames: Object.freeze([...byToolName.keys()]),
+    project(execution: ToolExecution) {
+      const operation = byToolName.get(execution.name)
+      if (operation === undefined) throw new TypeError(`filesystem projector has no operation for tool ${execution.name}`)
+      return {
+        toolName: execution.name,
+        arguments: execution.arguments,
+        projectorId: FILESYSTEM_PROJECTOR_ID,
+        semantics: { family: FILESYSTEM_FAMILY, value: filesystemArguments(execution, operation) },
         ...(projectPermissions === undefined ? {} : { requestedPermissions: projectPermissions(execution) }),
       }
     },

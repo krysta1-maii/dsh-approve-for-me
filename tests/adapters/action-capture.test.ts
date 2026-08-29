@@ -6,6 +6,7 @@ import {
   DefaultActionCapture,
   createCaptureBridge,
   createDefaultActionProjector,
+  createFilesystemActionProjector,
   createShellProcessActionProjector,
   createActionSnapshot,
   ToolFamilyActionProjectorRegistry,
@@ -78,6 +79,38 @@ describe('shell/process semantic projection', () => {
   ])('fails closed for incomplete or ambiguous shell arguments', (rawArguments, message) => {
     const projector = createShellProcessActionProjector()
     expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { arguments: rawArguments }))).toThrow(message)
+  })
+})
+
+describe('filesystem semantic projection', () => {
+  it.each([
+    ['read', { path: 'src/index.ts' }, { operation: 'read', targets: [{ path: 'src/index.ts', role: 'target' }], recursive: false, reversible: true }],
+    ['write', { path: 'notes/a.txt', recursive: true }, { operation: 'write', targets: [{ path: 'notes/a.txt', role: 'target' }], recursive: true, reversible: false }],
+    ['move', { source: 'old.txt', destination: 'new.txt' }, { operation: 'move', targets: [{ path: 'old.txt', role: 'source' }, { path: 'new.txt', role: 'destination' }], recursive: false, reversible: false }],
+    ['list', { root: 'src' }, { operation: 'list', targets: [{ path: 'src', role: 'root' }], recursive: false, reversible: true }],
+  ] as const)('projects bounded %s semantics', (name, arguments_, expected) => {
+    const projector = new ToolFamilyActionProjectorRegistry([createFilesystemActionProjector()])
+    const action = createActionSnapshot(projector.project(fakeExecution(fakeAgent('parent-1'), { name, arguments: arguments_ })))
+    expect(action).toMatchObject({ projectorId: 'dsh-approve-for-me/filesystem-v1', semantics: { family: 'filesystem-v1', value: expected } })
+    expect(Object.isFrozen(action.semantics.value)).toBe(true)
+  })
+
+  it.each([
+    ['read', {}, /workspace-relative path/],
+    ['write', { path: '/outside' }, /workspace-relative path/],
+    ['move', { source: 'same', destination: 'same' }, /duplicate targets/],
+    ['glob', { root: 'src', recursive: true }, /does not accept recursive/],
+    ['delete', { path: 'src/../secret' }, /workspace-relative path/],
+    ['mkdir', { path: 'dir', recursive: 'yes' }, /recursive/],
+  ] as const)('fails closed for incomplete or ambiguous %s semantics', (name, arguments_, message) => {
+    const projector = createFilesystemActionProjector()
+    expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { name, arguments: arguments_ }))).toThrow(message)
+  })
+
+  it('rejects oversized filesystem payloads and duplicate tool registrations', () => {
+    const projector = createFilesystemActionProjector()
+    expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { name: 'write', arguments: { path: 'x', content: 'x'.repeat(65_536) } }))).toThrow(/budget/)
+    expect(() => createFilesystemActionProjector({ read: 'same', write: 'same' })).toThrow(/unique/)
   })
 })
 
