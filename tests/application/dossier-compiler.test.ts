@@ -90,7 +90,7 @@ describe('DefaultDossierCompiler', () => {
       throughSeq: 4,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
-        { seq: 1, time: 2, type: 'request/header', retention: 'included' as const, data: { config: { model: 'model-1' }, tools: [] } },
+        { seq: 1, time: 2, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
         { seq: 2, time: 3, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
         { seq: 3, time: 4, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
         { seq: 4, time: 5, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
@@ -117,7 +117,7 @@ describe('DefaultDossierCompiler', () => {
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
     const malformedHeader = {
       ...complete,
-      events: complete.events.map(event => event.seq === 1 ? { ...event, data: { config: {} } } : event),
+      events: complete.events.map(event => event.seq === 1 ? { ...event, data: { header: { tools: [] }, reason: 'initial' } } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })

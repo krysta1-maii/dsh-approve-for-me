@@ -40,11 +40,14 @@ function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | unde
   let latest: JsonValue | undefined
   for (const event of facts.events) {
     if (event.type !== 'request/header') continue
-    const header = event.retention === 'included' ? record(event.data) : undefined
-    // The parent model's effective request must be structurally present. A
-    // partial object cannot safely stand in for the config/schema it saw.
-    if (header === undefined || header.config === undefined || !Array.isArray(header.tools)
-      || (header.system !== undefined && typeof header.system !== 'string')) return undefined
+    const snapshot = event.retention === 'included' ? record(event.data) : undefined
+    const header = snapshot === undefined ? undefined : record(snapshot.header as JsonValue)
+    // DSH persists `request/header` as `{ header: EpochHeader, reason }`; only
+    // the contained complete canonical header is material for the dossier.
+    if (header === undefined || header.config === undefined
+      || (header.tools !== undefined && !Array.isArray(header.tools))
+      || (header.system !== undefined && typeof header.system !== 'string')
+      || (snapshot?.reason !== 'initial' && snapshot?.reason !== 'resume' && snapshot?.reason !== 'change')) return undefined
     latest = header
   }
   return latest
