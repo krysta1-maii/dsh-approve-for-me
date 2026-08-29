@@ -163,9 +163,20 @@ describe('DefaultGatePipeline', () => {
     await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
   })
 
-  it('returns a cached allow without a Guardian review', async () => {
-    const { pipeline, preReview } = makePipeline({ allowHit: true })
+  it('confirms each cached allow without a Guardian review', async () => {
+    const { pipeline, preReview, records } = makePipeline({ allowHit: true })
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
+    expect(preReview.preReview).not.toHaveBeenCalled()
+    expect(records.createConfirmed).toHaveBeenCalledOnce()
+  })
+
+  it('does not allow a cached decision without durable confirmation', async () => {
+    const { pipeline, preReview } = makePipeline({
+      allowHit: true,
+      records: recordsStub({ createConfirmed: vi.fn(async (): Promise<GateDecisionRecordResult> => 'unavailable') }),
+      mode: 'auto-then-user',
+    })
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
     expect(preReview.preReview).not.toHaveBeenCalled()
   })
 
@@ -201,6 +212,21 @@ describe('DefaultGatePipeline', () => {
     const { pipeline, records, deps } = makePipeline({ preReview, now: () => 201 })
     await expect(pipeline.decide(request())).resolves.toBe('unavailable')
     expect(records.createConfirmed).not.toHaveBeenCalled()
+    expect(deps.allowCache.recordGuardianAllow).not.toHaveBeenCalled()
+  })
+
+  it('does not allow when durable confirmation crosses the review deadline', async () => {
+    let now = 199
+    const records = recordsStub({
+      createConfirmed: vi.fn(async (): Promise<GateDecisionRecordResult> => {
+        now = 200
+        return 'confirmed'
+      }),
+    })
+    const preReview = { preReview: vi.fn(async () => ({ ...sealed('allow'), deadlineAt: 200 })) }
+    const { pipeline, deps } = makePipeline({ preReview, records, now: () => now })
+    await expect(pipeline.decide(request())).resolves.toBe('unavailable')
+    expect(records.createConfirmed).toHaveBeenCalledOnce()
     expect(deps.allowCache.recordGuardianAllow).not.toHaveBeenCalled()
   })
 

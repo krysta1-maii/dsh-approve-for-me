@@ -184,7 +184,15 @@ export class DefaultGatePipeline implements GatePipeline {
       return this.delegateOrUnavailable()
     }
 
-    if (this.deps.allowCache.lookup(facts.allowCacheKey)) return 'allowed-once'
+    if (this.deps.allowCache.lookup(facts.allowCacheKey)) {
+      // A cache entry is only an optimization over a prior Guardian decision;
+      // each distinct approval ask still needs its own durable confirmation
+      // before it can receive an automatic grant.
+      const result = await this.deps.records.createConfirmed(recordFor(request, facts, 'allow', requestId))
+      if (result === 'confirmed') return 'allowed-once'
+      if (result === 'conflict') return 'unavailable'
+      return this.delegateOrUnavailable()
+    }
 
     {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
@@ -220,6 +228,10 @@ export class DefaultGatePipeline implements GatePipeline {
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'conflict') return 'unavailable'
       if (result !== 'confirmed') return this.delegateOrUnavailable()
+      // Durable confirmation is asynchronous; expiration while it was pending
+      // must not turn a previously-valid disposition into a late grant.
+      if (request.signal?.aborted) return 'cancelled'
+      if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
       this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
     } else if (mapped === 'rejected') {
       await this.deps.records.recordBestEffort(record)
