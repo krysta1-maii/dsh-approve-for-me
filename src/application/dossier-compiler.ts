@@ -15,17 +15,16 @@ function record(value: JsonValue): Record<string, JsonValue> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
 }
 
-function directUserMessage(event: SessionFactEventV1): DirectUserMessageV1 | undefined {
-  if (event.retention !== 'included' || event.type !== 'user/message') return undefined
+function directUserMessage(event: SessionFactEventV1, turn: number | undefined): DirectUserMessageV1 | undefined {
+  if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
   const data = record(event.data)
   const source = data === undefined ? undefined : record(data.source as JsonValue)
   const messageId = data?.id
   const content = data?.content
-  const turn = data?.turn
   if (source?.kind !== 'user' || typeof messageId !== 'string' || messageId.length === 0
-    || !Array.isArray(content) || !Number.isSafeInteger(turn) || (turn as number) < 0) return undefined
+    || !Array.isArray(content) || turn === undefined) return undefined
   return Object.freeze({
-    event: Object.freeze({ seq: event.seq, type: event.type, turn: turn as number }),
+    event: Object.freeze({ seq: event.seq, type: event.type, turn }),
     messageId,
     content: Object.freeze([...content] as JsonValue[]),
     surfaceState: event.surfaceState ?? 'visible',
@@ -34,9 +33,16 @@ function directUserMessage(event: SessionFactEventV1): DirectUserMessageV1 | und
 
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
   const byTurn = new Map<number, DirectUserMessageV1[]>()
+  let activeTurn: number | undefined
   for (const event of facts.events) {
+    if (event.type === 'turn/start') {
+      const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0) return undefined
+      activeTurn = turn as number
+      continue
+    }
     if (event.type !== 'user/message') continue
-    const message = directUserMessage(event)
+    const message = directUserMessage(event, activeTurn)
     if (message === undefined || message.event.turn === undefined) return undefined
     const messages = byTurn.get(message.event.turn) ?? []
     messages.push(message)
@@ -97,15 +103,20 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    const allowed = new Set(['turn/start', 'turn/end', 'user/message', 'tool/call', 'approval/asked'])
+    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'tool/call', 'approval/asked'])
     if (facts.events.some(event => !allowed.has(event.type)) || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
     const interaction = interactionFrom(facts)
     if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
 
-    const turn = facts.approvalBinding.event.turn ?? 0
-    const step = facts.approvalBinding.event.step ?? 0
+    const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
+      ? callData?.turn as number
+      : facts.approvalBinding.event.turn
+    const step = Number.isSafeInteger(callData?.step) && (callData?.step as number) >= 0
+      ? callData?.step as number
+      : facts.approvalBinding.event.step ?? 0
+    if (turn === undefined) return { kind: 'incomplete', reason: 'missing-current-turn' }
     const dossier = Object.freeze({
       version: 1 as const,
       kind: 'guardian-dossier' as const,

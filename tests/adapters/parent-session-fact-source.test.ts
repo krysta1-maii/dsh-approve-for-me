@@ -36,7 +36,7 @@ function agent(overrides: object = {}) {
       header: { version: 0, id: 'parent-1', createdAt: 100 },
       events: [
         { seq: 0, time: 100, type: 'turn/start', data: { turn: 1 } },
-        { seq: 1, time: 101, type: 'request/header', data: { header: { tools: [{ name: 'bash' }] }, reason: 'initial' } },
+        { seq: 1, time: 101, type: 'user/message', surfaceOp: 'append', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'pwd' }] } },
         { seq: 2, time: 102, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
         { seq: 3, time: 103, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } },
         { seq: 4, time: 104, type: 'tool/result', data: { turn: 1, step: 0, message: { toolCallId: 'call-1', content: [{ type: 'text', text: 'secret' }] } } },
@@ -59,6 +59,7 @@ describe('DshParentSessionFactSource', () => {
     expect(facts?.executionFacts).toEqual([execution])
     expect(facts?.approvalSnapshots).toEqual([approval])
     expect(facts?.events).toHaveLength(4)
+    expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
   })
 
   it('refuses an ambiguous call or a projection bound to a different durable event', () => {

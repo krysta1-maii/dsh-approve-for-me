@@ -51,7 +51,7 @@ function eventRef(event: SessionEventLike): EventRefV1 {
   })
 }
 
-function snapshotEvent(event: SessionEventLike): SessionFactEventV1 {
+function snapshotEvent(event: SessionEventLike, surfaceState?: 'visible' | 'superseded'): SessionFactEventV1 {
   const envelope = {
     seq: event.seq,
     time: event.time,
@@ -59,6 +59,7 @@ function snapshotEvent(event: SessionEventLike): SessionFactEventV1 {
     ...event.ignorable === true ? { ignorable: true as const } : {},
     ...event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: Object.freeze([...event.sourceEventSeqs]) },
     ...event.surfaceOp === undefined ? {} : { surfaceOp: event.surfaceOp },
+    ...surfaceState === undefined ? {} : { surfaceState },
   }
   // Tool results can contain unbounded/private content. Their existence remains
   // auditable but their contents are deliberately not copied into a review packet.
@@ -66,6 +67,22 @@ function snapshotEvent(event: SessionEventLike): SessionFactEventV1 {
     return Object.freeze({ ...envelope, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const })
   }
   return Object.freeze({ ...envelope, retention: 'included' as const, data: event.data as JsonValue })
+}
+
+/** Conservatively classify only surface events with explicit placement. */
+function snapshotEvents(events: readonly SessionEventLike[]): readonly SessionFactEventV1[] {
+  const superseded = new Set<number>()
+  for (const event of events) {
+    const op = event.surfaceOp as { readonly op?: unknown } | undefined
+    if (op?.op === 'replace') {
+      for (const sourceSeq of event.sourceEventSeqs ?? []) superseded.add(sourceSeq)
+    }
+  }
+  return Object.freeze(events.map(event => {
+    const surface = event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result'
+    const state = surface && event.surfaceOp !== undefined ? (superseded.has(event.seq) ? 'superseded' : 'visible') : undefined
+    return snapshotEvent(event, state)
+  }))
 }
 
 function sessionIdentity(agent: Agent): { session: SessionLike; identity: PrincipalSessionIdentityV1 } | undefined {
@@ -150,7 +167,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       eventProjection: Object.freeze({ policyId: 'dsh-session-facts-v1', classificationCatalog: input.classificationCatalog }),
       approvalBinding: Object.freeze({ event: eventRef(asked), approvalRequestId: input.approvalRequestId, callId: input.callId, toolName: input.toolName }),
       throughSeq,
-      events: Object.freeze(events.filter(event => event.seq <= throughSeq).map(snapshotEvent)),
+      events: snapshotEvents(events.filter(event => event.seq <= throughSeq)),
       delegationReceipts: Object.freeze(executions.flatMap(item => item.delegationReceipt === undefined ? [] : [item.delegationReceipt])),
       executionFacts: Object.freeze(executions),
       approvalSnapshots: Object.freeze(approvals),
