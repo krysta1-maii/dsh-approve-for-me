@@ -43,6 +43,7 @@ export interface MachinePolicyAdapterOptions {
     readonly agent: Agent
     readonly parentSessionId: string
     readonly callId?: string
+    readonly requestId: string
     readonly toolName: string
   }) => string
 }
@@ -69,6 +70,7 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           agent: request.agent,
           parentSessionId,
           callId,
+          requestId: request.requestId,
           toolName: request.toolName,
         })
         if (actionHash.length === 0) return 'unavailable'

@@ -44,6 +44,46 @@ export interface ApproveForMeInstallOptions {
 
 export { Config }
 
+interface LiveSessionEvent {
+  readonly seq: number
+  readonly type: string
+  readonly data: unknown
+}
+
+function deriveLiveGateScope(agent: Agent, requestId: string, callId: string, toolName: string): {
+  readonly sessionId: string
+  readonly turn: number
+  readonly directUserFrontierSeq: number
+  readonly rootRequester: boolean
+} {
+  const session = agent.session as unknown as { id?: unknown; header?: { id?: unknown; parentSession?: unknown; delegationDepth?: unknown }; events?: readonly LiveSessionEvent[] }
+  const agentId = String((agent as unknown as { id?: unknown }).id ?? '')
+  const sessionId = typeof session.id === 'string' ? session.id : ''
+  if (sessionId.length === 0 || agentId !== sessionId || session.header?.id !== sessionId || !Array.isArray(session.events)) {
+    throw new GateFailure('integrity', 'approval ask is not bound to an exact live Agent/Session')
+  }
+  const asked = session.events.filter(event => event.type === 'approval/asked' && (() => {
+    const data = event.data as Record<string, unknown>
+    return data.id === requestId && data.callId === callId && data.toolName === toolName
+  })())
+  if (asked.length !== 1) throw new GateFailure('integrity', 'approval ask does not have one matching durable audit event')
+  const ask = asked[0]!
+  let turn: number | undefined
+  let directUserFrontierSeq: number | undefined
+  for (const event of session.events) {
+    if (event.seq > ask.seq) break
+    const data = event.data as Record<string, unknown>
+    if (event.type === 'turn/start' && Number.isSafeInteger(data.turn)) turn = data.turn as number
+    if (event.type === 'user/message' && (data.source as Record<string, unknown> | undefined)?.kind === 'user') directUserFrontierSeq = event.seq
+  }
+  if (turn === undefined || directUserFrontierSeq === undefined) {
+    throw new GateFailure('integrity', 'approval ask lacks a derived turn or direct-user frontier')
+  }
+  const depth = session.header.delegationDepth
+  const rootRequester = session.header.parentSession === undefined && (depth === undefined || depth === 0)
+  return { sessionId, turn, directUserFrontierSeq, rootRequester }
+}
+
 /**
  * Mount the complete DSH business adapter on the standard Guarded Continuable
  * `dsh-managed-agent` Host. Composition order matters: channel → provider →
@@ -129,14 +169,12 @@ export function installApproveForMe(
   const machinePolicy = createMachinePolicyAdapter({
     gate,
     mode: normalized.mode,
-    resolveActionHash: ({ agent, callId, toolName }) => {
+    resolveActionHash: ({ agent, callId, requestId, toolName }) => {
       if (callId === undefined) {
         throw new GateFailure('integrity', 'cannot resolve action hash for an approval ask without a tool call id')
       }
-      const parentSessionId = String(agent.session?.id ?? '')
-      if (parentSessionId.length === 0) {
-        throw new GateFailure('integrity', 'cannot resolve action hash without an exact parent Session')
-      }
+      const scope = deriveLiveGateScope(agent, requestId, callId, toolName)
+      const parentSessionId = scope.sessionId
       const captured = captures.lookup(agent, callId, toolName)
       if (captured === undefined) {
         throw new GateFailure('integrity', `cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
@@ -153,20 +191,20 @@ export function installApproveForMe(
         classification,
         breakerKey: {
           parentLifecycleFingerprint: parentSessionId,
-          turn: 0,
-          directUserFrontierSeq: 0,
+          turn: scope.turn,
+          directUserFrontierSeq: scope.directUserFrontierSeq,
           actionHash,
         },
         allowCacheKey: {
           parentLifecycleFingerprint: parentSessionId,
-          turn: 0,
-          directUserFrontierSeq: 0,
+          turn: scope.turn,
+          directUserFrontierSeq: scope.directUserFrontierSeq,
           actionHash,
           configurationFingerprint: normalized.preset.configurationFingerprint,
           generation: normalized.preset.generation,
         },
-        rootRequester: true,
-        directChildOrigin: false,
+        rootRequester: scope.rootRequester,
+        directChildOrigin: !scope.rootRequester,
         generation: normalized.preset.generation,
         configurationFingerprint: normalized.preset.configurationFingerprint,
         authority: { live: agent, sessionId: parentSessionId },

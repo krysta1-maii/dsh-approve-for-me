@@ -14,6 +14,7 @@ import type {
   TrustEnvelopeInputV1,
 } from '../approval-gate/trust-envelope.js'
 import type { ParentAuthority } from '../ports/managed-reviewer.js'
+import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 
 export interface GateFactRegistration {
   readonly parentSessionId: string
@@ -28,6 +29,7 @@ export interface GateFactRegistration {
   readonly directChildOrigin: boolean
   readonly generation: string
   readonly configurationFingerprint: string
+  readonly verifiedDossier?: SourceVerifiedDossierV1
   readonly authority: ParentAuthority<unknown, string>
 }
 
@@ -38,7 +40,7 @@ export interface GateFactRegistration {
  * can replace this without touching the gate pipeline.
  */
 export class InMemoryGateActionFactStore implements GateActionFactResolver {
-  private readonly byHash = new Map<string, GateActionFacts>()
+  private readonly bySessionAndHash = new Map<string, GateActionFacts>()
   private readonly authorityBySession = new Map<string, ParentAuthority<unknown, string>>()
 
   register(input: GateFactRegistration): void {
@@ -53,13 +55,22 @@ export class InMemoryGateActionFactStore implements GateActionFactResolver {
       directChildOrigin: input.directChildOrigin,
       generation: input.generation,
       configurationFingerprint: input.configurationFingerprint,
+      ...input.verifiedDossier === undefined ? {} : { verifiedDossier: input.verifiedDossier },
     }
-    this.byHash.set(input.actionHash, facts)
-    this.authorityBySession.set(input.parentSessionId, input.authority)
+    const authority = input.authority as ParentAuthority<unknown, string>
+    if (authority.sessionId !== input.parentSessionId) {
+      throw new TypeError('gate fact authority session must match parent session')
+    }
+    this.bySessionAndHash.set(this.key(input.parentSessionId, input.actionHash), facts)
+    this.authorityBySession.set(input.parentSessionId, authority)
   }
 
-  async resolve(request: { actionHash: string }): Promise<GateActionFacts | undefined> {
-    return this.byHash.get(request.actionHash)
+  async resolve(request: { actionHash: string; parentSessionId: string }): Promise<GateActionFacts | undefined> {
+    return this.bySessionAndHash.get(this.key(request.parentSessionId, request.actionHash))
+  }
+
+  private key(parentSessionId: string, actionHash: string): string {
+    return `${parentSessionId}\0${actionHash}`
   }
 
   authorityFor(parentSessionId: string): ParentAuthority<unknown, string> | undefined {

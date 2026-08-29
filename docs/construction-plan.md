@@ -78,7 +78,7 @@ stock DSH 0.1.2-alpha.1（不修改）
 
 退出条件：包络内动作 0 人工；包络外走 Guardian；身份/完整性冲突永不进入 delegate。
 
-> 施工状态（2026-08-29）：Reviewer 交付物已切换为 `ApprovalReviewPacketV1`，由 source-verified dossier hash 绑定，不再向 Reviewer 发送 action-only JSON。生产 gate 在完整 dossier 接入前先返回 `unavailable`，因此 trust-envelope、缓存或 Guardian 均不能绕过证据门槛。
+> 施工状态（2026-08-29）：Reviewer 交付物已切换为 `ApprovalReviewPacketV1`，由 source-verified dossier hash 绑定，不再向 Reviewer 发送 action-only JSON。生产 gate 在完整 dossier 接入前先返回 `unavailable`，因此 trust-envelope、缓存或 Guardian 均不能绕过证据门槛。Gate 的 session/action facts 现从精确 `approval/asked` 与 Session event log 推导 turn、direct-user frontier 和 root 状态；尚未有目标宿主 Storage Domain durable record 前，自动 allow 继续关闭。
 
 ### D1：事实源与卷宗 compiler
 
