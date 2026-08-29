@@ -286,7 +286,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || facts.approvalBinding.event.step !== step) {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
-    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)) {
+    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)
+      || facts.events.some(event => (event.type === 'assistant/chunk' || event.type === 'assistant/message')
+        && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
     if (facts.events.some(event => event.type === 'request/header' && event.seq >= execution.request.eventSeq)) {
