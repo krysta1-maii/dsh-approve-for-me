@@ -41,6 +41,15 @@ function nonNegative(value: unknown): number | undefined {
   return Number.isSafeInteger(value) && (value as number) >= 0 && !Object.is(value, -0) ? value as number : undefined
 }
 
+/** Cross the source boundary with a detached, immutable strict-JSON value. */
+function frozenSnapshot<T>(value: T): T | undefined {
+  try {
+    return freezeJson(snapshotJson(value)) as T
+  } catch {
+    return undefined
+  }
+}
+
 function eventRef(event: SessionEventLike): EventRefV1 {
   const data = event.data as Record<string, unknown>
   const turn = nonNegative(data?.turn)
@@ -197,17 +206,24 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       || approval.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
       || approval.execution.projectorId !== execution.projection.projectorId) return undefined
     const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
-    if (eventSnapshots === undefined) return undefined
+    const classificationCatalog = frozenSnapshot(input.classificationCatalog)
+    const executionSnapshots = executions.map(frozenSnapshot)
+    const approvalSnapshots = approvals.map(frozenSnapshot)
+    if (eventSnapshots === undefined || classificationCatalog === undefined
+      || executionSnapshots.some(snapshot => snapshot === undefined)
+      || approvalSnapshots.some(snapshot => snapshot === undefined)) return undefined
+    const frozenExecutions = executionSnapshots as typeof executions
+    const frozenApprovals = approvalSnapshots as typeof approvals
     return Object.freeze({
       version: 1,
       session: bound.identity,
-      eventProjection: Object.freeze({ policyId: 'dsh-session-facts-v1', classificationCatalog: input.classificationCatalog }),
+      eventProjection: Object.freeze({ policyId: 'dsh-session-facts-v1', classificationCatalog }),
       approvalBinding: Object.freeze({ event: eventRef(asked), approvalRequestId: input.approvalRequestId, callId: input.callId, toolName: input.toolName }),
       throughSeq,
       events: eventSnapshots,
-      delegationReceipts: Object.freeze(executions.flatMap(item => item.delegationReceipt === undefined ? [] : [item.delegationReceipt])),
-      executionFacts: Object.freeze(executions),
-      approvalSnapshots: Object.freeze(approvals),
+      delegationReceipts: Object.freeze(frozenExecutions.flatMap(item => item.delegationReceipt === undefined ? [] : [item.delegationReceipt])),
+      executionFacts: Object.freeze(frozenExecutions),
+      approvalSnapshots: Object.freeze(frozenApprovals),
     })
   }
 }

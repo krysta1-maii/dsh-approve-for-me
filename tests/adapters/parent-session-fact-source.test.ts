@@ -69,6 +69,19 @@ describe('DshParentSessionFactSource', () => {
     if (snapshotEvent?.retention === 'included') expect(Object.isFrozen(snapshotEvent.data as object)).toBe(true)
   })
 
+  it('detaches non-session facts from mutable repository and catalog inputs', () => {
+    const requester = agent()
+    const snapshotApproval = { ...approval, environment: { nested: { value: 'before' } } }
+    const snapshotCatalog = { ...catalog, descriptors: [{ ...catalog.descriptors[0]! }] }
+    const source = new DshParentSessionFactSource({ get: () => requester as never })
+    const facts = source.snapshot(input({ agent: requester as never, approvalSnapshots: [snapshotApproval], classificationCatalog: snapshotCatalog }))
+    ;((snapshotApproval.environment as { nested: { value: string } }).nested).value = 'after'
+    ;(snapshotCatalog.descriptors[0] as { classificationId: string }).classificationId = 'after'
+    expect(facts?.approvalSnapshots[0]).toMatchObject({ environment: { nested: { value: 'before' } } })
+    expect(facts?.eventProjection.classificationCatalog.descriptors[0]).toMatchObject({ classificationId: 'class-1' })
+    expect(Object.isFrozen(facts?.approvalSnapshots[0]?.environment as object)).toBe(true)
+  })
+
   it('preserves runtime delegation depth so a resumed child cannot appear root', () => {
     const requester = agent({ options: { subagentDepth: 1 } })
     const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })
