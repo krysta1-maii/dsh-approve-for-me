@@ -362,6 +362,18 @@ export function approvalReviewRequestContent(request: ApprovalReviewRequest): re
   })])
 }
 
+/** Serialize the verified dossier packet, never an action-only review request. */
+export function approvalReviewPacketContent(packet: import('./records.js').ApprovalReviewPacketV1): readonly ReviewerTextBlock[] {
+  return Object.freeze([Object.freeze({
+    type: 'text' as const,
+    text: [
+      'Review the following immutable approval review packet, including its source-verified dossier.',
+      'Return exactly one terminal result through the approval decision tool.',
+      canonicalJson(packet),
+    ].join('\n'),
+  })])
+}
+
 /** Map a validated Reviewer decision to the DSH answerer behavior. */
 export function resolveApprovalDecision(decision: ApprovalDecision, mode: ReviewMode): ApprovalResolution {
   switch (decision.decision) {

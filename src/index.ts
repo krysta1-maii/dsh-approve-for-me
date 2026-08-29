@@ -93,6 +93,7 @@ export type {
 export {
   APPROVAL_PROTOCOL_VERSION,
   REVIEWER_PROVIDER,
+  approvalReviewPacketContent,
   approvalReviewRequestContent,
   createActionSnapshot,
   createApprovalReviewRequest,

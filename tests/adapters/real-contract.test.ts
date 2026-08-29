@@ -23,6 +23,9 @@ import {
   createReviewerPolicyV1,
   createReviewerProvider,
   createReviewerProviderData,
+  createActionSnapshot,
+  createApprovalReviewPacketV1,
+  createApprovalReviewRequest,
   snapshotJson,
 } from '../../src/index.js'
 
@@ -82,23 +85,13 @@ describe('real guarded-continuable contract fixture', () => {
 
   it('keeps the policy content in the real ContentBlock vocabulary', () => {
     const policy = createReviewerPolicyV1()
-    const blocks: ContentBlock[] = policy.buildRequestContent({
-      protocolVersion: 1,
-      reviewId: 'review-1',
-      parentSessionId: 'parent-1',
-      reviewerSessionId: 'reviewer-1',
-      generation: 'generation-1',
-      actionHash: `sha256:${'0'.repeat(64)}`,
-      issuedAt: 100,
-      deadlineAt: 200,
-      action: {
-        version: 1,
-        kind: 'tool-call',
-        toolName: 'bash',
-        arguments: {},
-        requestedPermissions: [],
-      },
+    const request = createApprovalReviewRequest(createActionSnapshot({ toolName: 'bash', arguments: {} }), {
+      reviewId: 'review-1', parentSessionId: 'parent-1', reviewerSessionId: 'reviewer-1', generation: 'generation-1', issuedAt: 100, deadlineAt: 200,
     })
+    const blocks: ContentBlock[] = policy.buildRequestContent(createApprovalReviewPacketV1({
+      request,
+      dossier: { version: 1, kind: 'guardian-dossier', freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 }, environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { ready: true } },
+    }))
     expect(blocks[0]!.type).toBe('text')
   })
 

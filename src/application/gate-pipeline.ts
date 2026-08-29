@@ -20,6 +20,7 @@ import type {
   TrustEnvelopeInputV1,
 } from '../approval-gate/trust-envelope.js'
 import { gateFailureOutcome } from './gate-failure.js'
+import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 
 /**
  * Resolved facts that the DSH adapter/application layer must supply before the
@@ -38,6 +39,8 @@ export interface GateActionFacts {
   readonly directChildOrigin: boolean
   readonly generation: string
   readonly configurationFingerprint: string
+  /** Source-verified evidence required for production authorization. */
+  readonly verifiedDossier?: SourceVerifiedDossierV1
 }
 
 export interface GateActionFactResolver {
@@ -49,6 +52,7 @@ export interface GatePreReviewInput {
   readonly parentSessionId: string
   readonly callId: string
   readonly action: ActionSnapshot
+  readonly verifiedDossier?: SourceVerifiedDossierV1
   readonly reason?: string
   readonly signal?: AbortSignal
   readonly generation: string
@@ -93,6 +97,8 @@ export interface GatePipelineDependencies {
   readonly preReview: GatePreReview
   readonly records: GateDecisionRecordStore
   readonly mode: 'auto' | 'auto-then-user'
+  /** Production adapter enables this until a source-verified dossier is present. */
+  readonly requireVerifiedDossier?: boolean
   readonly now?: () => number
 }
 
@@ -151,6 +157,9 @@ export class DefaultGatePipeline implements GatePipeline {
     if (requestId === undefined || callId === undefined) return 'unavailable'
     const facts = await this.deps.facts.resolve(request)
     if (facts === undefined) return 'unavailable'
+    // This precedes every trust/cache/replay route; a packet-less action can
+    // never acquire an automatic authorization in the real plugin.
+    if (this.deps.requireVerifiedDossier && facts.verifiedDossier === undefined) return 'unavailable'
     if (facts.directChildOrigin || !facts.rootRequester) return 'unavailable'
 
     const classification = facts.classification
@@ -191,6 +200,7 @@ export class DefaultGatePipeline implements GatePipeline {
       parentSessionId: request.parentSessionId,
       callId,
       action: facts.action,
+      ...facts.verifiedDossier === undefined ? {} : { verifiedDossier: facts.verifiedDossier },
       ...request.reason === undefined ? {} : { reason: request.reason },
       ...request.signal === undefined ? {} : { signal: request.signal },
       generation: facts.generation,

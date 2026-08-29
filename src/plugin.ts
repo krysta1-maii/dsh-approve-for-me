@@ -116,6 +116,9 @@ export function installApproveForMe(
     preReview,
     records,
     mode: normalized.mode,
+    // No automatic path may run until the source adapter supplies a complete,
+    // source-verified dossier for this exact approval ask.
+    requireVerifiedDossier: true,
   })
 
   // Every AFM decision uses the single machine-policy path. An empty catalog

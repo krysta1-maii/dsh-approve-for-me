@@ -4,10 +4,16 @@ import {
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
   hashAction,
+  sealSourceVerifiedDossier,
 } from '../../src/index.js'
 import type { ApprovalDecision, ReviewCoordinator } from '../../src/index.js'
 
 const action = () => createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
+const verifiedDossier = () => sealSourceVerifiedDossier({
+  version: 1 as const, kind: 'guardian-dossier' as const,
+  freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
+  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { ready: true },
+})
 
 function decision(overrides: Partial<ApprovalDecision> = {}): ApprovalDecision {
   return {
@@ -36,6 +42,7 @@ function input(overrides: Partial<Parameters<DefaultPreReviewCoordinator<{ id: s
     requestId: 'ask-1',
     callId: 'call-1',
     action: action(),
+    verifiedDossier: verifiedDossier(),
     generation: 'generation-1',
     configurationFingerprint: `sha256:${'b'.repeat(64)}`,
     issuedAt: 100,

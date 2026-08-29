@@ -3,10 +3,14 @@ import { ReviewProtocolError } from './decision-channel.js'
 import type { DecisionChannel, ReviewClock } from './decision-channel.js'
 import { SerialLanes } from './serial-lanes.js'
 import {
-  approvalReviewRequestContent,
+  approvalReviewPacketContent,
   createApprovalReviewRequest,
   parseActionSnapshot,
 } from '../domain/protocol.js'
+import { createApprovalReviewPacketV1 } from '../domain/records.js'
+import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
+import type { JsonValue } from '../domain/json.js'
+import type { ApprovalReviewPacketV1 } from '../domain/records.js'
 import type {
   ActionSnapshot,
   ApprovalDecision,
@@ -27,6 +31,7 @@ export interface ReviewCoordinator<Parent, SessionId extends string> {
   review(input: {
     readonly authority: ParentAuthority<Parent, SessionId>
     readonly action: ActionSnapshot
+    readonly verifiedDossier: SourceVerifiedDossierV1
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -42,7 +47,7 @@ export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
   readonly preset: ReviewerProviderDataV1
   readonly now?: () => number
   readonly reviewId?: () => string
-  readonly buildContent?: (request: ApprovalReviewRequest) => readonly ReviewerTextBlock[]
+  readonly buildContent?: (packet: ApprovalReviewPacketV1) => readonly ReviewerTextBlock[]
 }
 
 /**
@@ -54,7 +59,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
   implements ReviewCoordinator<Parent, SessionId> {
   private readonly now: () => number
   private readonly reviewId: () => string
-  private readonly buildContent: (request: ApprovalReviewRequest) => readonly ReviewerTextBlock[]
+  private readonly buildContent: (packet: ApprovalReviewPacketV1) => readonly ReviewerTextBlock[]
 
   constructor(private readonly options: ReviewCoordinatorOptions<Parent, SessionId>) {
     if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) {
@@ -62,12 +67,13 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     }
     this.now = options.now ?? Date.now
     this.reviewId = options.reviewId ?? randomUUID
-    this.buildContent = options.buildContent ?? approvalReviewRequestContent
+    this.buildContent = options.buildContent ?? approvalReviewPacketContent
   }
 
   review(input: {
     readonly authority: ParentAuthority<Parent, SessionId>
     readonly action: ActionSnapshot
+    readonly verifiedDossier: SourceVerifiedDossierV1
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -103,6 +109,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     input: {
       readonly authority: ParentAuthority<Parent, SessionId>
       readonly action: ActionSnapshot
+      readonly verifiedDossier: SourceVerifiedDossierV1
       readonly callId?: string
       readonly reason?: string
       readonly signal?: AbortSignal
@@ -128,6 +135,11 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     // `arm` throws synchronously when the request can never be pending
     // (disposed channel, duplicate id, abort racing past the early check,
     // expired deadline): such a review is never delivered to the child.
+    const packet = createApprovalReviewPacketV1({
+      request,
+      dossier: input.verifiedDossier.dossier as unknown as JsonValue,
+      dossierHash: input.verifiedDossier.dossierHash,
+    })
     const result = this.options.channel.arm(request, input.signal)
     // A very fast scoped tool may settle before deliver()'s acceptance promise
     // resumes this task. Attach containment immediately while preserving the
@@ -137,7 +149,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       await this.options.port.deliver(
         input.authority,
         childId,
-        this.buildContent(request),
+        this.buildContent(packet),
         input.signal === undefined ? {} : { signal: input.signal },
       )
     } catch (error: unknown) {

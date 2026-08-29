@@ -8,7 +8,8 @@ import {
   createActionSnapshot,
   createReviewerProviderData,
   hashAction,
-  parseApprovalReviewRequest,
+  parseApprovalReviewPacketV1,
+  sealSourceVerifiedDossier,
   snapshotJson,
 } from '../../src/index.js'
 import type {
@@ -61,7 +62,8 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
   ): Promise<string> {
     if (this.deliveryError !== undefined) throw this.deliveryError
     const encoded = content[0]!.text.split('\n').at(-1)!
-    const delivery = { authority, childId, request: parseApprovalReviewRequest(JSON.parse(encoded)) }
+    const packet = parseApprovalReviewPacketV1(JSON.parse(encoded))
+    const delivery = { authority, childId, request: packet.request }
     this.deliveries.push(delivery)
     await this.onDeliver?.(delivery)
     return `message-${this.deliveries.length}`
@@ -90,6 +92,12 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
 }
 
 const action = () => createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
+const verifiedDossier = () => sealSourceVerifiedDossier({
+  version: 1 as const,
+  kind: 'guardian-dossier' as const,
+  freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
+  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { ready: true },
+})
 const providerData = (generation = 'generation-1') => createReviewerProviderData({
   generation,
   modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
@@ -158,8 +166,8 @@ describe('DefaultReviewCoordinator', () => {
       expect(submit(decision(request), childId).status).toBe('accepted')
     }
     const parent = { id: 'parent-1' }
-    await expect(coordinator.review({ authority: authority(parent), action: action() })).resolves.toMatchObject({ decision: 'allow' })
-    await expect(coordinator.review({ authority: authority(parent), action: action() })).resolves.toMatchObject({ decision: 'allow' })
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })).resolves.toMatchObject({ decision: 'allow' })
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })).resolves.toMatchObject({ decision: 'allow' })
     expect(port.creates).toBe(1)
     expect(port.deliveries.map(item => item.childId)).toEqual(['parent-1-reviewer-1', 'parent-1-reviewer-1'])
     expect(port.deliveries[0]!.request.action).toEqual(action())
@@ -170,8 +178,8 @@ describe('DefaultReviewCoordinator', () => {
     const ids = ['review-1', 'review-2']
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
     const parent = { id: 'parent-1' }
-    const first = coordinator.review({ authority: authority(parent), action: action() })
-    const second = coordinator.review({ authority: authority(parent), action: action() })
+    const first = coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })
+    const second = coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })
     await waitFor(() => port.deliveries.length === 1)
     expect(port.deliveries).toHaveLength(1)
     const firstDelivery = port.deliveries[0]!
@@ -187,8 +195,8 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     let id = 0
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => `review-${++id}` })
-    const first = coordinator.review({ authority: authority({ id: 'parent-a' }), action: action() })
-    const second = coordinator.review({ authority: authority({ id: 'parent-b' }), action: action() })
+    const first = coordinator.review({ authority: authority({ id: 'parent-a' }), action: action(), verifiedDossier: verifiedDossier() })
+    const second = coordinator.review({ authority: authority({ id: 'parent-b' }), action: action(), verifiedDossier: verifiedDossier() })
     await waitFor(() => port.deliveries.length === 2)
     for (const delivery of port.deliveries) submit(decision(delivery.request), delivery.childId)
     await expect(Promise.all([first, second])).resolves.toHaveLength(2)
@@ -204,7 +212,7 @@ describe('DefaultReviewCoordinator', () => {
     })
     const { coordinator, submit } = makeCoordinator(port)
     port.onDeliver = ({ childId, request }) => { submit(decision(request), childId) }
-    await coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() })
+    await coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() })
     expect(port.creates).toBe(1)
     expect(port.children.map(child => child.id)).toEqual(['old-reviewer', 'parent-1-reviewer-1'])
   })
@@ -217,7 +225,7 @@ describe('DefaultReviewCoordinator', () => {
       { id: 'r2', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
     )
     const { coordinator } = makeCoordinator(port)
-    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
       .rejects.toThrow(/multiple Approval Reviewers/)
     expect(port.deliveries).toHaveLength(0)
   })
@@ -230,7 +238,7 @@ describe('DefaultReviewCoordinator', () => {
       expect(submit({ ...decision(request), generation: 'generation-other' }, childId).status)
         .toBe('identity-mismatch')
     }
-    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() }))
       .rejects.toMatchObject({ code: 'identity-mismatch' })
     expect(port.interrupts).toEqual([{ authority: authority(parent), childId: 'parent-1-reviewer-1' }])
   })
@@ -239,7 +247,7 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     port.deliveryError = new Error('inbox unavailable')
     const { coordinator, channel } = makeCoordinator(port, { reviewId: () => 'review-1' })
-    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
       .rejects.toThrow('inbox unavailable')
     expect(channel.submit({
       protocolVersion: 1,
@@ -262,7 +270,7 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     const { coordinator, submit } = makeCoordinator(port, { timeoutMs: 50 })
     const parent = { id: 'parent-1' }
-    const pending = coordinator.review({ authority: authority(parent), action: action() })
+    const pending = coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })
     const rejected = expect(pending).rejects.toMatchObject({ code: 'timed-out' })
     await waitFor(() => port.deliveries.length === 1)
     await vi.advanceTimersByTimeAsync(51)
@@ -278,7 +286,7 @@ describe('DefaultReviewCoordinator', () => {
     abort.abort()
     await expect(coordinator.review({
       authority: authority({ id: 'parent-1' }),
-      action: action(),
+      action: action(), verifiedDossier: verifiedDossier(),
       signal: abort.signal,
     })).rejects.toMatchObject({ code: 'aborted' })
     expect(port.creates).toBe(0)
@@ -291,11 +299,11 @@ describe('DefaultReviewCoordinator', () => {
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
     const parent = { id: 'parent-1' }
     port.onDeliver = ({ childId, request }) => { expect(submit(decision(request), childId).status).toBe('accepted') }
-    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() }))
       .resolves.toMatchObject({ reviewId: 'review-1' })
     // The same review id can never be armed again: the second review rejects
     // without a second delivery and without interrupting the idle child.
-    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() }))
       .rejects.toThrow(/already been armed/)
     expect(port.deliveries).toHaveLength(1)
     expect(port.interrupts).toHaveLength(0)
@@ -312,7 +320,7 @@ describe('DefaultReviewCoordinator', () => {
     port.onDeliver = ({ childId, request }) => {
       expect(submit(decision(request), childId).status).toBe('accepted')
     }
-    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
       .resolves.toMatchObject({ reviewId: 'review-1' })
     expect(port.creates).toBe(1)
     expect(port.deliveries).toHaveLength(1)
@@ -330,7 +338,7 @@ describe('DefaultReviewCoordinator', () => {
     port.onDeliver = ({ childId, request }) => {
       expect(submit(decision(request), childId).status).toBe('accepted')
     }
-    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action() }))
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
       .resolves.toMatchObject({ reviewId: 'review-1' })
     expect(port.creates).toBe(0)
     expect(port.deliveries).toHaveLength(1)
@@ -354,7 +362,7 @@ describe('DefaultReviewCoordinator', () => {
       }
       expect(submit(decision(request), childId).status).toBe('accepted')
     }
-    await expect(coordinator.review({ authority: authority(parent), action: action() }))
+    await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() }))
       .resolves.toMatchObject({ reviewId: 'review-2' })
     expect(port.creates).toBe(2)
     expect(port.deliveries).toHaveLength(2)

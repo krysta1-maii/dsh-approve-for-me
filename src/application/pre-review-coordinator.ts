@@ -10,6 +10,7 @@ import type {
   SealedDispositionV1,
 } from '../approval-gate/sealed-decision.js'
 import type { ParentAuthority } from '../ports/managed-reviewer.js'
+import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import type { ReviewCoordinator } from './review-coordinator.js'
 import { GateFailure } from './gate-failure.js'
 
@@ -18,6 +19,7 @@ export interface PreReviewInput<Parent, SessionId extends string> {
   readonly requestId: string
   readonly callId: string
   readonly action: ActionSnapshot
+  readonly verifiedDossier?: SourceVerifiedDossierV1
   readonly reason?: string
   readonly signal?: AbortSignal
   readonly generation: string
@@ -54,9 +56,13 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
   ) {}
 
   async preReview(input: PreReviewInput<Parent, SessionId>): Promise<SealedDispositionV1> {
+    if (input.verifiedDossier === undefined) {
+      throw new GateFailure('integrity', 'a source-verified dossier is required before Guardian review')
+    }
     const decision = await this.review.review({
       authority: input.authority,
       action: input.action,
+      verifiedDossier: input.verifiedDossier,
       callId: input.callId,
       ...input.reason === undefined ? {} : { reason: input.reason },
       ...input.signal === undefined ? {} : { signal: input.signal },

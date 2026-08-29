@@ -217,7 +217,7 @@ describe('installApproveForMe composition root', () => {
     expect(h.disposeRegistration).toHaveBeenCalledOnce()
   })
 
-  it('activates the real gate pipeline when a tool catalog is configured', async () => {
+  it('fails closed without a source-verified dossier despite a matching catalog', async () => {
     const h = harness()
     const catalogConfig: Config = {
       ...config,
@@ -248,7 +248,7 @@ describe('installApproveForMe composition root', () => {
       toolName: 'bash',
       callId: 'call-1',
       requestId: 'ask-1',
-    })).resolves.toBe('allowed-once')
+    })).resolves.toBe('unavailable')
 
     await plugin.dispose()
   })
