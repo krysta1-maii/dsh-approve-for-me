@@ -106,6 +106,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || askedData.callId !== facts.approvalBinding.callId || askedData.toolName !== facts.approvalBinding.toolName) {
       return { kind: 'incomplete', reason: 'missing-current-request-event' }
     }
+    if (!Number.isSafeInteger(askedEvent.time) || askedEvent.time < 0) {
+      return { kind: 'incomplete', reason: 'invalid-frozen-event-time' }
+    }
     const callEvent = facts.events[execution.request.eventSeq]
     const callData = callEvent?.retention === 'included' ? record(callEvent.data) : undefined
     if (execution.request.eventSeq >= facts.throughSeq || callEvent?.type !== execution.request.eventType
@@ -143,10 +146,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         throughSeq: facts.throughSeq,
         currentTurn: turn,
         currentStep: step,
-        // Deterministic placeholder until the source-backed compiler accepts an
-        // explicit capture timestamp; using Date.now() here would make the same
-        // facts produce different dossier hashes on every compile.
-        frozenAt: 0,
+        // Bind to the immutable approval/asked event, never the wall-clock time
+        // at recompilation, so the same frozen facts have the same dossier hash.
+        frozenAt: askedEvent.time,
       },
       environment: Object.freeze({
         approvalSnapshot: snapshot.environment,
