@@ -459,6 +459,33 @@ describe('DefaultDossierCompiler', () => {
       approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 10 }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: priorClosedStep }).kind).toBe('ready')
+    const priorCompletedStep = {
+      ...priorClosedStep,
+      approvalBinding: { ...priorClosedStep.approvalBinding, event: { seq: 14, type: 'approval/asked' as const, turn: 1, step: 1 } },
+      throughSeq: 14,
+      events: [
+        ...priorClosedStep.events.slice(0, 3),
+        { seq: 3, time: 4, type: 'assistant/chunk' as const, retention: 'included' as const, data: { turn: 1, step: 0, chunk: { type: 'tool-call-delta' } } },
+        { seq: 4, time: 5, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{\"command\":\"ls\"}' }] } } },
+        { seq: 5, time: 6, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-0', name: 'bash', arguments: '{\"command\":\"ls\"}' } },
+        { seq: 6, time: 7, type: 'tool/result' as const, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const, sourceEventSeqs: [5] },
+        { ...priorClosedStep.events[3]!, seq: 7, time: 8 },
+        { ...priorClosedStep.events[4]!, seq: 8, time: 9 },
+        ...priorClosedStep.events.slice(5).map(event => ({ ...event, seq: event.seq + 4, time: event.time + 4, data: event.type === 'assistant/chunk' || event.type === 'assistant/message' || event.type === 'tool/call' ? { ...(event.data as object), turn: 1, step: 1 } : event.data })),
+      ],
+      executionFacts: [
+        { ...priorClosedStep.executionFacts[0]!, request: { ...priorClosedStep.executionFacts[0]!.request, eventSeq: 5, callId: 'call-0' }, projection: { ...priorClosedStep.executionFacts[0]!.projection, action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } }), actionHash: hashAction(createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })), observedAt: 6 }, result: { eventSeq: 6, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } } },
+        { ...priorClosedStep.executionFacts[0]!, request: { ...priorClosedStep.executionFacts[0]!.request, eventSeq: 13 }, projection: { ...priorClosedStep.executionFacts[0]!.projection, observedAt: 14 } },
+      ],
+      approvalSnapshots: [{ ...priorClosedStep.approvalSnapshots[0]!, approvalAskedSeq: 14 }],
+    }
+    const priorCompletedResult = new DefaultDossierCompiler(deps).compile({ facts: priorCompletedStep })
+    expect(priorCompletedResult.kind).toBe('ready')
+    if (priorCompletedResult.kind === 'ready') {
+      expect(priorCompletedResult.verified.dossier).toMatchObject({
+        currentTurnTools: { attempts: [{ request: { callId: 'call-0', issuedIn: { turn: 1, step: 0 } }, outcome: { kind: 'completed' } }] },
+      })
+    }
   })
 
   it('fails closed rather than omit unsupported historical events', () => {

@@ -139,33 +139,42 @@ function requestContextFrom(facts: ParentSessionFactSnapshotV1): JsonValue | und
   return latest
 }
 
-function currentAssistantMessageForCalls(
+function assistantMessagesForCalls(
   events: readonly SessionFactEventV1[],
-  calls: readonly { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[],
-  turn: number,
-  step: number,
-): EventRefV1 | undefined {
-  const chunks = events.filter(event => event.type === 'assistant/chunk')
-  if (chunks.some(event => {
+  calls: readonly { readonly eventSeq: number; readonly callId: string; readonly toolName: string; readonly rawArguments: unknown; readonly turn: number; readonly step: number }[],
+  currentTurn: number,
+  currentStep: number,
+): ReadonlyMap<number, { readonly issuedIn: EventRefV1; readonly blockIndex: number }> | undefined {
+  if (events.filter(event => event.type === 'assistant/chunk').some(event => {
     const data = event.retention === 'included' ? record(event.data) : undefined
-    return data?.turn !== turn || data.step !== step
+    return data?.turn !== currentTurn || !Number.isSafeInteger(data.step) || (data.step as number) < 0 || (data.step as number) > currentStep
   })) return undefined
-  const messages = events.filter(event => event.type === 'assistant/message')
-  if (messages.length !== 1) return undefined
-  const event = messages[0]!
-  const data = event.retention === 'included' ? record(event.data) : undefined
-  const message = data === undefined ? undefined : record(data.message as JsonValue)
-  const source = message === undefined ? undefined : record(message.source as JsonValue)
-  const content = message?.content
-  if (data?.turn !== turn || data.step !== step || data.interrupted === true
-    || message?.role !== 'assistant' || typeof message.id !== 'string' || message.id.length === 0
-    || source?.kind !== 'model' || !Array.isArray(content) || content.length !== calls.length) return undefined
-  for (const [index, call] of calls.entries()) {
-    const block = record(content[index] as JsonValue)
-    if (block?.type !== 'tool-call' || block.id !== call.callId
-      || block.name !== call.toolName || block.arguments !== call.rawArguments) return undefined
+  const byStep = new Map<string, typeof calls>()
+  for (const call of calls) {
+    const key = `${call.turn}:${call.step}`
+    byStep.set(key, [...(byStep.get(key) ?? []), call])
   }
-  return Object.freeze({ seq: event.seq, type: event.type, turn, step })
+  const bindings = new Map<number, { readonly issuedIn: EventRefV1; readonly blockIndex: number }>()
+  const messages = events.filter(event => event.type === 'assistant/message')
+  if (messages.length !== byStep.size) return undefined
+  for (const event of messages) {
+    const data = event.retention === 'included' ? record(event.data) : undefined
+    const message = data === undefined ? undefined : record(data.message as JsonValue)
+    const source = message === undefined ? undefined : record(message.source as JsonValue)
+    const messageTurn = data?.turn
+    const messageStep = data?.step
+    if (messageTurn !== currentTurn || !Number.isSafeInteger(messageStep) || (messageStep as number) < 0 || (messageStep as number) > currentStep
+      || data?.interrupted === true || message?.role !== 'assistant' || typeof message.id !== 'string' || message.id.length === 0
+      || source?.kind !== 'model' || !Array.isArray(message.content)) return undefined
+    const callsForMessage = byStep.get(`${messageTurn}:${messageStep}`)
+    if (callsForMessage === undefined || callsForMessage.some(call => call.eventSeq <= event.seq) || message.content.length !== callsForMessage.length) return undefined
+    for (const [blockIndex, call] of callsForMessage.entries()) {
+      const block = record(message.content[blockIndex] as JsonValue)
+      if (block?.type !== 'tool-call' || block.id !== call.callId || block.name !== call.toolName || block.arguments !== call.rawArguments) return undefined
+      bindings.set(call.eventSeq, Object.freeze({ issuedIn: Object.freeze({ seq: event.seq, type: event.type, turn: messageTurn as number, step: messageStep as number }), blockIndex }))
+    }
+  }
+  return bindings.size === calls.length ? bindings : undefined
 }
 
 function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, step: number): boolean {
@@ -177,11 +186,20 @@ function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, 
     })
     return starts.length === 1
   }
-  if (!exactStart('turn/start', { turn }) || !exactStart('step/start', { turn, step })) return false
+  if (!exactStart('turn/start', { turn })) return false
+  for (let candidateStep = 0; candidateStep <= step; candidateStep++) {
+    if (!exactStart('step/start', { turn, step: candidateStep })) return false
+    const ends = events.filter(event => {
+      if (event.type !== 'step/end' || event.retention !== 'included') return false
+      const data = record(event.data)
+      return data?.turn === turn && data.step === candidateStep
+    })
+    if ((candidateStep < step && ends.length !== 1) || (candidateStep === step && ends.length !== 0)) return false
+  }
   return !events.some(event => {
-    if (event.type !== 'turn/end' && event.type !== 'step/end') return false
+    if (event.type !== 'turn/end') return false
     const data = event.retention === 'included' ? record(event.data) : undefined
-    return data?.turn === turn && (event.type === 'turn/end' || data.step === step)
+    return data?.turn === turn
   })
 }
 
@@ -320,13 +338,14 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     }
     const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' } }[] = []
     const attemptedCallIds = new Set<string>()
-    const assistantCalls: { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[] = []
-    for (const [blockIndex, event] of callEvents.entries()) {
+    const assistantCalls: { readonly eventSeq: number; readonly callId: string; readonly toolName: string; readonly rawArguments: unknown; readonly turn: number; readonly step: number }[] = []
+    for (const event of callEvents) {
       const data = event.retention === 'included' ? record(event.data) : undefined
       const callId = data?.callId
       const toolName = data?.name
+      const callStep = data?.step
       if (typeof callId !== 'string' || callId.length === 0 || typeof toolName !== 'string' || toolName.length === 0
-        || data?.turn !== turn || data.step !== step) return { kind: 'incomplete', reason: 'missing-current-turn' }
+        || data?.turn !== turn || !Number.isSafeInteger(callStep) || (callStep as number) < 0 || (callStep as number) > step) return { kind: 'incomplete', reason: 'missing-current-turn' }
       const candidates = facts.executionFacts.filter(item => item.request.eventSeq === event.seq
         && item.request.callId === callId && item.request.toolName === toolName)
       if (candidates.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
@@ -353,13 +372,13 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
             return Object.freeze(candidate.result.outcome)
           })()
       if (outcome === undefined) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
-      assistantCalls.push({ callId, toolName, rawArguments: data.arguments })
+      assistantCalls.push({ eventSeq: event.seq, callId, toolName, rawArguments: data.arguments, turn, step: callStep as number })
       if (event.seq !== execution.request.eventSeq) {
         if (attemptedCallIds.has(callId)) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
         attemptedCallIds.add(callId)
+        if ((callStep as number) < step && outcome.kind !== 'completed') return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
         pendingAttempts.push({
-          request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq,
-            issuedIn: Object.freeze({ seq: -1, type: 'assistant/message', turn, step }), blockIndex }),
+          request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq }),
           outcome,
         })
       }
@@ -369,16 +388,18 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || facts.events.some(event => event.type === 'tool/result' && !resultEventSeqs.includes(event.seq))) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
-    const assistantMessage = currentAssistantMessageForCalls(facts.events, assistantCalls, turn, step)
-    if (assistantMessage === undefined || assistantMessage.seq >= callEvents[0]!.seq
-      || facts.events.some(event => (event.type === 'assistant/chunk' || event.type === 'assistant/message')
-        && event.seq >= callEvents[0]!.seq)) {
+    const assistantMessages = assistantMessagesForCalls(facts.events, assistantCalls, turn, step)
+    if (assistantMessages === undefined || facts.events.some(event => (event.type === 'assistant/chunk' || event.type === 'assistant/message')
+      && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
-    const attempts = pendingAttempts.map(attempt => Object.freeze({
-      ...attempt,
-      request: Object.freeze({ ...attempt.request, issuedIn: assistantMessage }),
-    }))
+    const attempts = pendingAttempts.map(attempt => {
+      const request = attempt.request as { readonly eventSeq: number }
+      const binding = assistantMessages.get(request.eventSeq)
+      if (binding === undefined) return undefined
+      return Object.freeze({ ...attempt, request: Object.freeze({ ...attempt.request, issuedIn: binding.issuedIn, blockIndex: binding.blockIndex }) })
+    })
+    if (attempts.some(attempt => attempt === undefined)) return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     if (facts.events.some(event => event.type === 'request/header' && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
     }
