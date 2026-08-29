@@ -438,6 +438,27 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: closedStep }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' })
+    const priorClosedStep = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 10, type: 'approval/asked' as const, turn: 1, step: 1 } },
+      throughSeq: 10,
+      events: [
+        { seq: 0, time: 1, type: 'turn/start' as const, retention: 'included' as const, data: { turn: 1 } },
+        { seq: 1, time: 2, type: 'user/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 2, time: 3, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
+        { seq: 3, time: 4, type: 'step/end' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
+        { seq: 4, time: 5, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 1 } },
+        { seq: 5, time: 6, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
+        { seq: 6, time: 7, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 7, time: 8, type: 'assistant/chunk' as const, retention: 'included' as const, data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta' } } },
+        { seq: 8, time: 9, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 1, step: 1, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{\"command\":\"pwd\"}' }] } } },
+        { seq: 9, time: 10, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{\"command\":\"pwd\"}' } },
+        { seq: 10, time: 11, type: 'approval/asked' as const, retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+      ],
+      executionFacts: [{ ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 9 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 10 } }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 10 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: priorClosedStep }).kind).toBe('ready')
   })
 
   it('fails closed rather than omit unsupported historical events', () => {

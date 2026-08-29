@@ -170,10 +170,12 @@ function currentAssistantMessageForCalls(
 
 function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, step: number): boolean {
   const exactStart = (type: 'turn/start' | 'step/start', expected: Record<string, number>) => {
-    const starts = events.filter(event => event.type === type)
-    if (starts.length !== 1) return false
-    const data = starts[0]?.retention === 'included' ? record(starts[0].data) : undefined
-    return data !== undefined && Object.entries(expected).every(([key, value]) => data[key] === value)
+    const starts = events.filter(event => {
+      if (event.type !== type || event.retention !== 'included') return false
+      const data = record(event.data)
+      return data !== undefined && Object.entries(expected).every(([key, value]) => data[key] === value)
+    })
+    return starts.length === 1
   }
   if (!exactStart('turn/start', { turn }) || !exactStart('step/start', { turn, step })) return false
   return !events.some(event => {
