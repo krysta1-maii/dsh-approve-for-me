@@ -15,7 +15,7 @@ const valid = () => ({
 describe('plugin config', () => {
   it('exposes the stable plugin identity and required injects', () => {
     expect(name).toBe('dsh-approve-for-me')
-    expect([...inject]).toEqual(['managedAgents', 'tools', 'systemPrompt', 'approval'])
+    expect([...inject]).toEqual(['managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'])
   })
 
   it('normalizes defaults and derives the Reviewer preset', () => {

@@ -93,6 +93,7 @@ stock DSH 0.1.2-alpha.1（不修改）
 ### H4：决策事实与案例留存
 
 - `review_records` 最小记录、durability gate；
+- 使用目标宿主 `ctx.storageDomain` 的私有 `afm_decision_records` domain；由插件内部 per-key lane 串行 `get → put`，保证本进程唯一 machine-policy writer 的 create-once 语义，domain close 前停止入场并 drain。
 - `caseCapture.mode: full` 的 canonical artifact、quota／TTL／GC；
 - host-private 访问、parent deletion cascade、脱敏导出。
 

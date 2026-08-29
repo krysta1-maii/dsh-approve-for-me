@@ -17,7 +17,8 @@ import { DefaultGatePipeline } from './application/gate-pipeline.js'
 import type { GatePreReview } from './application/gate-pipeline.js'
 import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
 import { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
-import { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
+import { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
+import type { StorageDomainFacility } from './dsh/storage-domain-decision-record.js'
 import { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
 import { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
 import { createToolApprovalClassifier } from './application/tool-classifier.js'
@@ -122,7 +123,12 @@ export function installApproveForMe(
   const allowCache = new InMemoryAllowCache()
   const seals = new InMemorySealedDispositionRegistry()
   const factStore = new InMemoryGateActionFactStore()
-  const records = new InMemoryGateDecisionRecordStore()
+  // The target profile supplies the alpha.1 Storage Domain form. An absent or
+  // failed domain remains non-authorizing: record confirmation returns
+  // unavailable, so no automatic grant can escape the durability boundary.
+  const records = new DshStorageDomainGateDecisionRecordStore(
+    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+  )
 
   // Pipeline pre-review uses the same ReviewCoordinator, sealing each result in
   // the in-memory registry so a later ask can replay instead of re-reviewing.
@@ -233,6 +239,7 @@ export function installApproveForMe(
       stopResult()
       stopPreExecute()
       await lanes.drain()
+      await records.drain()
       channel.dispose()
       await registration.dispose()
     },

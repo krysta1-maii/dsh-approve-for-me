@@ -215,6 +215,8 @@ export {
 } from './dsh/action-capture.js'
 export type { CaptureBridge } from './dsh/action-capture.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
+export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
+export type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './dsh/storage-domain-decision-record.js'
 export type {
   MachinePolicyAdapterOptions,
   PatchedApprovalRequestLike,
