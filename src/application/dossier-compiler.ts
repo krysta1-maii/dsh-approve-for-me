@@ -92,6 +92,11 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         missing: ['instructions', 'interaction', 'delegations'],
       }),
     })
+    // A dossier that advertises missing evidence must never be branded
+    // source-verified. Callers may only send a complete dossier to Guardian.
+    if ((dossier.completeness as { readonly ready?: unknown }).ready !== true) {
+      return { kind: 'incomplete', reason: 'dossier-completeness-not-ready' }
+    }
     return {
       kind: 'ready',
       verified: sealSourceVerifiedDossier(dossier as never),

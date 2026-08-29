@@ -262,6 +262,8 @@ export type {
 } from './application/case-capture.js'
 export { DefaultDossierCompiler } from './application/dossier-compiler.js'
 export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
+export { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
+export type { LiveAgentRegistry, ParentSessionFactSource } from './ports/parent-session-facts.js'
 export {
   InMemoryApprovalSnapshotRepository,
   InMemoryExecutionFactRepository,

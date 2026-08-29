@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   DefaultDossierCompiler,
   createActionSnapshot,
-  recomputeDossierHash,
-  sealSourceVerifiedDossier,
 } from '../../src/index.js'
 import type {
   GuardianDossierCompilerDependencies,
@@ -77,25 +75,15 @@ const deps: GuardianDossierCompilerDependencies = {
 }
 
 describe('DefaultDossierCompiler', () => {
-  it('returns ready for a principal execution fact with approval snapshot', () => {
+  it('never brands an evidence-incomplete dossier as ready', () => {
     const compiler = new DefaultDossierCompiler(deps)
     const result = compiler.compile({ facts: facts() })
-    expect(result.kind).toBe('ready')
-    if (result.kind !== 'ready') return
-    expect(result.verified.dossier.freeze.throughSeq).toBe(5)
-    expect(result.verified.dossier.freeze.frozenAt).toBe(0)
-    expect((result.verified.dossier.completeness as { ready: boolean; missing: string[] }).ready).toBe(false)
-    expect(result.verified.dossierHash).toBe(recomputeDossierHash(result.verified.dossier))
-    expect(result.metrics.eventCount).toBe(0)
+    expect(result).toEqual({ kind: 'incomplete', reason: 'dossier-completeness-not-ready' })
   })
 
-  it('is deterministic for the same frozen facts (stable dossier hash)', () => {
+  it('is deterministically incomplete for the same frozen facts', () => {
     const compiler = new DefaultDossierCompiler(deps)
-    const first = compiler.compile({ facts: facts() })
-    const second = compiler.compile({ facts: facts() })
-    if (first.kind !== 'ready' || second.kind !== 'ready') throw new Error('expected ready')
-    expect(first.verified.dossierHash).toBe(second.verified.dossierHash)
-    expect(first.verified.dossier).toEqual(second.verified.dossier)
+    expect(compiler.compile({ facts: facts() })).toEqual(compiler.compile({ facts: facts() }))
   })
 
   it('returns incomplete for delegated requester, missing call id, and missing execution fact', () => {
@@ -111,11 +99,4 @@ describe('DefaultDossierCompiler', () => {
     }).kind).toBe('incomplete')
   })
 
-  it('seals a source-verified dossier with the module brand available through the compiler output', () => {
-    const compiler = new DefaultDossierCompiler(deps)
-    const result = compiler.compile({ facts: facts() })
-    if (result.kind !== 'ready') throw new Error('expected ready')
-    const resealed = sealSourceVerifiedDossier(result.verified.dossier)
-    expect(resealed.dossierHash).toBe(result.verified.dossierHash)
-  })
 })

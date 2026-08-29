@@ -44,9 +44,20 @@ function approvalSnapshot(): ApprovalSnapshotRecordV1 {
 describe('in-memory fact repositories', () => {
   it('stores and reads execution facts by session/callId/seq', async () => {
     const repo = new InMemoryExecutionFactRepository()
-    await repo.put(executionFact())
+    await expect(repo.create(executionFact())).resolves.toBe('created')
+    await expect(repo.create(executionFact())).resolves.toBe('identical')
     await expect(repo.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toEqual(executionFact())
     await expect(repo.get({ session, callId: 'missing', requestEventSeq: 5 })).resolves.toBeUndefined()
+  })
+
+  it('attaches only the matching durable result once and detects conflicts', async () => {
+    const repo = new InMemoryExecutionFactRepository()
+    await repo.create(executionFact())
+    const result = { eventSeq: 6, eventType: 'tool/result' as const }
+    await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result })).resolves.toBe('updated')
+    await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result })).resolves.toBe('identical')
+    await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result: { eventSeq: 7, eventType: 'tool/result' } })).resolves.toBe('conflict')
+    await expect(repo.attachResult({ session, callId: 'missing', requestEventSeq: 5, result })).resolves.toBe('missing')
   })
 
   it('creates and reads approval snapshots idempotently', async () => {

@@ -6,7 +6,15 @@ import type {
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 
 export interface ExecutionFactRepository {
-  put(record: ToolExecutionFactRecordV1): Promise<void>
+  /** Create once; a repeat must be byte-identical or report a conflict. */
+  create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'>
+  /** Attach the durable matching result event without replacing request facts. */
+  attachResult(input: {
+    readonly session: SessionLifecycleIdentityV1
+    readonly callId: string
+    readonly requestEventSeq: number
+    readonly result: NonNullable<ToolExecutionFactRecordV1['result']>
+  }): Promise<'updated' | 'identical' | 'missing' | 'conflict'>
   get(input: {
     session: SessionLifecycleIdentityV1
     callId: string
@@ -26,8 +34,30 @@ export interface ApprovalSnapshotRepository {
 export class InMemoryExecutionFactRepository implements ExecutionFactRepository {
   private readonly rows = new Map<string, ToolExecutionFactRecordV1>()
 
-  async put(record: ToolExecutionFactRecordV1): Promise<void> {
-    this.rows.set(this.key(record.session, record.request.callId, record.request.eventSeq), record)
+  async create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'> {
+    const key = this.key(record.session, record.request.callId, record.request.eventSeq)
+    const existing = this.rows.get(key)
+    if (existing === undefined) {
+      this.rows.set(key, record)
+      return 'created'
+    }
+    return canonicalJson(existing) === canonicalJson(record) ? 'identical' : 'conflict'
+  }
+
+  async attachResult(input: {
+    readonly session: SessionLifecycleIdentityV1
+    readonly callId: string
+    readonly requestEventSeq: number
+    readonly result: NonNullable<ToolExecutionFactRecordV1['result']>
+  }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+    const key = this.key(input.session, input.callId, input.requestEventSeq)
+    const existing = this.rows.get(key)
+    if (existing === undefined) return 'missing'
+    if (existing.result !== undefined) {
+      return canonicalJson(existing.result) === canonicalJson(input.result) ? 'identical' : 'conflict'
+    }
+    this.rows.set(key, Object.freeze({ ...existing, result: Object.freeze({ ...input.result }) }))
+    return 'updated'
   }
 
   async get(input: {

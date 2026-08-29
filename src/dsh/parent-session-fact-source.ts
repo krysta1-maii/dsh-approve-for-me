@@ -1,0 +1,146 @@
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { JsonValue } from '../domain/json.js'
+import type {
+  EventRefV1,
+  ParentSessionFactSnapshotV1,
+  PrincipalSessionIdentityV1,
+  SessionFactEventV1,
+} from '../domain/dossier.js'
+import type { LiveAgentRegistry, ParentSessionFactSource } from '../ports/parent-session-facts.js'
+
+interface SessionEventLike {
+  readonly seq: number
+  readonly time: number
+  readonly type: string
+  readonly data: unknown
+  readonly ignorable?: true
+  readonly sourceEventSeqs?: readonly number[]
+  readonly surfaceOp?: JsonValue
+}
+
+interface SessionLike {
+  readonly id: unknown
+  readonly header: {
+    readonly version: unknown
+    readonly id: unknown
+    readonly createdAt: unknown
+    readonly cwd?: unknown
+    readonly parentSession?: unknown
+    readonly delegationDepth?: unknown
+  }
+  readonly events: readonly SessionEventLike[]
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function nonNegative(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined
+}
+
+function eventRef(event: SessionEventLike): EventRefV1 {
+  const data = event.data as Record<string, unknown>
+  const turn = nonNegative(data?.turn)
+  const step = nonNegative(data?.step)
+  return Object.freeze({
+    seq: event.seq,
+    type: event.type,
+    ...turn === undefined ? {} : { turn },
+    ...step === undefined ? {} : { step },
+  })
+}
+
+function snapshotEvent(event: SessionEventLike): SessionFactEventV1 {
+  const envelope = {
+    seq: event.seq,
+    time: event.time,
+    type: event.type,
+    ...event.ignorable === true ? { ignorable: true as const } : {},
+    ...event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: Object.freeze([...event.sourceEventSeqs]) },
+    ...event.surfaceOp === undefined ? {} : { surfaceOp: event.surfaceOp },
+  }
+  // Tool results can contain unbounded/private content. Their existence remains
+  // auditable but their contents are deliberately not copied into a review packet.
+  if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
+    return Object.freeze({ ...envelope, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const })
+  }
+  return Object.freeze({ ...envelope, retention: 'included' as const, data: event.data as JsonValue })
+}
+
+function sessionIdentity(agent: Agent): { session: SessionLike; identity: PrincipalSessionIdentityV1 } | undefined {
+  const agentId = text((agent as unknown as { id?: unknown }).id)
+  const session = agent.session as unknown as SessionLike | undefined
+  if (session === undefined) return undefined
+  const id = text(session.id)
+  const headerId = text(session.header?.id)
+  const version = nonNegative(session.header?.version)
+  const createdAt = nonNegative(session.header?.createdAt)
+  if (agentId === undefined || id === undefined || agentId !== id || id !== headerId || version === undefined || createdAt === undefined) return undefined
+  const parentSessionId = session.header.parentSession === undefined ? undefined : text(session.header.parentSession)
+  if (session.header.parentSession !== undefined && parentSessionId === undefined) return undefined
+  const depth = session.header.delegationDepth === undefined ? 0 : nonNegative(session.header.delegationDepth)
+  if (depth === undefined) return undefined
+  // Header lineage and depth are independent evidence. A disagreement is not
+  // repaired heuristically: retain it as a non-principal identity so compiler
+  // callers fail closed before review.
+  const effectiveDelegationDepth = parentSessionId === undefined ? depth : Math.max(1, depth)
+  const cwd = text(session.header.cwd)
+  return {
+    session,
+    identity: Object.freeze({
+      sessionId: id,
+      sessionFormatVersion: version,
+      createdAt,
+      ...cwd === undefined ? {} : { cwd },
+      ...parentSessionId === undefined ? {} : { parentSessionId },
+      ...session.header.delegationDepth === undefined ? {} : { headerDelegationDepth: depth },
+      effectiveDelegationDepth,
+    }),
+  }
+}
+
+/** DSH Session adapter: freezes only facts already present in canonical history. */
+export class DshParentSessionFactSource implements ParentSessionFactSource {
+  constructor(private readonly agents: LiveAgentRegistry) {}
+
+  snapshot(input: Parameters<ParentSessionFactSource['snapshot']>[0]): ParentSessionFactSnapshotV1 | undefined {
+    if (input.signal?.aborted) return undefined
+    const bound = sessionIdentity(input.agent)
+    if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return undefined
+    const events = bound.session.events
+    if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined)) return undefined
+    const askedEvents = events.filter(event => { 
+      if (event.type !== 'approval/asked') return false
+      const data = event.data as Record<string, unknown>
+      // The fork writes the audit id as approval/asked.data.id. The public
+      // requestId is deliberately checked against that durable event identity.
+      return data?.id === input.approvalRequestId
+        && data.callId === input.callId
+        && data.toolName === input.toolName
+    })
+    if (askedEvents.length !== 1) return undefined
+    const asked = askedEvents[0]
+    if (asked === undefined) return undefined
+    const matchingCall = events.find(event => event.seq < asked.seq && (
+      (event.type === 'tool/call' && (event.data as Record<string, unknown>).callId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
+      || (event.type === 'tool/code-dispatch-start' && (event.data as Record<string, unknown>).subCallId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
+    ))
+    if (matchingCall === undefined) return undefined
+    const throughSeq = asked.seq
+    const executions = input.executionFacts.filter(item => item.session.sessionId === bound.identity.sessionId && item.request.eventSeq <= throughSeq)
+    const approvals = input.approvalSnapshots.filter(item => item.session.sessionId === bound.identity.sessionId && item.approvalAskedSeq === throughSeq)
+    if (approvals.some(item => item.approvalRequestId !== input.approvalRequestId)) return undefined
+    return Object.freeze({
+      version: 1,
+      session: bound.identity,
+      eventProjection: Object.freeze({ policyId: 'dsh-session-facts-v1', classificationCatalog: input.classificationCatalog }),
+      approvalBinding: Object.freeze({ event: eventRef(asked), approvalRequestId: input.approvalRequestId, callId: input.callId, toolName: input.toolName }),
+      throughSeq,
+      events: Object.freeze(events.filter(event => event.seq <= throughSeq).map(snapshotEvent)),
+      delegationReceipts: Object.freeze(executions.flatMap(item => item.delegationReceipt === undefined ? [] : [item.delegationReceipt])),
+      executionFacts: Object.freeze(executions),
+      approvalSnapshots: Object.freeze(approvals),
+    })
+  }
+}
