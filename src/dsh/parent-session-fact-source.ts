@@ -63,6 +63,7 @@ function eventRef(event: SessionEventLike): EventRefV1 {
 }
 
 function snapshotEvent(event: SessionEventLike, surfaceState?: 'visible' | 'superseded'): SessionFactEventV1 | undefined {
+  if (event.sourceEventSeqs?.some(sequence => nonNegative(sequence) === undefined)) return undefined
   let surfaceOp: JsonValue | undefined
   let data: JsonValue
   try {
@@ -159,7 +160,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     const bound = sessionIdentity(input.agent)
     if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return undefined
     const events = bound.session.events
-    if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined
+    if (!Array.isArray(events) || events.some((event, index) => nonNegative(event.seq) === undefined || event.seq !== index || nonNegative(event.time) === undefined
       || (index > 0 && event.time < events[index - 1]!.time))) return undefined
     const askedEvents = events.filter(event => { 
       if (event.type !== 'approval/asked') return false

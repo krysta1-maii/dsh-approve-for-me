@@ -119,6 +119,12 @@ describe('DshParentSessionFactSource', () => {
     const regressive = agent()
     ;(regressive.session.events as unknown as Array<{ time: number }>)[2]!.time = 99
     expect(source.snapshot(input({ agent: regressive as never }))).toBeUndefined()
+    const negativeZeroSequence = agent()
+    ;(negativeZeroSequence.session.events as unknown as Array<{ seq: number }>)[0]!.seq = -0
+    expect(source.snapshot(input({ agent: negativeZeroSequence as never }))).toBeUndefined()
+    const invalidSourceSequence = agent()
+    ;(invalidSourceSequence.session.events as unknown as Array<{ sourceEventSeqs?: readonly number[] }>)[2]!.sourceEventSeqs = [-0]
+    expect(source.snapshot(input({ agent: invalidSourceSequence as never }))).toBeUndefined()
     const emptyCwd = agent()
     ;(emptyCwd.session.header as unknown as { cwd?: unknown }).cwd = ''
     expect(new DshParentSessionFactSource({ get: () => emptyCwd as never }).snapshot(input({ agent: emptyCwd as never }))).toBeUndefined()
