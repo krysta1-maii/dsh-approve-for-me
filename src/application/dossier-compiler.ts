@@ -218,8 +218,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     }
     if (facts.approvalBinding.approvalRequestId.length === 0 || facts.approvalBinding.callId.length === 0
       || facts.approvalBinding.toolName.length === 0) return { kind: 'incomplete', reason: 'missing-call-id' }
-    if (facts.throughSeq !== facts.approvalBinding.event.seq) {
-      return { kind: 'incomplete', reason: 'missing-current-request-event' }
+    if (facts.throughSeq !== facts.approvalBinding.event.seq || facts.approvalBinding.event.type !== 'approval/asked') {
+      return { kind: 'incomplete', reason: 'invalid-approval-binding' }
     }
     const executions = facts.executionFacts.filter(item =>
       item.request.callId === facts.approvalBinding.callId
@@ -253,6 +253,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     }
     const askedEvent = facts.events[facts.throughSeq]
     const askedData = askedEvent?.retention === 'included' ? record(askedEvent.data) : undefined
+    if (facts.approvalBinding.event.seq !== facts.throughSeq || facts.approvalBinding.event.type !== 'approval/asked') {
+      return { kind: 'incomplete', reason: 'invalid-approval-binding' }
+    }
     if (askedEvent?.type !== 'approval/asked' || askedData?.id !== facts.approvalBinding.approvalRequestId
       || askedData.callId !== facts.approvalBinding.callId || askedData.toolName !== facts.approvalBinding.toolName) {
       return { kind: 'incomplete', reason: 'missing-current-request-event' }
