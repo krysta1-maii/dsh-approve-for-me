@@ -91,6 +91,21 @@ function currentAssistantMessagesMatchCall(
     && block.name === toolName && block.arguments === rawArguments
 }
 
+function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, step: number): boolean {
+  const exactStart = (type: 'turn/start' | 'step/start', expected: Record<string, number>) => {
+    const starts = events.filter(event => event.type === type)
+    if (starts.length !== 1) return false
+    const data = starts[0]?.retention === 'included' ? record(starts[0].data) : undefined
+    return data !== undefined && Object.entries(expected).every(([key, value]) => data[key] === value)
+  }
+  if (!exactStart('turn/start', { turn }) || !exactStart('step/start', { turn, step })) return false
+  return !events.some(event => {
+    if (event.type !== 'turn/end' && event.type !== 'step/end') return false
+    const data = event.retention === 'included' ? record(event.data) : undefined
+    return data?.turn === turn && (event.type === 'turn/end' || data.step === step)
+  })
+}
+
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
   const byTurn = new Map<number, DirectUserMessageV1[]>()
   let activeTurn: number | undefined
@@ -196,6 +211,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       ? callData?.step as number
       : facts.approvalBinding.event.step ?? 0
     if (turn === undefined) return { kind: 'incomplete', reason: 'missing-current-turn' }
+    if (!pendingTurnIsOpen(facts.events, turn, step)) {
+      return { kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' }
+    }
     const dossier = Object.freeze({
       version: 1 as const,
       kind: 'guardian-dossier' as const,

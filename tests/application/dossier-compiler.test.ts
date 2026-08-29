@@ -86,32 +86,33 @@ describe('DefaultDossierCompiler', () => {
     const base = facts()
     const complete = {
       ...base,
-      approvalBinding: { ...base.approvalBinding, event: { seq: 7, type: 'approval/asked', turn: 1, step: 0 } },
-      throughSeq: 7,
+      approvalBinding: { ...base.approvalBinding, event: { seq: 8, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 8,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
-        { seq: 1, time: 2, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
-        { seq: 2, time: 3, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
-        { seq: 3, time: 4, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
-        { seq: 4, time: 5, type: 'assistant/chunk', retention: 'included' as const, data: { turn: 1, step: 0, chunk: { type: 'tool-call-delta' } } },
-        { seq: 5, time: 6, type: 'assistant/message', retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
-        { seq: 6, time: 7, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
-        { seq: 7, time: 8, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+        { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 2, time: 3, type: 'step/start', retention: 'included' as const, data: { turn: 1, step: 0 } },
+        { seq: 3, time: 4, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
+        { seq: 4, time: 5, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 5, time: 6, type: 'assistant/chunk', retention: 'included' as const, data: { turn: 1, step: 0, chunk: { type: 'tool-call-delta' } } },
+        { seq: 6, time: 7, type: 'assistant/message', retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+        { seq: 7, time: 8, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
+        { seq: 8, time: 9, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
-      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 6 } }],
-      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 7 }],
+      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 7 } }],
+      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 8 }],
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
     if (result.kind === 'ready') {
-      expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 7 })
-      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 7, frozenAt: 8 })
+      expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 8 })
+      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9 })
       expect(result.verified.dossier.environment).toMatchObject({
         requestHeader: { config: { model: 'model-1' } },
         requestContext: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 },
       })
       expect(result.verified.dossier.currentTurnTools).toMatchObject({
-        excludedPendingRequest: { callId: 'call-1', requestEventSeq: 6 },
+        excludedPendingRequest: { callId: 'call-1', requestEventSeq: 7 },
       })
       expect(result.metrics).toMatchObject({
         dossierVersion: 1,
@@ -126,24 +127,32 @@ describe('DefaultDossierCompiler', () => {
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
     const malformedHeader = {
       ...complete,
-      events: complete.events.map(event => event.seq === 1 ? { ...event, data: { header: { tools: [] }, reason: 'initial' } } : event),
+      events: complete.events.map(event => event.seq === 3 ? { ...event, data: { header: { tools: [] }, reason: 'initial' } } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
     const malformedContext = {
       ...complete,
-      events: complete.events.map(event => event.seq === 2 ? { ...event, data: { provider: 'deepseek' } } : event),
+      events: complete.events.map(event => event.seq === 4 ? { ...event, data: { provider: 'deepseek' } } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedContext }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-request-context' })
     const mismatchedAssistant = {
       ...complete,
-      events: complete.events.map(event => event.seq === 5
+      events: complete.events.map(event => event.seq === 6
         ? { ...event, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-other', name: 'bash', arguments: '{"command":"pwd"}' }] } } }
         : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedAssistant }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-current-assistant-message' })
+    const closedStep = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 5
+        ? { ...event, type: 'step/end', data: { turn: 1, step: 0 } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: closedStep }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' })
   })
 
   it('fails closed rather than omit unsupported historical events', () => {
