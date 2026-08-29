@@ -80,7 +80,7 @@ export class InMemoryExecutionFactRepository implements ExecutionFactRepository 
   }
 
   private lifecycleKey(session: SessionLifecycleIdentityV1): string {
-    return `${session.sessionId}\0${session.sessionFormatVersion}\0${session.createdAt}`
+    return canonicalJson(session)
   }
 
   private key(session: SessionLifecycleIdentityV1, callId: string, requestEventSeq: number): string {
@@ -117,7 +117,7 @@ export class InMemoryApprovalSnapshotRepository implements ApprovalSnapshotRepos
   }
 
   private lifecycleKey(session: SessionLifecycleIdentityV1): string {
-    return `${session.sessionId}\0${session.sessionFormatVersion}\0${session.createdAt}`
+    return canonicalJson(session)
   }
 
   private key(session: SessionLifecycleIdentityV1, approvalRequestId: string, approvalAskedSeq: number): string {

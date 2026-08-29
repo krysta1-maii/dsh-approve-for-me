@@ -53,7 +53,7 @@ describe('in-memory fact repositories', () => {
   it('isolates records that reuse a session id across lifecycle identities', async () => {
     const executions = new InMemoryExecutionFactRepository()
     const approvals = new InMemoryApprovalSnapshotRepository()
-    const reused: SessionLifecycleIdentityV1 = { ...session, createdAt: 2_000 }
+    const reused: SessionLifecycleIdentityV1 = { ...session, cwd: '/other-project' }
     await executions.create(executionFact())
     await approvals.create(approvalSnapshot())
     await expect(executions.get({ session: reused, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
