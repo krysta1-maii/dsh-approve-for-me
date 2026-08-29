@@ -1,6 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { createActionSnapshot, hashAction } from '../domain/protocol.js'
+import { canonicalJson } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, DelegationToolClassificationCatalogV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
 import type { ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -14,7 +15,7 @@ interface EventLike {
 
 interface SessionLike {
   readonly id: unknown
-  readonly header: { readonly id: unknown; readonly version: unknown; readonly createdAt: unknown }
+  readonly header: { readonly id: unknown; readonly version: unknown; readonly createdAt: unknown; readonly cwd?: unknown }
   readonly events: readonly EventLike[]
 }
 
@@ -51,8 +52,11 @@ export class DshExecutionFactProjectionBridge {
     const headerId = string(session.header?.id)
     const version = session.header?.version
     const createdAt = session.header?.createdAt
+    const cwd = session.header?.cwd === undefined ? undefined : string(session.header.cwd)
     if (agentId === undefined || agentId !== sessionId || sessionId !== headerId
-      || !Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)
+      || !Number.isSafeInteger(version) || (version as number) < 0
+      || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0
+      || (session.header?.cwd !== undefined && cwd === undefined)
       || !Array.isArray(session.events)) return
 
     const callId = String(exec.callId)
@@ -73,7 +77,12 @@ export class DshExecutionFactProjectionBridge {
     }
     const record: ToolExecutionFactRecordV1 = Object.freeze({
       version: 1,
-      session: Object.freeze({ sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number }),
+      session: Object.freeze({
+        sessionId,
+        sessionFormatVersion: version as number,
+        createdAt: createdAt as number,
+        ...(cwd === undefined ? {} : { cwd }),
+      }),
       request: Object.freeze({
         kind: event.type === 'tool/call' ? 'model-tool-call' : 'code-dispatch',
         eventSeq: event.seq,
@@ -104,7 +113,7 @@ export class DshExecutionFactProjectionBridge {
     const toolName = string(data.toolName)
     const lifecycle = this.lifecycle(agent)
     if (requestId === undefined || callId === undefined || toolName === undefined || lifecycle === undefined) return Promise.resolve()
-    const key = `${lifecycle.sessionId}\0${lifecycle.sessionFormatVersion}\0${lifecycle.createdAt}\0${event.seq}`
+    const key = `${canonicalJson(lifecycle)}\0${event.seq}`
     const existing = this.approvalWrites.get(key)
     if (existing !== undefined) return existing
     const write = this.writeApprovalSnapshot(lifecycle, event.seq, requestId, callId, toolName)
@@ -127,16 +136,19 @@ export class DshExecutionFactProjectionBridge {
     await this.observeSessionEvent(agent, event[0])
   }
 
-  private lifecycle(agent: Agent): { sessionId: string; sessionFormatVersion: number; createdAt: number } | undefined {
+  private lifecycle(agent: Agent): { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string } | undefined {
     const session = agent.session as unknown as SessionLike
     const sessionId = string(session.id)
     const version = session.header?.version
     const createdAt = session.header?.createdAt
-    if (sessionId === undefined || !Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)) return undefined
-    return { sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number }
+    const cwd = session.header?.cwd === undefined ? undefined : string(session.header.cwd)
+    if (sessionId === undefined || !Number.isSafeInteger(version) || (version as number) < 0
+      || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0
+      || (session.header?.cwd !== undefined && cwd === undefined)) return undefined
+    return { sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number, ...(cwd === undefined ? {} : { cwd }) }
   }
 
-  private async writeApprovalSnapshot(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number }, approvalAskedSeq: number, requestId: string, callId: string, toolName: string): Promise<void> {
+  private async writeApprovalSnapshot(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string }, approvalAskedSeq: number, requestId: string, callId: string, toolName: string): Promise<void> {
     const matches = (await this.repository.list(lifecycle)).filter(record =>
       record.request.callId === callId && record.request.toolName === toolName && record.request.eventSeq < approvalAskedSeq)
     if (matches.length !== 1 || this.approvals === undefined) return

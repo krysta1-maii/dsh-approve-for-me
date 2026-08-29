@@ -10,10 +10,14 @@ const catalog = {
   descriptors: [{ classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'bash-v1', classificationId: 'ordinary' }],
 }
 
-function agent(events: readonly unknown[]): Agent {
+function agent(events: readonly unknown[], cwd?: string): Agent {
   return {
     id: 'session-1',
-    session: { id: 'session-1', header: { id: 'session-1', version: 1, createdAt: 10 }, events },
+    session: {
+      id: 'session-1',
+      header: { id: 'session-1', version: 1, createdAt: 10, ...(cwd === undefined ? {} : { cwd }) },
+      events,
+    },
   } as unknown as Agent
 }
 function execution(owner: Agent): ToolExecution {
@@ -27,12 +31,13 @@ function execution(owner: Agent): ToolExecution {
 describe('DshExecutionFactProjectionBridge', () => {
   it('projects only one exact durable native call', async () => {
     const repository = new InMemoryExecutionFactRepository()
-    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } }])
+    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } }], '/workspace')
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository)
     await bridge.project(execution(owner))
-    const records = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    const records = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10, cwd: '/workspace' })
     expect(records).toHaveLength(1)
-    expect(records[0]).toMatchObject({ request: { eventSeq: 0, callId: 'call-1', toolName: 'bash' }, projection: { observedAt: 20 } })
+    expect(records[0]).toMatchObject({ session: { cwd: '/workspace' }, request: { eventSeq: 0, callId: 'call-1', toolName: 'bash' }, projection: { observedAt: 20 } })
+    await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
   })
 
   it('captures an immutable snapshot only for one prior canonical call', async () => {
@@ -41,14 +46,14 @@ describe('DshExecutionFactProjectionBridge', () => {
     const owner = agent([
       { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
       { seq: 1, time: 21, type: 'approval/asked', data: { id: 'approval-1', callId: 'call-1', toolName: 'bash' } },
-    ])
+    ], '/workspace')
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository, approvals)
     await bridge.project(execution(owner))
     // The resolver-side barrier can reconstruct the observer write directly
     // from canonical history when the fire-and-forget listener has not settled.
     await bridge.awaitApprovalSnapshot(owner, 'approval-1', 'call-1', 'bash')
     const snapshot = await approvals.get({
-      session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 },
+      session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10, cwd: '/workspace' },
       approvalRequestId: 'approval-1', approvalAskedSeq: 1,
     })
     expect(snapshot).toMatchObject({ approvalAskedSeq: 1, environment: {} })
