@@ -3,6 +3,7 @@ import type { JsonValue } from '../domain/json.js'
 import type {
   DirectUserMessageV1,
   DossierCompilationResultV1,
+  EventRefV1,
   GuardianDossierCompiler,
   GuardianDossierCompilerDependencies,
   InteractionTurnV1,
@@ -138,34 +139,33 @@ function requestContextFrom(facts: ParentSessionFactSnapshotV1): JsonValue | und
   return latest
 }
 
-function currentAssistantMessagesMatchCall(
+function currentAssistantMessageForCalls(
   events: readonly SessionFactEventV1[],
-  callId: string,
-  toolName: string,
-  rawArguments: JsonValue | undefined,
+  calls: readonly { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[],
   turn: number,
   step: number,
-): boolean {
+): EventRefV1 | undefined {
   const chunks = events.filter(event => event.type === 'assistant/chunk')
   if (chunks.some(event => {
     const data = event.retention === 'included' ? record(event.data) : undefined
     return data?.turn !== turn || data.step !== step
-  })) return false
+  })) return undefined
   const messages = events.filter(event => event.type === 'assistant/message')
-  if (messages.length === 0) return true
-  // `tool/call` is the canonical request record. When its assembled model
-  // message is available, retain no duplicate model text: require it to be an
-  // exact one-tool-call wrapper around that canonical request instead.
-  if (messages.length !== 1) return false
-  const data = messages[0]?.retention === 'included' ? record(messages[0].data) : undefined
+  if (messages.length !== 1) return undefined
+  const event = messages[0]!
+  const data = event.retention === 'included' ? record(event.data) : undefined
   const message = data === undefined ? undefined : record(data.message as JsonValue)
   const source = message === undefined ? undefined : record(message.source as JsonValue)
   const content = message?.content
-  const block = Array.isArray(content) && content.length === 1 ? record(content[0] as JsonValue) : undefined
-  return data?.turn === turn && data.step === step && data.interrupted !== true
-    && message?.role === 'assistant' && typeof message.id === 'string' && message.id.length > 0
-    && source?.kind === 'model' && block?.type === 'tool-call' && block.id === callId
-    && block.name === toolName && block.arguments === rawArguments
+  if (data?.turn !== turn || data.step !== step || data.interrupted === true
+    || message?.role !== 'assistant' || typeof message.id !== 'string' || message.id.length === 0
+    || source?.kind !== 'model' || !Array.isArray(content) || content.length !== calls.length) return undefined
+  for (const [index, call] of calls.entries()) {
+    const block = record(content[index] as JsonValue)
+    if (block?.type !== 'tool-call' || block.id !== call.callId
+      || block.name !== call.toolName || block.arguments !== call.rawArguments) return undefined
+  }
+  return Object.freeze({ seq: event.seq, type: event.type, turn, step })
 }
 
 function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, step: number): boolean {
@@ -267,10 +267,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (snapshot.version !== 1 || !sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq) {
       return { kind: 'incomplete', reason: 'missing-required-projection' }
     }
-    // v1's first complete shape deliberately accepts only a single pending
-    // execution. Its raw stream and assembled one-tool-call wrapper are safe
-    // transport duplicates; prior tools, instructions, or unknown history wait
-    // for dedicated projectors rather than being silently omitted.
+    // This v1 slice accepts only native ordinary calls still pending in the
+    // same open turn/step. Canonical calls, assembled model blocks, and sidecar
+    // projections remain a strict bijection; completed or delegated history is
+    // rejected rather than silently omitted.
     if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => event.seq !== index)) {
       return { kind: 'incomplete', reason: 'non-contiguous-event-prefix' }
     }
@@ -301,8 +301,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
     const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'approval/asked'])
-    if (facts.events.some(event => !allowed.has(event.type)) || facts.events.filter(event => event.type === 'tool/call').length !== 1
-      || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
+    const callEvents = facts.events.filter(event => event.type === 'tool/call')
+    if (facts.events.some(event => !allowed.has(event.type)) || callEvents.length === 0
+      || facts.executionFacts.length !== callEvents.length || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
     const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
@@ -315,11 +316,47 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || facts.approvalBinding.event.step !== step) {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
-    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)
+    const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' } }[] = []
+    const assistantCalls: { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[] = []
+    for (const [blockIndex, event] of callEvents.entries()) {
+      const data = event.retention === 'included' ? record(event.data) : undefined
+      const callId = data?.callId
+      const toolName = data?.name
+      if (typeof callId !== 'string' || callId.length === 0 || typeof toolName !== 'string' || toolName.length === 0
+        || data?.turn !== turn || data.step !== step) return { kind: 'incomplete', reason: 'missing-current-turn' }
+      const candidates = facts.executionFacts.filter(item => item.request.eventSeq === event.seq
+        && item.request.callId === callId && item.request.toolName === toolName)
+      if (candidates.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+      const candidate = candidates[0]!
+      const descriptor = facts.eventProjection.classificationCatalog.descriptors.find(item => item.toolName === toolName)
+      if (candidate.version !== 1 || candidate.request.kind !== 'model-tool-call' || candidate.request.eventType !== 'tool/call'
+        || candidate.result !== undefined || candidate.delegationReceipt !== undefined || descriptor?.classification !== 'ordinary'
+        || !sameLifecycle(candidate.session, facts.session) || candidate.projection.action.toolName !== toolName
+        || candidate.projection.actionHash !== hashAction(candidate.projection.action)
+        || candidate.projection.observedAt !== event.time || candidate.toolClassification.classificationCatalogFingerprint !== facts.eventProjection.classificationCatalog.fingerprint
+        || canonicalJson(candidate.toolClassification.descriptor) !== canonicalJson(descriptor)
+        || !actionArgumentsMatchCall(candidate.projection.action.arguments, data.arguments)) {
+        return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+      }
+      assistantCalls.push({ callId, toolName, rawArguments: data.arguments })
+      if (callId !== execution.request.callId) {
+        pendingAttempts.push({
+          request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq,
+            issuedIn: Object.freeze({ seq: -1, type: 'assistant/message', turn, step }), blockIndex }),
+          outcome: Object.freeze({ kind: 'pending' as const }),
+        })
+      }
+    }
+    const assistantMessage = currentAssistantMessageForCalls(facts.events, assistantCalls, turn, step)
+    if (assistantMessage === undefined || assistantMessage.seq >= callEvents[0]!.seq
       || facts.events.some(event => (event.type === 'assistant/chunk' || event.type === 'assistant/message')
-        && event.seq >= execution.request.eventSeq)) {
+        && event.seq >= callEvents[0]!.seq)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
+    const attempts = pendingAttempts.map((attempt, index) => Object.freeze({
+      ...attempt,
+      request: Object.freeze({ ...attempt.request, issuedIn: assistantMessage, blockIndex: index }),
+    }))
     if (facts.events.some(event => event.type === 'request/header' && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
     }
@@ -384,7 +421,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           callId: facts.approvalBinding.callId,
           requestEventSeq: execution.request.eventSeq,
         },
-        attempts: [],
+        attempts: Object.freeze(attempts),
       }),
       pendingApproval: Object.freeze({
         request: {

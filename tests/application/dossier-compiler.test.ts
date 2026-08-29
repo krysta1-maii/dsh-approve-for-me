@@ -129,6 +129,31 @@ describe('DefaultDossierCompiler', () => {
         'environment', 'instructions', 'interaction', 'currentTurnTools', 'pendingApproval',
       ])
     }
+    const firstAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })
+    const twoPending = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 9,
+      events: complete.events.map(event => {
+        if (event.seq === 6) return { ...event, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"ls"}' }, { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } }
+        if (event.seq === 7) return { ...event, data: { turn: 1, step: 0, callId: 'call-0', name: 'bash', arguments: '{"command":"ls"}' } }
+        if (event.seq === 8) return { seq: 8, time: 9, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } }
+        return event
+      }).concat([{ seq: 9, time: 10, type: 'approval/asked' as const, retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } }]),
+      executionFacts: [
+        { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 7, callId: 'call-0' }, projection: { ...complete.executionFacts[0]!.projection, action: firstAction, actionHash: hashAction(firstAction), observedAt: 8 } },
+        { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 8 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 9 } },
+      ],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9 }],
+    }
+    const twoPendingResult = new DefaultDossierCompiler(deps).compile({ facts: twoPending })
+    expect(twoPendingResult.kind).toBe('ready')
+    if (twoPendingResult.kind === 'ready') {
+      expect(twoPendingResult.verified.dossier.currentTurnTools).toMatchObject({
+        excludedPendingRequest: { callId: 'call-1', requestEventSeq: 8 },
+        attempts: [{ request: { callId: 'call-0', blockIndex: 0 }, outcome: { kind: 'pending' } }],
+      })
+    }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
     const invalidParentIdentity = {
