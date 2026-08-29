@@ -4,7 +4,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 /** Parse JSON while rejecting duplicate object keys before materialization. */
 export function parseUniqueJson(input: string): JsonValue {
   let index = 0
-  const whitespace = () => { while (/\s/.test(input[index] ?? '')) index += 1 }
+  const whitespace = () => { while ([32, 9, 10, 13].includes(input.charCodeAt(index))) index += 1 }
   const fail = (): never => { throw new SyntaxError('invalid JSON') }
   const string = (): string => {
     if (input[index] !== '"') return fail()
