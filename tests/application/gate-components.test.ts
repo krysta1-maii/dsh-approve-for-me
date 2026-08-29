@@ -106,8 +106,8 @@ describe('createToolApprovalClassifier', () => {
     argumentSemanticsId: 'default-v1',
     fingerprint: hash('f'),
     descriptors: [
-      { toolName: 'bash', toolSchemaFingerprint: hash('bash'), classification: 'body-escalation' as const },
-      { toolName: 'read', toolSchemaFingerprint: hash('read'), classification: 'ordinary' as const },
+      { toolName: 'bash', toolSchemaFingerprint: hash('bash'), classification: 'body-escalation' as const, actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' },
+      { toolName: 'read', toolSchemaFingerprint: hash('read'), classification: 'ordinary' as const, actionSemanticsFamily: 'filesystem-v1', actionProjectorId: 'filesystem-v1' },
     ],
   }
 

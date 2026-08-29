@@ -11,6 +11,7 @@ import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import type { ActionProjector } from './ports/action-projector.js'
+import { ToolFamilyActionProjectorRegistry } from './ports/tool-family-action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
@@ -59,6 +60,12 @@ export interface ApproveForMeInstallOptions {
    * uncaptured and therefore cannot receive an automatic approval.
    */
   actionProjector?: ActionProjector<ToolExecution>
+  /**
+   * Closed-world projector registry used by catalog-bound automatic approvals.
+   * A non-empty catalog requires this port; generic projectors cannot satisfy
+   * semantic identity bindings.
+   */
+  toolFamilyActionProjectors?: ToolFamilyActionProjectorRegistry<ToolExecution>
   /** Best-effort non-sensitive compiler metrics consumer. */
   dossierMetricsSink?: DossierCompilationMetricsSink
 }
@@ -101,7 +108,18 @@ export function installApproveForMe(
   const channel = new DefaultDecisionChannel()
   const lifecycle = new ApprovalRunLifecycle()
   const captures = new DefaultActionCapture<Agent, string>()
-  const actionProjector = options.actionProjector ?? createDefaultActionProjector(options.projectPermissions)
+  const registeredProjectors = options.toolFamilyActionProjectors
+  if (normalized.toolCatalog.descriptors.length > 0) {
+    if (registeredProjectors === undefined) {
+      throw new TypeError('a non-empty toolCatalog requires a closed-world toolFamilyActionProjectors registry')
+    }
+    for (const descriptor of normalized.toolCatalog.descriptors) {
+      if (!registeredProjectors.matches(descriptor.toolName, descriptor.actionSemanticsFamily, descriptor.actionProjectorId)) {
+        throw new TypeError(`toolCatalog descriptor ${descriptor.toolName} has no matching registered semantic projector`)
+      }
+    }
+  }
+  const actionProjector = registeredProjectors ?? options.actionProjector ?? createDefaultActionProjector(options.projectPermissions)
   const bridge = createCaptureBridge(actionProjector, captures)
 
   const registration = ctx.managedAgents.registerProvider(createReviewerProvider({

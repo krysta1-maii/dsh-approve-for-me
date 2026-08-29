@@ -7,6 +7,8 @@ import {
   REVIEWER_PROVIDER,
   SUBMIT_DECISION_TOOL,
   fingerprintApprovalToolCatalogV1,
+  createShellProcessActionProjector,
+  ToolFamilyActionProjectorRegistry,
   installApproveForMe,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
@@ -19,10 +21,12 @@ const validToolCatalog = () => {
     version: 1 as const,
     argumentSemanticsId: 'default-v1',
     fingerprint: '',
-    descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' as const }],
+    descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' as const, actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'dsh-approve-for-me/shell-process-v1' }],
   }
   return { ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! }
 }
+
+const catalogProjectors = new ToolFamilyActionProjectorRegistry([createShellProcessActionProjector()])
 
 const config: Config = {
   reviewer: {
@@ -235,7 +239,7 @@ describe('installApproveForMe composition root', () => {
       ...config,
       toolCatalog: validToolCatalog(),
     }
-    const plugin = installApproveForMe(h.ctx as unknown as Context, catalogConfig)
+    const plugin = installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: catalogProjectors })
     const policy = h.machinePolicy as {
       decide(request: { agent: { id: string }; toolName: string; callId?: string; requestId?: string }): Promise<string>
     }
@@ -258,6 +262,19 @@ describe('installApproveForMe composition root', () => {
     await plugin.dispose()
   })
 
+  it('rejects catalog bindings without an exact registered semantic projector before provider registration', () => {
+    const h = harness()
+    const catalogConfig: Config = { ...config, toolCatalog: validToolCatalog() }
+    expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig))
+      .toThrow(/closed-world toolFamilyActionProjectors registry/)
+    expect(h.registered).toBeUndefined()
+
+    const wrongTool = new ToolFamilyActionProjectorRegistry([createShellProcessActionProjector(['sh'])])
+    expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: wrongTool }))
+      .toThrow(/no matching registered semantic projector/)
+    expect(h.registered).toBeUndefined()
+  })
+
   it('fails loud when toolCatalog is configured without the patched machine-policy fork', () => {
     const h = harness()
     const catalogConfig: Config = {
@@ -265,7 +282,7 @@ describe('installApproveForMe composition root', () => {
       toolCatalog: validToolCatalog(),
     }
     const withoutFork = { ...h.ctx, approval: undefined } as unknown as Context
-    expect(() => installApproveForMe(withoutFork, catalogConfig)).toThrow(/patched @deepseek-ai\/dsh-user-approval/)
+    expect(() => installApproveForMe(withoutFork, catalogConfig, { toolFamilyActionProjectors: catalogProjectors })).toThrow(/patched @deepseek-ai\/dsh-user-approval/)
   })
 
   it('registers the machine-policy adapter, resolves captured hashes, and disposes it exactly once', async () => {

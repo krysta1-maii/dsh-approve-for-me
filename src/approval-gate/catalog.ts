@@ -19,6 +19,10 @@ export interface ToolApprovalDescriptor {
   readonly toolName: string
   readonly toolSchemaFingerprint: string
   readonly classification: ToolApprovalClass
+  /** Closed semantic tool family required for this exact tool instance. */
+  readonly actionSemanticsFamily: string
+  /** Stable code projector identity required for this exact tool instance. */
+  readonly actionProjectorId: string
 }
 
 export interface ApprovalToolCatalog {
@@ -45,11 +49,20 @@ export function fingerprintApprovalToolCatalogV1(catalog: ApprovalToolCatalog): 
   for (const descriptor of catalog.descriptors) {
     if (descriptor === null || typeof descriptor !== 'object' || typeof descriptor.toolName !== 'string' || descriptor.toolName.length === 0
       || typeof descriptor.toolSchemaFingerprint !== 'string' || descriptor.toolSchemaFingerprint.length === 0
-      || !['ordinary', 'gate-ask', 'body-escalation'].includes(descriptor.classification) || names.has(descriptor.toolName)) {
+      || !['ordinary', 'gate-ask', 'body-escalation'].includes(descriptor.classification)
+      || typeof descriptor.actionSemanticsFamily !== 'string' || descriptor.actionSemanticsFamily.length === 0
+      || typeof descriptor.actionProjectorId !== 'string' || descriptor.actionProjectorId.length === 0
+      || names.has(descriptor.toolName)) {
       return undefined
     }
     names.add(descriptor.toolName)
-    descriptors.push({ toolName: descriptor.toolName, toolSchemaFingerprint: descriptor.toolSchemaFingerprint, classification: descriptor.classification })
+    descriptors.push({
+      toolName: descriptor.toolName,
+      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+      classification: descriptor.classification,
+      actionSemanticsFamily: descriptor.actionSemanticsFamily,
+      actionProjectorId: descriptor.actionProjectorId,
+    })
   }
   const core = { version: 1, argumentSemanticsId: catalog.argumentSemanticsId, descriptors: descriptors.sort((left, right) => left.toolName.localeCompare(right.toolName)) }
   return `sha256:${createHash('sha256').update(APPROVAL_TOOL_CATALOG_HASH_DOMAIN).update(canonicalJson(core)).digest('hex')}`

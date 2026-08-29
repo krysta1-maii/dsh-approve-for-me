@@ -126,6 +126,12 @@ function normalizeToolCatalog(input?: ApprovalToolCatalog): ApprovalToolCatalog 
     if (typeof descriptor.toolSchemaFingerprint !== 'string' || descriptor.toolSchemaFingerprint.length === 0) {
       throw new TypeError('toolCatalog descriptor.toolSchemaFingerprint must be a non-empty string')
     }
+    if (typeof descriptor.actionSemanticsFamily !== 'string' || descriptor.actionSemanticsFamily.length === 0) {
+      throw new TypeError('toolCatalog descriptor.actionSemanticsFamily must be a non-empty string')
+    }
+    if (typeof descriptor.actionProjectorId !== 'string' || descriptor.actionProjectorId.length === 0) {
+      throw new TypeError('toolCatalog descriptor.actionProjectorId must be a non-empty string')
+    }
   }
   const normalized = {
     version: 1 as const,

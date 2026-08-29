@@ -49,6 +49,12 @@ export class ToolFamilyActionProjectorRegistry<Execution extends { readonly name
     }
   }
 
+  /** True only when a catalog descriptor binds this exact registered projector. */
+  matches(toolName: string, family: string, projectorId: string): boolean {
+    const projector = this.byToolName.get(toolName)
+    return projector?.family === family && projector.projectorId === projectorId
+  }
+
   project(execution: Execution): ActionSnapshotInput {
     const toolName = execution.name
     const projector = this.byToolName.get(toolName)

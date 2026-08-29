@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Config, fingerprintApprovalToolCatalogV1, inject, name, normalizeConfig } from '../src/index.js'
 
-const toolCatalog = (descriptors: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string; readonly classification: 'ordinary' | 'gate-ask' | 'body-escalation' }[]) => {
+const toolCatalog = (descriptors: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string; readonly classification: 'ordinary' | 'gate-ask' | 'body-escalation'; readonly actionSemanticsFamily: string; readonly actionProjectorId: string }[]) => {
   const unsealed = { version: 1 as const, argumentSemanticsId: 'default-v1', fingerprint: '', descriptors }
   return { ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! }
 }
@@ -74,17 +74,23 @@ describe('plugin config', () => {
     const normalized = normalizeConfig({
       ...valid(),
       toolCatalog: toolCatalog([
-        { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
+        { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' },
       ]),
     })
     expect(normalized.toolCatalog.descriptors).toHaveLength(1)
     expect(Object.isFrozen(normalized.toolCatalog.descriptors)).toBe(true)
   })
 
+  it('commits each descriptor semantic family and projector identity', () => {
+    const catalog = toolCatalog([{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'ordinary', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' }])
+    expect(fingerprintApprovalToolCatalogV1({ ...catalog, descriptors: [{ ...catalog.descriptors[0]!, actionProjectorId: 'shell-v2' }] })).not.toBe(catalog.fingerprint)
+    expect(fingerprintApprovalToolCatalogV1({ ...catalog, descriptors: [{ ...catalog.descriptors[0]!, actionSemanticsFamily: 'other-v1' }] })).not.toBe(catalog.fingerprint)
+  })
+
   it('rejects a tool catalog whose supplied fingerprint is not its canonical commitment', () => {
     expect(() => normalizeConfig({
       ...valid(),
-      toolCatalog: { ...toolCatalog([{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'ordinary' }]), fingerprint: `sha256:${'a'.repeat(64)}` },
+      toolCatalog: { ...toolCatalog([{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'ordinary', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' }]), fingerprint: `sha256:${'a'.repeat(64)}` },
     })).toThrow(/toolCatalog\.fingerprint/)
   })
 
@@ -96,8 +102,8 @@ describe('plugin config', () => {
         argumentSemanticsId: 'default-v1',
         fingerprint: `sha256:${'a'.repeat(64)}`,
         descriptors: [
-          { toolName: 'bash', toolSchemaFingerprint: 'a', classification: 'ordinary' },
-          { toolName: 'bash', toolSchemaFingerprint: 'b', classification: 'body-escalation' },
+          { toolName: 'bash', toolSchemaFingerprint: 'a', classification: 'ordinary', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' },
+          { toolName: 'bash', toolSchemaFingerprint: 'b', classification: 'body-escalation', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' },
         ],
       },
     })).toThrow(/duplicate toolCatalog descriptor/)

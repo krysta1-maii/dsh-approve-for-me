@@ -33,7 +33,7 @@ describe('DossierGateFactProjector', () => {
     const actionHash = hashAction(action)
     const projector = new DossierGateFactProjector(createToolApprovalClassifier({
       version: 1, argumentSemanticsId: 'json-v1', fingerprint: 'config-1',
-      descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1', classification: 'gate-ask' }],
+      descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1', classification: 'gate-ask', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' }],
     }), 'generation-1', 'config-1')
     const facts = projector.project({
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },
