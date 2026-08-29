@@ -5,10 +5,12 @@ import { SerialLanes } from './serial-lanes.js'
 import {
   approvalReviewPacketContent,
   createApprovalReviewRequest,
+  hashAction,
   parseActionSnapshot,
 } from '../domain/protocol.js'
 import { createApprovalReviewPacketV1 } from '../domain/records.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
+import { canonicalJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type { ApprovalReviewPacketV1 } from '../domain/records.js'
 import type {
@@ -24,6 +26,26 @@ import type { ReviewerDirectory } from './reviewer-directory.js'
 /** True for Guarded Continuable errors that mean the selected child is contaminated. */
 function isContaminationError(error: unknown): boolean {
   return error instanceof Error && /contaminated|unauthorized transcript/i.test(error.message)
+}
+
+function dossierBindsReviewAction(
+  verified: SourceVerifiedDossierV1,
+  action: ActionSnapshot,
+  callId: string | undefined,
+): boolean {
+  const pending = verified.dossier.pendingApproval
+  if (pending === null || typeof pending !== 'object' || Array.isArray(pending)) return false
+  const value = pending as Record<string, unknown>
+  if (typeof value.callId !== 'string' || value.callId.length === 0
+    || (callId !== undefined && value.callId !== callId)
+    || typeof value.actionHash !== 'string') return false
+  try {
+    const pendingAction = parseActionSnapshot(value.action)
+    return value.actionHash === hashAction(action)
+      && canonicalJson(pendingAction) === canonicalJson(action)
+  } catch {
+    return false
+  }
 }
 
 /** One complete application-owned approval review. */
@@ -83,6 +105,9 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       // An already-aborted review never enters the lane: no child ensure, no
       // deliver, no interrupt.
       return Promise.reject(new ReviewProtocolError('aborted', 'review was aborted before it started'))
+    }
+    if (!dossierBindsReviewAction(input.verifiedDossier, action, input.callId)) {
+      return Promise.reject(new ReviewProtocolError('invalid-result', 'review action is not bound to the verified dossier'))
     }
     return this.options.lane.run(input.authority.sessionId, async () => {
       // A contaminated child may only be discovered between `list()` and

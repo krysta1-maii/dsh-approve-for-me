@@ -92,11 +92,13 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
 }
 
 const action = () => createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
-const verifiedDossier = () => sealSourceVerifiedDossier({
+const verifiedDossier = (pendingAction = action(), callId = 'call-1') => sealSourceVerifiedDossier({
   version: 1 as const,
   kind: 'guardian-dossier' as const,
   freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
-  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {}, pendingApproval: {}, completeness: { complete: true, sourceThroughSeq: 1, omissions: [] },
+  environment: {}, instructions: {}, interaction: {}, currentTurnTools: {},
+  pendingApproval: { callId, action: pendingAction as unknown as import('../../src/index.js').JsonValue, actionHash: hashAction(pendingAction) },
+  completeness: { complete: true, sourceThroughSeq: 1, omissions: [] },
 })
 const providerData = (generation = 'generation-1') => createReviewerProviderData({
   generation,
@@ -343,6 +345,17 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.creates).toBe(0)
     expect(port.deliveries).toHaveLength(1)
     expect(port.deliveries[0]!.childId).toBe('clean-replacement')
+  })
+
+  it('rejects an action that does not match the verified dossier before creating a reviewer', async () => {
+    const port = new FakePort()
+    const { coordinator } = makeCoordinator(port)
+    const differentAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'rm -rf /tmp/example' } })
+    await expect(coordinator.review({
+      authority: authority({ id: 'parent-1' }), action: differentAction, verifiedDossier: verifiedDossier(action()),
+    })).rejects.toMatchObject({ code: 'invalid-result' })
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toHaveLength(0)
   })
 
   it('retries once when a newly contaminated child is discovered during delivery', async () => {
