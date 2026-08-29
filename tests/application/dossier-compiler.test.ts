@@ -145,6 +145,22 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedAssistant }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-current-assistant-message' })
+    const mismatchedChunk = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 5
+        ? { ...event, data: { turn: 2, step: 0, chunk: { type: 'tool-call-delta' } } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedChunk }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-current-assistant-message' })
+    const mismatchedCallLifecycle = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 7
+        ? { ...event, data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedCallLifecycle }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-current-turn' })
     const closedStep = {
       ...complete,
       events: complete.events.map(event => event.seq === 5

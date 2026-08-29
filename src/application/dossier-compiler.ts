@@ -74,7 +74,14 @@ function currentAssistantMessagesMatchCall(
   callId: string,
   toolName: string,
   rawArguments: JsonValue | undefined,
+  turn: number,
+  step: number,
 ): boolean {
+  const chunks = events.filter(event => event.type === 'assistant/chunk')
+  if (chunks.some(event => {
+    const data = event.retention === 'included' ? record(event.data) : undefined
+    return data?.turn !== turn || data.step !== step
+  })) return false
   const messages = events.filter(event => event.type === 'assistant/message')
   if (messages.length === 0) return true
   // `tool/call` is the canonical request record. When its assembled model
@@ -86,7 +93,8 @@ function currentAssistantMessagesMatchCall(
   const source = message === undefined ? undefined : record(message.source as JsonValue)
   const content = message?.content
   const block = Array.isArray(content) && content.length === 1 ? record(content[0] as JsonValue) : undefined
-  return data?.interrupted !== true && message?.role === 'assistant' && typeof message.id === 'string' && message.id.length > 0
+  return data?.turn === turn && data.step === step && data.interrupted !== true
+    && message?.role === 'assistant' && typeof message.id === 'string' && message.id.length > 0
     && source?.kind === 'model' && block?.type === 'tool-call' && block.id === callId
     && block.name === toolName && block.arguments === rawArguments
 }
@@ -185,13 +193,23 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments)) {
-      return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
-    }
     const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'approval/asked'])
     if (facts.events.some(event => !allowed.has(event.type)) || facts.events.filter(event => event.type === 'tool/call').length !== 1
       || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+    }
+    const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
+      ? callData?.turn as number
+      : undefined
+    const step = Number.isSafeInteger(callData?.step) && (callData?.step as number) >= 0
+      ? callData?.step as number
+      : undefined
+    if (turn === undefined || step === undefined || facts.approvalBinding.event.turn !== turn
+      || facts.approvalBinding.event.step !== step) {
+      return { kind: 'incomplete', reason: 'missing-current-turn' }
+    }
+    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)) {
+      return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
     const interaction = interactionFrom(facts)
     if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
@@ -204,13 +222,6 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'invalid-request-context' }
     }
 
-    const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
-      ? callData?.turn as number
-      : facts.approvalBinding.event.turn
-    const step = Number.isSafeInteger(callData?.step) && (callData?.step as number) >= 0
-      ? callData?.step as number
-      : facts.approvalBinding.event.step ?? 0
-    if (turn === undefined) return { kind: 'incomplete', reason: 'missing-current-turn' }
     if (!pendingTurnIsOpen(facts.events, turn, step)) {
       return { kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' }
     }
