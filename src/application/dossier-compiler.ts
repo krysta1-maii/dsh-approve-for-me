@@ -188,7 +188,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     }
     const callEvent = facts.events[execution.request.eventSeq]
     const callData = callEvent?.retention === 'included' ? record(callEvent.data) : undefined
-    if (execution.request.eventSeq >= facts.throughSeq || callEvent?.type !== execution.request.eventType
+    if (execution.request.eventType !== 'tool/call' || execution.request.eventSeq >= facts.throughSeq
+      || callEvent?.type !== execution.request.eventType
       || callData?.callId !== execution.request.callId
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }

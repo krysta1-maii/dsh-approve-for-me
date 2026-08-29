@@ -161,6 +161,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedCallLifecycle }))
       .toEqual({ kind: 'incomplete', reason: 'missing-current-turn' })
+    const nonCanonicalExecutionEvent = {
+      ...complete,
+      executionFacts: [{ ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventType: 'tool/code-dispatch-start' as const } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: nonCanonicalExecutionEvent }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
     const closedStep = {
       ...complete,
       events: complete.events.map(event => event.seq === 5
