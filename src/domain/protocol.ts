@@ -41,17 +41,30 @@ export interface RequestedPermission {
   readonly details?: JsonValue
 }
 
+export interface ActionSemanticsV1 {
+  /** Versioned family vocabulary interpreted by the reviewer policy. */
+  readonly family: string
+  /** Canonical semantic facts; raw call arguments remain separately bound. */
+  readonly value: JsonValue
+}
+
 export interface ActionSnapshot {
   readonly version: 1
   readonly kind: 'tool-call'
   readonly toolName: string
   readonly arguments: JsonValue
   readonly requestedPermissions: readonly RequestedPermission[]
+  /** Stable code-projector identity, committed by actionHash. */
+  readonly projectorId: string
+  readonly semantics: ActionSemanticsV1
 }
 
 export interface ActionSnapshotInput {
   readonly toolName: string
   readonly arguments: unknown
+  /** Omit only for the legacy generic raw-argument projector. */
+  readonly projectorId?: string
+  readonly semantics?: { readonly family: string; readonly value: unknown }
   readonly requestedPermissions?: readonly {
     readonly kind: RequestedPermissionKind
     readonly scope: string
@@ -227,6 +240,18 @@ export function parseReviewerProviderData(input: unknown): ReviewerProviderDataV
   return parsed
 }
 
+const GENERIC_RAW_ACTION_PROJECTOR = 'dsh-approve-for-me/generic-raw-v1'
+const GENERIC_RAW_ACTION_FAMILY = 'generic-raw-v1'
+
+function parseActionSemantics(input: unknown): ActionSemanticsV1 {
+  const value = record(input, 'action.semantics')
+  exactKeys(value, ['family', 'value'], [], 'action.semantics')
+  return Object.freeze({
+    family: identifier(value.family, 'action.semantics.family'),
+    value: freezeJson(snapshotJson(value.value)) as JsonValue,
+  })
+}
+
 function parseRequestedPermission(input: unknown, index: number): RequestedPermission {
   const name = `action.requestedPermissions[${index}]`
   const value = record(input, name)
@@ -242,25 +267,34 @@ function parseRequestedPermission(input: unknown, index: number): RequestedPermi
 export function createActionSnapshot(input: ActionSnapshotInput): ActionSnapshot {
   const permissions = input.requestedPermissions ?? []
   if (permissions.length > 32) throw new TypeError('action.requestedPermissions may contain at most 32 entries')
+  const argumentsSnapshot = freezeJson(snapshotJson(input.arguments)) as JsonValue
+  const projectorId = identifier(input.projectorId ?? GENERIC_RAW_ACTION_PROJECTOR, 'action.projectorId')
+  const semantics = input.semantics === undefined
+    ? Object.freeze({ family: GENERIC_RAW_ACTION_FAMILY, value: argumentsSnapshot })
+    : parseActionSemantics(input.semantics)
   const snapshot: ActionSnapshot = {
     version: 1,
     kind: 'tool-call',
     toolName: identifier(input.toolName, 'action.toolName'),
-    arguments: freezeJson(snapshotJson(input.arguments)) as JsonValue,
+    arguments: argumentsSnapshot,
     requestedPermissions: Object.freeze(permissions.map(parseRequestedPermission)),
+    projectorId,
+    semantics,
   }
   return Object.freeze(snapshot)
 }
 
 export function parseActionSnapshot(input: unknown): ActionSnapshot {
   const value = record(input, 'action')
-  exactKeys(value, ['version', 'kind', 'toolName', 'arguments', 'requestedPermissions'], [], 'action')
+  exactKeys(value, ['version', 'kind', 'toolName', 'arguments', 'requestedPermissions', 'projectorId', 'semantics'], [], 'action')
   if (value.version !== 1) throw new TypeError('action.version must be 1')
   if (value.kind !== 'tool-call') throw new TypeError('action.kind must be "tool-call"')
   if (!Array.isArray(value.requestedPermissions)) throw new TypeError('action.requestedPermissions must be an array')
   return createActionSnapshot({
     toolName: identifier(value.toolName, 'action.toolName'),
     arguments: value.arguments,
+    projectorId: identifier(value.projectorId, 'action.projectorId'),
+    semantics: parseActionSemantics(value.semantics),
     requestedPermissions: value.requestedPermissions as NonNullable<ActionSnapshotInput['requestedPermissions']>,
   })
 }

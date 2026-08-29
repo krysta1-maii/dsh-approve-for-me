@@ -95,6 +95,20 @@ describe('action snapshots and requests', () => {
     expect(hashAction(reordered)).not.toBe(hashAction(ordered))
   })
 
+  it('binds projector identity and semantic facts into the action hash', () => {
+    const shell = createActionSnapshot({
+      toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'shell-v1',
+      semantics: { family: 'shell-process-v1', value: { command: 'pwd', cwd: '/workspace' } },
+    })
+    const changedFamily = createActionSnapshot({
+      toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'shell-v1',
+      semantics: { family: 'shell-process-v2', value: { command: 'pwd', cwd: '/workspace' } },
+    })
+    expect(hashAction(shell)).not.toBe(hashAction(changedFamily))
+    expect(parseApprovalReviewRequest({ ...request(), action: shell, actionHash: hashAction(shell) }).action).toEqual(shell)
+    expect(Object.isFrozen(shell.semantics.value)).toBe(true)
+  })
+
   it('snapshots and recursively freezes mutable arguments', () => {
     const input = { nested: { value: 1 } }
     const frozen = createActionSnapshot({ toolName: 'write', arguments: input })

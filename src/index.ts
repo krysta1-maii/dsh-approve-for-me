@@ -112,6 +112,7 @@ export {
   resolveApprovalDecision,
 } from './domain/protocol.js'
 export type {
+  ActionSemanticsV1,
   ActionSnapshot,
   ActionSnapshotInput,
   ApprovalDecision,
