@@ -165,6 +165,19 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: afterCallUser }))
       .toEqual({ kind: 'incomplete', reason: 'missing-direct-user-evidence' })
+    const afterCallHeader = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 9,
+      events: [
+        ...complete.events.slice(0, 8),
+        { seq: 8, time: 9, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'changed-model' }, tools: [] }, reason: 'change' } },
+        { ...complete.events[8]!, seq: 9, time: 10 },
+      ],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: afterCallHeader }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
     const mismatchedProjectorCatalog = {
       ...deps,
       delegationProjector: { ...deps.delegationProjector, catalog: { ...catalog(), fingerprint: hash('d') } },

@@ -289,6 +289,12 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
+    if (facts.events.some(event => event.type === 'request/header' && event.seq >= execution.request.eventSeq)) {
+      return { kind: 'incomplete', reason: 'invalid-request-header' }
+    }
+    if (facts.events.some(event => event.type === 'request/context' && event.seq >= execution.request.eventSeq)) {
+      return { kind: 'incomplete', reason: 'invalid-request-context' }
+    }
     const instructions = instructionsFrom(facts)
     if (instructions === undefined) return { kind: 'incomplete', reason: 'invalid-instruction-evidence' }
     const interaction = interactionFrom(facts)
