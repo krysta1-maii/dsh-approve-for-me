@@ -144,6 +144,32 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: lateStepStart }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' })
+    const headerAfterGeneration = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked' as const, turn: 1, step: 0 } },
+      throughSeq: 9,
+      events: [
+        ...complete.events.slice(0, 7),
+        { seq: 7, time: 8, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'forged-after-generation' }, tools: headerTools }, reason: 'initial' as const } },
+        ...complete.events.slice(7).map(event => ({ ...event, seq: event.seq + 1, time: event.time + 1 })),
+      ],
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        request: { ...complete.executionFacts[0]!.request, eventSeq: 8 },
+        projection: { ...complete.executionFacts[0]!.projection, observedAt: 9 },
+      }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9, execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 8 } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: headerAfterGeneration }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
+    const contextAfterGeneration = {
+      ...headerAfterGeneration,
+      events: headerAfterGeneration.events.map(event => event.seq === 7
+        ? { ...event, type: 'request/context' as const, data: { provider: 'deepseek', model: 'forged-after-generation', contextWindow: 64_000 } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: contextAfterGeneration }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-request-context' })
     const targetOmittedFromHeader = {
       ...complete,
       events: complete.events.map(event => event.seq === 3

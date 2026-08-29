@@ -424,6 +424,14 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       && event.seq >= execution.request.eventSeq)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
+    const targetAssistantMessage = assistantMessages.get(execution.request.eventSeq)
+    if (targetAssistantMessage === undefined
+      || facts.events.some(event => event.type === 'request/header' && event.seq >= targetAssistantMessage.issuedIn.seq)) {
+      return { kind: 'incomplete', reason: 'invalid-request-header' }
+    }
+    if (facts.events.some(event => event.type === 'request/context' && event.seq >= targetAssistantMessage.issuedIn.seq)) {
+      return { kind: 'incomplete', reason: 'invalid-request-context' }
+    }
     const attempts = pendingAttempts.map(attempt => {
       const request = attempt.request as { readonly eventSeq: number }
       const binding = assistantMessages.get(request.eventSeq)
