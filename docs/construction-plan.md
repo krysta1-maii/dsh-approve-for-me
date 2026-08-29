@@ -88,7 +88,7 @@ stock DSH 0.1.2-alpha.1（不修改）
 
 退出条件：卷宗规范第 16 节测试成立；缺失、漂移或损坏事实不能产生 ready dossier。
 
-> 施工状态（2026-08-29）：已建立 exact-Agent/Session 的 `ParentSessionFactSource`、按 `approval/asked.data.id` 绑定的快照和 create-once execution/result 事实仓储；Session 身份、事件连续性、ask/call 对应关系和投影冲突均 fail-closed。机器审批运行现由 plugin-owned lifecycle registry 管理：卸载先撤销未来 policy，再 abort/drain 已运行的回调，防止迟到 seal/cache/write。当前 compiler 对 `completeness.ready !== true` 一律返回 `incomplete`，故尚未完成五段卷宗前不存在 Reviewer 或自动 allow 入口。
+> 施工状态（2026-08-29）：已建立 exact-Agent/Session 的 `ParentSessionFactSource`、按 `approval/asked.data.id` 绑定的快照和 create-once execution/result 事实仓储；Session 身份、事件连续性、ask/call 对应关系和投影冲突均 fail-closed。机器审批运行现由 plugin-owned lifecycle registry 管理：卸载先撤销未来 policy，再 abort/drain 已运行的回调，防止迟到 seal/cache/write。当前 compiler 仅对严格的最小完整前缀（直接用户消息、一个 canonical pending call、一个 exact approval ask，且没有未投影历史）产生 ready dossier；出现 assistant/instruction、既有工具、delegation 或未知事件时仍返回 `incomplete`。因此复杂历史尚不存在 Reviewer 或自动 allow 入口。
 
 ### H4：决策事实与案例留存
 

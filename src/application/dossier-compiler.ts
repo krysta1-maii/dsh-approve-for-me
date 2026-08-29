@@ -1,11 +1,51 @@
 import { canonicalJson } from '../domain/json.js'
+import type { JsonValue } from '../domain/json.js'
 import type {
+  DirectUserMessageV1,
   DossierCompilationResultV1,
   GuardianDossierCompiler,
   GuardianDossierCompilerDependencies,
+  InteractionTurnV1,
   ParentSessionFactSnapshotV1,
+  SessionFactEventV1,
 } from '../domain/dossier.js'
 import { sealSourceVerifiedDossier } from '../domain/dossier.js'
+
+function record(value: JsonValue): Record<string, JsonValue> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
+}
+
+function directUserMessage(event: SessionFactEventV1): DirectUserMessageV1 | undefined {
+  if (event.retention !== 'included' || event.type !== 'user/message') return undefined
+  const data = record(event.data)
+  const source = data === undefined ? undefined : record(data.source as JsonValue)
+  const messageId = data?.id
+  const content = data?.content
+  const turn = data?.turn
+  if (source?.kind !== 'user' || typeof messageId !== 'string' || messageId.length === 0
+    || !Array.isArray(content) || !Number.isSafeInteger(turn) || (turn as number) < 0) return undefined
+  return Object.freeze({
+    event: Object.freeze({ seq: event.seq, type: event.type, turn: turn as number }),
+    messageId,
+    content: Object.freeze([...content] as JsonValue[]),
+    surfaceState: event.surfaceState ?? 'visible',
+  })
+}
+
+function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
+  const byTurn = new Map<number, DirectUserMessageV1[]>()
+  for (const event of facts.events) {
+    if (event.type !== 'user/message') continue
+    const message = directUserMessage(event)
+    if (message === undefined || message.event.turn === undefined) return undefined
+    const messages = byTurn.get(message.event.turn) ?? []
+    messages.push(message)
+    byTurn.set(message.event.turn, messages)
+  }
+  return [...byTurn.entries()].sort(([a], [b]) => a - b).map(([turn, directUserMessages]) => Object.freeze({
+    turn, directUserMessages: Object.freeze(directUserMessages),
+  }))
+}
 
 /**
  * Deterministic D1 compiler (current pure subset). It validates the frozen
@@ -38,6 +78,31 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     const snapshot = facts.approvalSnapshots.find(item =>
       item.approvalRequestId === facts.approvalBinding.approvalRequestId)
     if (snapshot === undefined) return { kind: 'incomplete', reason: 'missing-required-projection' }
+    // v1's first complete shape deliberately accepts only a single pending
+    // execution. Any prior tool, assistant, instruction, or unknown history
+    // waits for its dedicated projector rather than being silently omitted.
+    if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => event.seq !== index)) {
+      return { kind: 'incomplete', reason: 'non-contiguous-event-prefix' }
+    }
+    const askedEvent = facts.events[facts.throughSeq]
+    const askedData = askedEvent?.retention === 'included' ? record(askedEvent.data) : undefined
+    if (askedEvent?.type !== 'approval/asked' || askedData?.id !== facts.approvalBinding.approvalRequestId
+      || askedData.callId !== facts.approvalBinding.callId || askedData.toolName !== facts.approvalBinding.toolName) {
+      return { kind: 'incomplete', reason: 'missing-current-request-event' }
+    }
+    const callEvent = facts.events[execution.request.eventSeq]
+    const callData = callEvent?.retention === 'included' ? record(callEvent.data) : undefined
+    if (execution.request.eventSeq >= facts.throughSeq || callEvent?.type !== execution.request.eventType
+      || callData?.callId !== execution.request.callId
+      || callData.name !== execution.request.toolName) {
+      return { kind: 'incomplete', reason: 'missing-required-execution-event' }
+    }
+    const allowed = new Set(['turn/start', 'turn/end', 'user/message', 'tool/call', 'approval/asked'])
+    if (facts.events.some(event => !allowed.has(event.type)) || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
+      return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+    }
+    const interaction = interactionFrom(facts)
+    if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
 
     const turn = facts.approvalBinding.event.turn ?? 0
     const step = facts.approvalBinding.event.step ?? 0
@@ -60,7 +125,14 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       },
       environment: snapshot.environment,
       instructions: Object.freeze({ messages: [] }),
-      interaction: Object.freeze({ turns: [], delegations: [] }),
+      interaction: Object.freeze({
+        turns: Object.freeze(interaction),
+        delegations: Object.freeze({
+          model: 'principal-extension-v1', principalSessionId: facts.session.sessionId,
+          descendantsGrantAuthority: false, childOutputPolicy: 'exclude-direct-origin-v1',
+          classificationCatalog: facts.eventProjection.classificationCatalog, entries: Object.freeze([]),
+        }),
+      }),
       currentTurnTools: Object.freeze({
         turn,
         excludedPendingRequest: {
@@ -87,10 +159,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         confinement: { kind: 'unconfined-composition' },
         earlierSandboxDenials: [],
       }),
-      completeness: Object.freeze({
-        ready: false,
-        missing: ['instructions', 'interaction', 'delegations'],
-      }),
+      completeness: Object.freeze({ ready: true, sourceThroughSeq: facts.throughSeq, omissions: [] }),
     })
     // A dossier that advertises missing evidence must never be branded
     // source-verified. Callers may only send a complete dossier to Guardian.
