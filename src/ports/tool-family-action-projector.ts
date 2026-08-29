@@ -10,6 +10,8 @@ import type { ActionProjector } from './action-projector.js'
  */
 export interface ToolFamilyActionProjector<Execution> {
   readonly family: string
+  /** Stable implementation/version identity committed into ActionSnapshot. */
+  readonly projectorId: string
   readonly toolNames: readonly string[]
   project(execution: Execution): ActionSnapshotInput
 }
@@ -28,6 +30,9 @@ export class ToolFamilyActionProjectorRegistry<Execution extends { readonly name
     for (const projector of projectors) {
       if (typeof projector.family !== 'string' || projector.family.length === 0) {
         throw new TypeError('tool-family projector family must be a non-empty string')
+      }
+      if (typeof projector.projectorId !== 'string' || projector.projectorId.length === 0) {
+        throw new TypeError(`tool-family projector ${projector.family} must have a non-empty projector id`)
       }
       if (!Array.isArray(projector.toolNames) || projector.toolNames.length === 0) {
         throw new TypeError(`tool-family projector ${projector.family} must register at least one tool`)
@@ -53,6 +58,9 @@ export class ToolFamilyActionProjectorRegistry<Execution extends { readonly name
     const action = projector.project(execution)
     if (action.toolName !== toolName) {
       throw new TypeError(`tool-family projector ${projector.family} projected a mismatched tool name`)
+    }
+    if (action.projectorId !== projector.projectorId || action.semantics?.family !== projector.family) {
+      throw new TypeError(`tool-family projector ${projector.family} emitted an unbound semantic action`)
     }
     return action
   }

@@ -69,6 +69,7 @@ export function createShellProcessActionProjector(
   }
   return Object.freeze({
     family: SHELL_PROCESS_FAMILY,
+    projectorId: SHELL_PROCESS_PROJECTOR_ID,
     toolNames: Object.freeze([...toolNames]),
     project(execution: ToolExecution) {
       const cwd = (execution.agent?.session as unknown as { header?: { cwd?: unknown } } | undefined)?.header?.cwd
