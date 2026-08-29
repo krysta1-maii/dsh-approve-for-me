@@ -339,7 +339,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       }
       assistantCalls.push({ callId, toolName, rawArguments: data.arguments })
-      if (callId !== execution.request.callId) {
+      if (event.seq !== execution.request.eventSeq) {
         pendingAttempts.push({
           request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq,
             issuedIn: Object.freeze({ seq: -1, type: 'assistant/message', turn, step }), blockIndex }),

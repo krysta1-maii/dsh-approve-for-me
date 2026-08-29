@@ -154,6 +154,30 @@ describe('DefaultDossierCompiler', () => {
         attempts: [{ request: { callId: 'call-0', blockIndex: 0 }, outcome: { kind: 'pending' } }],
       })
     }
+    const readDescriptor = { classification: 'ordinary' as const, toolName: 'read', toolSchemaFingerprint: 'read-fp', classificationId: 'read-class' }
+    const expandedCatalog = { ...catalog(), fingerprint: hash('d'), descriptors: [...catalog().descriptors, readDescriptor] }
+    const firstReadAction = createActionSnapshot({ toolName: 'read', arguments: { command: 'ls' } })
+    const duplicateIdDifferentTool = {
+      ...twoPending,
+      eventProjection: { ...twoPending.eventProjection, classificationCatalog: expandedCatalog },
+      events: twoPending.events.map(event => {
+        if (event.seq === 6) return { ...event, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'read', arguments: '{"command":"ls"}' }, { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } }
+        if (event.seq === 7) return { ...event, data: { turn: 1, step: 0, callId: 'call-1', name: 'read', arguments: '{"command":"ls"}' } }
+        return event
+      }),
+      executionFacts: [
+        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, callId: 'call-1', toolName: 'read' }, toolClassification: { classificationCatalogFingerprint: hash('d'), descriptor: readDescriptor }, projection: { ...twoPending.executionFacts[0]!.projection, action: firstReadAction, actionHash: hashAction(firstReadAction) } },
+        { ...twoPending.executionFacts[1]!, toolClassification: { ...twoPending.executionFacts[1]!.toolClassification, classificationCatalogFingerprint: hash('d') } },
+      ],
+    }
+    const readDeps = { ...deps, delegationProjector: { ...deps.delegationProjector, catalog: expandedCatalog } }
+    const duplicateIdResult = new DefaultDossierCompiler(readDeps).compile({ facts: duplicateIdDifferentTool })
+    expect(duplicateIdResult.kind).toBe('ready')
+    if (duplicateIdResult.kind === 'ready') {
+      expect(duplicateIdResult.verified.dossier.currentTurnTools).toMatchObject({
+        attempts: [{ request: { callId: 'call-1', toolName: 'read', blockIndex: 0 }, outcome: { kind: 'pending' } }],
+      })
+    }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
     const invalidParentIdentity = {
