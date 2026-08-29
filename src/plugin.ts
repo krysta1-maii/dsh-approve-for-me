@@ -11,13 +11,17 @@ import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
+import { SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
+import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
+import { DefaultDossierCompiler } from './application/dossier-compiler.js'
+import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
+import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from './application/fact-repositories.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
 import { DefaultGatePipeline } from './application/gate-pipeline.js'
 import type { GatePreReview } from './application/gate-pipeline.js'
 import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
-import { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
 import { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
 import type { StorageDomainFacility } from './dsh/storage-domain-decision-record.js'
 import { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
@@ -52,12 +56,7 @@ interface LiveSessionEvent {
   readonly data: unknown
 }
 
-function deriveLiveGateScope(agent: Agent, requestId: string, callId: string, toolName: string): {
-  readonly sessionId: string
-  readonly turn: number
-  readonly directUserFrontierSeq: number
-  readonly rootRequester: boolean
-} {
+function validateLiveApprovalBinding(agent: Agent, requestId: string, callId: string, toolName: string): string {
   const session = agent.session as unknown as { id?: unknown; header?: { id?: unknown; parentSession?: unknown; delegationDepth?: unknown }; events?: readonly LiveSessionEvent[] }
   const agentId = String((agent as unknown as { id?: unknown }).id ?? '')
   const sessionId = typeof session.id === 'string' ? session.id : ''
@@ -69,21 +68,7 @@ function deriveLiveGateScope(agent: Agent, requestId: string, callId: string, to
     return data.id === requestId && data.callId === callId && data.toolName === toolName
   })())
   if (asked.length !== 1) throw new GateFailure('integrity', 'approval ask does not have one matching durable audit event')
-  const ask = asked[0]!
-  let turn: number | undefined
-  let directUserFrontierSeq: number | undefined
-  for (const event of session.events) {
-    if (event.seq > ask.seq) break
-    const data = event.data as Record<string, unknown>
-    if (event.type === 'turn/start' && Number.isSafeInteger(data.turn)) turn = data.turn as number
-    if (event.type === 'user/message' && (data.source as Record<string, unknown> | undefined)?.kind === 'user') directUserFrontierSeq = event.seq
-  }
-  if (turn === undefined || directUserFrontierSeq === undefined) {
-    throw new GateFailure('integrity', 'approval ask lacks a derived turn or direct-user frontier')
-  }
-  const depth = session.header.delegationDepth
-  const rootRequester = session.header.parentSession === undefined && (depth === undefined || depth === 0)
-  return { sessionId, turn, directUserFrontierSeq, rootRequester }
+  return sessionId
 }
 
 /**
@@ -124,7 +109,56 @@ export function installApproveForMe(
   const breaker = new InMemoryExactDenialBreaker()
   const allowCache = new InMemoryAllowCache()
   const seals = new InMemorySealedDispositionRegistry()
-  const factStore = new InMemoryGateActionFactStore()
+  const executionFacts = new InMemoryExecutionFactRepository()
+  const approvalSnapshots = new InMemoryApprovalSnapshotRepository()
+  // The dossier catalog deliberately originates from the normalized descriptor
+  // set, but the resolver does not authorize from it: the source adapter must
+  // corroborate it against the historical Session request header.
+  const dossierCatalog = Object.freeze({
+    version: 1 as const,
+    eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
+    argumentSemanticsId: normalized.toolCatalog.argumentSemanticsId,
+    fingerprint: normalized.toolCatalog.fingerprint,
+    descriptors: Object.freeze(normalized.toolCatalog.descriptors.map(descriptor => Object.freeze({
+      classification: 'ordinary' as const,
+      toolName: descriptor.toolName,
+      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+      classificationId: `approval-class:${descriptor.classification}`,
+    }))),
+  })
+  const factSource = new DshParentSessionFactSource({
+    get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
+  })
+  const compiler = new DefaultDossierCompiler({
+    delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
+  })
+  const factStore = new SourceBackedGateFactResolver({
+    factSource,
+    compiler,
+    projector: { project: () => undefined },
+    async snapshotInput(pending, signal) {
+      if (signal?.aborted) return undefined
+      const session = pending.agent.session as unknown as { header?: { version?: unknown; createdAt?: unknown } }
+      const version = session.header?.version
+      const createdAt = session.header?.createdAt
+      if (!Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)) return undefined
+      const lifecycle = {
+        sessionId: pending.authority.sessionId,
+        sessionFormatVersion: version as number,
+        createdAt: createdAt as number,
+      }
+      return {
+        agent: pending.agent,
+        approvalRequestId: pending.requestId,
+        callId: pending.callId,
+        toolName: pending.toolName,
+        classificationCatalog: dossierCatalog,
+        executionFacts: await executionFacts.list(lifecycle),
+        approvalSnapshots: await approvalSnapshots.list(lifecycle),
+        ...signal === undefined ? {} : { signal },
+      }
+    },
+  })
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns
   // unavailable, so no automatic grant can escape the durability boundary.
@@ -182,40 +216,20 @@ export function installApproveForMe(
       if (callId === undefined) {
         throw new GateFailure('integrity', 'cannot resolve action hash for an approval ask without a tool call id')
       }
-      const scope = deriveLiveGateScope(agent, requestId, callId, toolName)
-      const parentSessionId = scope.sessionId
+      const parentSessionId = validateLiveApprovalBinding(agent, requestId, callId, toolName)
       const captured = captures.lookup(agent, callId, toolName)
       if (captured === undefined) {
         throw new GateFailure('integrity', `cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
       }
-      const descriptor = normalized.toolCatalog.descriptors.find(item => item.toolName === toolName)
-      const toolSchemaFingerprint = descriptor?.toolSchemaFingerprint ?? ''
       const actionHash = hashAction(captured)
-      const classification = classifier.classify({ toolName, toolSchemaFingerprint })
+      // This stores correlation metadata only. Scope, tool schema, action and
+      // decision keys must be rebuilt from durable Session facts by the resolver.
       factStore.register({
-        parentSessionId,
+        agent,
+        requestId,
+        callId,
+        toolName,
         actionHash,
-        action: captured,
-        toolSchemaFingerprint,
-        classification,
-        breakerKey: {
-          parentLifecycleFingerprint: parentSessionId,
-          turn: scope.turn,
-          directUserFrontierSeq: scope.directUserFrontierSeq,
-          actionHash,
-        },
-        allowCacheKey: {
-          parentLifecycleFingerprint: parentSessionId,
-          turn: scope.turn,
-          directUserFrontierSeq: scope.directUserFrontierSeq,
-          actionHash,
-          configurationFingerprint: normalized.preset.configurationFingerprint,
-          generation: normalized.preset.generation,
-        },
-        rootRequester: scope.rootRequester,
-        directChildOrigin: !scope.rootRequester,
-        generation: normalized.preset.generation,
-        configurationFingerprint: normalized.preset.configurationFingerprint,
         authority: { live: agent, sessionId: parentSessionId },
       })
       return actionHash
