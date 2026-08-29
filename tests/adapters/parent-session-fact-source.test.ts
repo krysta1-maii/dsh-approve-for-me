@@ -61,6 +61,18 @@ describe('DshParentSessionFactSource', () => {
     expect(facts?.events).toHaveLength(4)
   })
 
+  it('refuses an ambiguous call or a projection bound to a different durable event', () => {
+    const requester = agent()
+    const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })
+    const duplicate = agent()
+    ;(duplicate.session.events as unknown as object[]).splice(3, 0, {
+      seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{}' },
+    })
+    ;(duplicate.session.events as unknown as Array<{ seq: number }>).forEach((event, index) => { event.seq = index })
+    expect(source.snapshot(input({ agent: duplicate as never }))).toBeUndefined()
+    expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, request: { ...execution.request, eventSeq: 1 } }] }))).toBeUndefined()
+  })
+
   it('refuses mismatched ids, missing asks, conflicting projections, and unknown agents', () => {
     const requester = agent()
     const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })

@@ -122,10 +122,14 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     if (askedEvents.length !== 1) return undefined
     const asked = askedEvents[0]
     if (asked === undefined) return undefined
-    const matchingCall = events.find(event => event.seq < asked.seq && (
+    const matchingCalls = events.filter(event => event.seq < asked.seq && (
       (event.type === 'tool/call' && (event.data as Record<string, unknown>).callId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
       || (event.type === 'tool/code-dispatch-start' && (event.data as Record<string, unknown>).subCallId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
     ))
+    // A request id must bind to exactly one canonical execution event. Ambiguous
+    // correlation is an integrity failure, not an excuse to select a first match.
+    if (matchingCalls.length !== 1) return undefined
+    const matchingCall = matchingCalls[0]
     if (matchingCall === undefined) return undefined
     const throughSeq = asked.seq
     const sameLifecycle = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number } }): boolean =>
@@ -134,7 +138,12 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && item.session.createdAt === bound.identity.createdAt
     const executions = input.executionFacts.filter(item => sameLifecycle(item) && item.request.eventSeq <= throughSeq)
     const approvals = input.approvalSnapshots.filter(item => sameLifecycle(item) && item.approvalAskedSeq === throughSeq)
-    if (approvals.some(item => item.approvalRequestId !== input.approvalRequestId)) return undefined
+    if (approvals.length !== 1 || approvals.some(item => item.approvalRequestId !== input.approvalRequestId)) return undefined
+    const correlatedExecutions = executions.filter(item =>
+      item.request.eventSeq === matchingCall.seq
+      && item.request.callId === input.callId
+      && item.request.toolName === input.toolName)
+    if (correlatedExecutions.length !== 1) return undefined
     return Object.freeze({
       version: 1,
       session: bound.identity,

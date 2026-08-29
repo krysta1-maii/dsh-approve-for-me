@@ -33,7 +33,7 @@
 - 0.1.2-alpha.1 迁移（本体与依赖插件的 peer/类型面）；
 - 本体 `registerMachinePolicy` 适配器与决策管线实现；
 - trustEnvelope、deny breaker、allow-cache；
-- source-backed dossier compiler 和 Storage Domain fact adapters（执行/审批投影的仓库键必须绑定完整 session lifecycle，不能只以 session ID 隔离）；
+- source-backed dossier compiler 和 Storage Domain fact adapters（执行/审批投影必须用完整 session lifecycle 键控，并与唯一 durable call/ask event 精确关联；不能只以 session ID 隔离或猜测首个匹配项）；
 - 最小决策记录与 opt-in full case capture；
 - 完整风险／授权 policy；
 - 真实 Profile、Web、cold resume、HMR 和卸载验收。
