@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DefaultDossierCompiler,
   createActionSnapshot,
+  hashAction,
 } from '../../src/index.js'
 import type {
   GuardianDossierCompilerDependencies,
@@ -52,7 +53,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
         classificationCatalogFingerprint: hash('c'),
         descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' },
       },
-      projection: { projectorId: 'default-v1', action, actionHash: hash('a'), observedAt: 1 },
+      projection: { projectorId: 'default-v1', action, actionHash: hashAction(action), observedAt: 1 },
     }],
     approvalSnapshots: [{
       version: 1,
@@ -172,6 +173,18 @@ describe('DefaultDossierCompiler', () => {
       executionFacts: [...complete.executionFacts, complete.executionFacts[0]!],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: duplicateExecutionFact }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const corruptedActionHash = {
+      ...complete,
+      executionFacts: [{ ...complete.executionFacts[0]!, projection: { ...complete.executionFacts[0]!.projection, actionHash: hash('f') } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: corruptedActionHash }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const conflictingCatalogDescriptor = {
+      ...complete,
+      executionFacts: [{ ...complete.executionFacts[0]!, toolClassification: { ...complete.executionFacts[0]!.toolClassification, descriptor: { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'other-fp', classificationId: 'class-1' } } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: conflictingCatalogDescriptor }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const crossLifecycleSnapshot = {
       ...complete,

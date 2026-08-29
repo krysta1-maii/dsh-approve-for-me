@@ -10,6 +10,7 @@ import type {
   SessionFactEventV1,
 } from '../domain/dossier.js'
 import { sealSourceVerifiedDossier } from '../domain/dossier.js'
+import { hashAction } from '../domain/protocol.js'
 
 function record(value: JsonValue): Record<string, JsonValue> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
@@ -179,7 +180,15 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       && item.request.toolName === facts.approvalBinding.toolName)
     if (executions.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     const execution = executions[0]!
-    if (!sameLifecycle(execution.session, facts.session)) {
+    if (!sameLifecycle(execution.session, facts.session)
+      || execution.projection.actionHash !== hashAction(execution.projection.action)) {
+      return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+    }
+    const catalogDescriptors = facts.eventProjection.classificationCatalog.descriptors.filter(descriptor =>
+      descriptor.toolName === execution.request.toolName)
+    if (catalogDescriptors.length !== 1
+      || execution.toolClassification.classificationCatalogFingerprint !== facts.eventProjection.classificationCatalog.fingerprint
+      || canonicalJson(catalogDescriptors[0]!) !== canonicalJson(execution.toolClassification.descriptor)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     }
     const snapshots = facts.approvalSnapshots.filter(item =>
