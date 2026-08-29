@@ -251,6 +251,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => event.seq !== index)) {
       return { kind: 'incomplete', reason: 'non-contiguous-event-prefix' }
     }
+    if (facts.events.some((event, index) => !Number.isSafeInteger(event.time) || event.time < 0
+      || (index > 0 && event.time < facts.events[index - 1]!.time))) {
+      return { kind: 'incomplete', reason: 'invalid-event-time-order' }
+    }
     const askedEvent = facts.events[facts.throughSeq]
     const askedData = askedEvent?.retention === 'included' ? record(askedEvent.data) : undefined
     if (facts.approvalBinding.event.seq !== facts.throughSeq || facts.approvalBinding.event.type !== 'approval/asked') {

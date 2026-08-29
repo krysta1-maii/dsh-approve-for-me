@@ -126,6 +126,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const regressiveEventTime = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 7 ? { ...event, time: 0 } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: regressiveEventTime }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-event-time-order' })
     const mismatchedApprovalBindingEvent = {
       ...complete,
       approvalBinding: { ...complete.approvalBinding, event: { ...complete.approvalBinding.event, seq: 7 } },

@@ -126,7 +126,8 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     const bound = sessionIdentity(input.agent)
     if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return undefined
     const events = bound.session.events
-    if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined)) return undefined
+    if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined
+      || (index > 0 && event.time < events[index - 1]!.time))) return undefined
     const askedEvents = events.filter(event => { 
       if (event.type !== 'approval/asked') return false
       const data = event.data as Record<string, unknown>
