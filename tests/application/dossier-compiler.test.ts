@@ -121,6 +121,18 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+    const negativeZeroSequence = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 0 ? { ...event, seq: -0 } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: negativeZeroSequence }))
+      .toEqual({ kind: 'incomplete', reason: 'non-contiguous-event-prefix' })
+    const negativeZeroTime = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 0 ? { ...event, time: -0 } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: negativeZeroTime }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-event-time-order' })
     const lateStepStart = {
       ...complete,
       events: [complete.events[0]!, complete.events[1]!, complete.events[3]!, complete.events[4]!, complete.events[5]!, complete.events[6]!, complete.events[2]!, complete.events[7]!, complete.events[8]!]

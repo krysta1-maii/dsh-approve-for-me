@@ -37,8 +37,12 @@ function canonicalSize(value: unknown): { readonly bytes: number; readonly chara
   return Object.freeze({ bytes: new TextEncoder().encode(json).byteLength, characters: json.length })
 }
 
+function nonNegativeSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+}
+
 function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']): boolean {
-  const nonNegative = (value: number) => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+  const nonNegative = nonNegativeSafeInteger
   return typeof session.sessionId === 'string' && session.sessionId.length > 0
     && nonNegative(session.sessionFormatVersion)
     && nonNegative(session.createdAt)
@@ -318,10 +322,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     // same open turn/step. Canonical calls, assembled model blocks, and sidecar
     // projections remain a strict bijection; completed or delegated history is
     // rejected rather than silently omitted.
-    if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => event.seq !== index)) {
+    if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => !nonNegativeSafeInteger(event.seq) || event.seq !== index)) {
       return { kind: 'incomplete', reason: 'non-contiguous-event-prefix' }
     }
-    if (facts.events.some((event, index) => !Number.isSafeInteger(event.time) || event.time < 0
+    if (facts.events.some((event, index) => !nonNegativeSafeInteger(event.time)
       || (index > 0 && event.time < facts.events[index - 1]!.time))) {
       return { kind: 'incomplete', reason: 'invalid-event-time-order' }
     }
@@ -334,7 +338,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || askedData.callId !== facts.approvalBinding.callId || askedData.toolName !== facts.approvalBinding.toolName) {
       return { kind: 'incomplete', reason: 'missing-current-request-event' }
     }
-    if (!Number.isSafeInteger(askedEvent.time) || askedEvent.time < 0) {
+    if (!nonNegativeSafeInteger(askedEvent.time)) {
       return { kind: 'incomplete', reason: 'invalid-frozen-event-time' }
     }
     const callEvent = facts.events[execution.request.eventSeq]
