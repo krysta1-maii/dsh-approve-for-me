@@ -10,6 +10,7 @@ import { DefaultReviewCoordinator } from './application/review-coordinator.js'
 import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
+import type { ActionProjector } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
@@ -52,6 +53,12 @@ export interface ApproveForMePlugin {
 export interface ApproveForMeInstallOptions {
   /** Project requested permissions from exact DSH execution facts. */
   projectPermissions?(execution: ToolExecution): readonly RequestedPermission[]
+  /**
+   * Optional closed-world tool-family action projector. When supplied it
+   * replaces the legacy generic projection; unprojectable tools stay
+   * uncaptured and therefore cannot receive an automatic approval.
+   */
+  actionProjector?: ActionProjector<ToolExecution>
   /** Best-effort non-sensitive compiler metrics consumer. */
   dossierMetricsSink?: DossierCompilationMetricsSink
 }
@@ -94,7 +101,8 @@ export function installApproveForMe(
   const channel = new DefaultDecisionChannel()
   const lifecycle = new ApprovalRunLifecycle()
   const captures = new DefaultActionCapture<Agent, string>()
-  const bridge = createCaptureBridge(createDefaultActionProjector(options.projectPermissions), captures)
+  const actionProjector = options.actionProjector ?? createDefaultActionProjector(options.projectPermissions)
+  const bridge = createCaptureBridge(actionProjector, captures)
 
   const registration = ctx.managedAgents.registerProvider(createReviewerProvider({
     submitDecision: {
@@ -192,10 +200,11 @@ export function installApproveForMe(
     },
   })
   const executionProjection = new DshExecutionFactProjectionBridge(
-    createDefaultActionProjector(options.projectPermissions),
+    actionProjector,
     dossierCatalog,
     executionFacts,
     approvalSnapshots,
+    captures,
   )
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns

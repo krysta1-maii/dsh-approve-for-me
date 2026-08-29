@@ -166,6 +166,8 @@ export type {
   ActionCapture,
   ActionProjector,
 } from './ports/action-projector.js'
+export { ToolFamilyActionProjectorRegistry } from './ports/tool-family-action-projector.js'
+export type { ToolFamilyActionProjector } from './ports/tool-family-action-projector.js'
 
 // Approval-gate ports (DSH-neutral).
 export { fingerprintApprovalToolCatalogV1 } from './approval-gate/catalog.js'

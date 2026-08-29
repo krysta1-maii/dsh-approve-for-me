@@ -4,6 +4,7 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { DshExecutionFactProjectionBridge } from '../../src/dsh/execution-projection-bridge.js'
 import { createActionSnapshot } from '../../src/domain/protocol.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from '../../src/application/fact-repositories.js'
+import { DefaultActionCapture } from '../../src/ports/action-projector.js'
 
 const catalog = {
   version: 1 as const, eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
@@ -39,6 +40,21 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(records).toHaveLength(1)
     expect(records[0]).toMatchObject({ session: { cwd: '/workspace' }, request: { eventSeq: 0, callId: 'call-1', toolName: 'bash' }, projection: { observedAt: 20 } })
     await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
+  })
+
+  it('persists the capture projection without evaluating its projector again', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } }])
+    const captures = new DefaultActionCapture<Agent, string>()
+    const captured = createActionSnapshot({ toolName: 'bash', arguments: { command: 'captured' } })
+    captures.remember(owner, 'call-1', captured)
+    const bridge = new DshExecutionFactProjectionBridge(
+      { project: () => { throw new Error('must not re-project') } }, catalog, repository, undefined, captures,
+    )
+    await bridge.project(execution(owner))
+    const records = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    expect(records).toHaveLength(1)
+    expect(records[0]!.projection.action).toBe(captured)
   })
 
   it('captures an immutable snapshot only for one prior canonical call', async () => {

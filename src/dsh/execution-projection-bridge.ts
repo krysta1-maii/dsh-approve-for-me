@@ -3,7 +3,7 @@ import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deeps
 import { createActionSnapshot, hashAction } from '../domain/protocol.js'
 import { canonicalJson } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, DelegationToolClassificationCatalogV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
-import type { ActionProjector } from '../ports/action-projector.js'
+import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
 
 interface EventLike {
@@ -39,6 +39,8 @@ export class DshExecutionFactProjectionBridge {
     private readonly catalog: DelegationToolClassificationCatalogV1,
     private readonly repository: ExecutionFactRepository,
     private readonly approvals?: ApprovalSnapshotRepository,
+    /** Reuse the exact volatile projection when capture and fact bridging share one. */
+    private readonly captures?: ActionCapture<Agent, string>,
   ) {}
 
   async preExecute(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {
@@ -72,11 +74,13 @@ export class DshExecutionFactProjectionBridge {
     const event = candidates[0]!
     const descriptor = this.catalog.descriptors.find(item => item.toolName === exec.name)
     if (descriptor === undefined) return
-    let action
-    try {
-      action = createActionSnapshot(this.projector.project(exec))
-    } catch {
-      return
+    let action = this.captures?.lookup(agent, callId, exec.name)
+    if (action === undefined) {
+      try {
+        action = createActionSnapshot(this.projector.project(exec))
+      } catch {
+        return
+      }
     }
     const record: ToolExecutionFactRecordV1 = Object.freeze({
       version: 1,
