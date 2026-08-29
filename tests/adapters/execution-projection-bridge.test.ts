@@ -75,6 +75,20 @@ describe('DshExecutionFactProjectionBridge', () => {
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
 
+  it('rejects a result whose durable source sequence differs from the call', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [99], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', content: [] }] } } },
+    ])
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository)
+    await bridge.project(execution(owner))
+    bridge.observeResult(execution(owner), { isError: false, value: null, content: [] })
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
+      .resolves.not.toHaveProperty('result')
+  })
+
   it('attaches a matching tool error without copying result content', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const owner = agent([
