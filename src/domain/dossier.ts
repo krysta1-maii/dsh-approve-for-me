@@ -445,12 +445,25 @@ export interface PrincipalDelegationProjector {
     | { kind: 'invalid'; readonly reason: string }
 }
 
+export interface DossierSectionMetricsV1 {
+  readonly name: 'environment' | 'instructions' | 'interaction' | 'currentTurnTools' | 'pendingApproval'
+  readonly bytes: number
+  readonly characters: number
+}
+
+/** Non-sensitive accounting derived from the canonical dossier, never a payload copy. */
 export interface DossierMetricsV1 {
+  readonly dossierVersion: 1
+  readonly delegationClassificationCatalogFingerprint: string
+  readonly bytes: number
+  readonly characters: number
+  readonly sections: readonly DossierSectionMetricsV1[]
   readonly eventCount: number
   readonly includedEventCount: number
   readonly excludedEventCount: number
   readonly delegationEntryCount: number
   readonly attemptCount: number
+  /** Retained source-side accounting for excluded content only. */
   readonly totalBytes: number
 }
 

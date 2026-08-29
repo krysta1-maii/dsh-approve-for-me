@@ -15,6 +15,11 @@ function record(value: JsonValue): Record<string, JsonValue> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
 }
 
+function canonicalSize(value: unknown): { readonly bytes: number; readonly characters: number } {
+  const json = canonicalJson(value as JsonValue)
+  return Object.freeze({ bytes: new TextEncoder().encode(json).byteLength, characters: json.length })
+}
+
 function directUserMessage(event: SessionFactEventV1, turn: number | undefined): DirectUserMessageV1 | undefined {
   if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
   const data = record(event.data)
@@ -199,13 +204,25 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if ((dossier.completeness as { readonly ready?: unknown }).ready !== true) {
       return { kind: 'incomplete', reason: 'dossier-completeness-not-ready' }
     }
-    if (new TextEncoder().encode(canonicalJson(dossier)).byteLength > this.deps.maxDossierBytes) {
+    const dossierSize = canonicalSize(dossier)
+    if (dossierSize.bytes > this.deps.maxDossierBytes) {
       return { kind: 'incomplete', reason: 'budget-overflow' }
     }
+    const sections = Object.freeze([
+      ['environment', dossier.environment],
+      ['instructions', dossier.instructions],
+      ['interaction', dossier.interaction],
+      ['currentTurnTools', dossier.currentTurnTools],
+      ['pendingApproval', dossier.pendingApproval],
+    ].map(([name, value]) => Object.freeze({ name: name as 'environment' | 'instructions' | 'interaction' | 'currentTurnTools' | 'pendingApproval', ...canonicalSize(value as JsonValue) })))
     return {
       kind: 'ready',
       verified: sealSourceVerifiedDossier(dossier as never),
       metrics: {
+        dossierVersion: 1,
+        delegationClassificationCatalogFingerprint: facts.eventProjection.classificationCatalog.fingerprint,
+        ...dossierSize,
+        sections,
         eventCount: facts.events.length,
         includedEventCount: facts.events.filter(event => event.retention === 'included').length,
         excludedEventCount: facts.events.filter(event => event.retention === 'excluded-content').length,

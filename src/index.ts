@@ -59,6 +59,7 @@ export type {
   DelegationReceiptFactRecordV1,
   DossierCompilationResultV1,
   DossierMetricsV1,
+  DossierSectionMetricsV1,
   ConfinementProjectionV1,
   DelegationCatalogValidationV1,
   DelegationToolClassificationCatalogV1,

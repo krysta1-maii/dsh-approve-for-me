@@ -104,6 +104,14 @@ describe('DefaultDossierCompiler', () => {
       expect(result.verified.dossier.completeness).toMatchObject({ ready: true, sourceThroughSeq: 4 })
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 4, frozenAt: 5 })
       expect(result.verified.dossier.environment).toMatchObject({ requestHeader: { config: { model: 'model-1' } } })
+      expect(result.metrics).toMatchObject({
+        dossierVersion: 1,
+        delegationClassificationCatalogFingerprint: hash('c'),
+      })
+      expect(result.metrics.bytes).toBeGreaterThan(0)
+      expect(result.metrics.sections.map(section => section.name)).toEqual([
+        'environment', 'instructions', 'interaction', 'currentTurnTools', 'pendingApproval',
+      ])
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
