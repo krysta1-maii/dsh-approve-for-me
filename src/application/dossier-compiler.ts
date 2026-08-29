@@ -15,6 +15,16 @@ function record(value: JsonValue): Record<string, JsonValue> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
 }
 
+function sameLifecycle(
+  left: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string },
+  right: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string },
+): boolean {
+  return left.sessionId === right.sessionId
+    && left.sessionFormatVersion === right.sessionFormatVersion
+    && left.createdAt === right.createdAt
+    && left.cwd === right.cwd
+}
+
 function canonicalSize(value: unknown): { readonly bytes: number; readonly characters: number } {
   const json = canonicalJson(value as JsonValue)
   return Object.freeze({ bytes: new TextEncoder().encode(json).byteLength, characters: json.length })
@@ -159,17 +169,26 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (facts.session.effectiveDelegationDepth !== 0 || facts.session.parentSessionId !== undefined) {
       return { kind: 'incomplete', reason: 'unsupported-delegated-requester' }
     }
-    if (facts.approvalBinding.callId.length === 0) return { kind: 'incomplete', reason: 'missing-call-id' }
+    if (facts.approvalBinding.approvalRequestId.length === 0 || facts.approvalBinding.callId.length === 0
+      || facts.approvalBinding.toolName.length === 0) return { kind: 'incomplete', reason: 'missing-call-id' }
     if (facts.throughSeq !== facts.approvalBinding.event.seq) {
       return { kind: 'incomplete', reason: 'missing-current-request-event' }
     }
-    const execution = facts.executionFacts.find(item =>
+    const executions = facts.executionFacts.filter(item =>
       item.request.callId === facts.approvalBinding.callId
       && item.request.toolName === facts.approvalBinding.toolName)
-    if (execution === undefined) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
-    const snapshot = facts.approvalSnapshots.find(item =>
+    if (executions.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+    const execution = executions[0]!
+    if (!sameLifecycle(execution.session, facts.session)) {
+      return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+    }
+    const snapshots = facts.approvalSnapshots.filter(item =>
       item.approvalRequestId === facts.approvalBinding.approvalRequestId)
-    if (snapshot === undefined) return { kind: 'incomplete', reason: 'missing-required-projection' }
+    if (snapshots.length !== 1) return { kind: 'incomplete', reason: 'missing-required-projection' }
+    const snapshot = snapshots[0]!
+    if (!sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq) {
+      return { kind: 'incomplete', reason: 'missing-required-projection' }
+    }
     // v1's first complete shape deliberately accepts only a single pending
     // execution. Its raw stream and assembled one-tool-call wrapper are safe
     // transport duplicates; prior tools, instructions, or unknown history wait

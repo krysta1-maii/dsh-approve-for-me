@@ -167,6 +167,18 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: nonCanonicalExecutionEvent }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
+    const duplicateExecutionFact = {
+      ...complete,
+      executionFacts: [...complete.executionFacts, complete.executionFacts[0]!],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: duplicateExecutionFact }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const crossLifecycleSnapshot = {
+      ...complete,
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, session: { ...session, createdAt: 999 } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: crossLifecycleSnapshot }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
     const closedStep = {
       ...complete,
       events: complete.events.map(event => event.seq === 5
