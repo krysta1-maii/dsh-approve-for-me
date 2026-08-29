@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import * as publicApi from '../../src/index.js'
 import {
   assertDossierShape,
   recomputeDossierHash,
-  sealSourceVerifiedDossier,
 } from '../../src/index.js'
+import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
 import type { GuardianDossierV1 } from '../../src/index.js'
 
 function dossier(): GuardianDossierV1 {
@@ -66,6 +67,10 @@ describe('Guardian dossier shape', () => {
       ...dossier(),
       environment: { bad: () => 1 },
     } as never)).toThrow()
+  })
+
+  it('does not expose source-verification sealing through the package API', () => {
+    expect('sealSourceVerifiedDossier' in publicApi).toBe(false)
   })
 
   it('validates a dossier before sealing the source-verified wrapper', () => {

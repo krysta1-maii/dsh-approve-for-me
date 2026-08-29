@@ -4,8 +4,8 @@ import {
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
   hashAction,
-  sealSourceVerifiedDossier,
 } from '../../src/index.js'
+import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
 import type { ApprovalDecision, ReviewCoordinator } from '../../src/index.js'
 
 const action = () => createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })

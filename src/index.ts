@@ -45,7 +45,6 @@ export {
   effectiveToolBindingsFromRequestHeaderV1,
   fingerprintDelegationToolCatalogV1,
   recomputeDossierHash,
-  sealSourceVerifiedDossier,
   validateDelegationToolCatalog,
   validateToolTrajectorySection,
 } from './domain/dossier.js'

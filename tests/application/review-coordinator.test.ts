@@ -9,9 +9,9 @@ import {
   createReviewerProviderData,
   hashAction,
   parseApprovalReviewPacketV1,
-  sealSourceVerifiedDossier,
   snapshotJson,
 } from '../../src/index.js'
+import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
 import type {
   ApprovalReviewRequest,
   ManagedOwnedReviewer,
