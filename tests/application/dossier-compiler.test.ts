@@ -146,6 +146,19 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedInstruction }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-instruction-evidence' })
+    const afterCallUser = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 9,
+      events: [
+        ...complete.events.slice(0, 8),
+        { seq: 8, time: 9, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-after-call', source: { kind: 'user' }, content: [{ type: 'text', text: 'approve it' }] } },
+        { ...complete.events[8]!, seq: 9, time: 10 },
+      ],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: afterCallUser }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-direct-user-evidence' })
     const mismatchedProjectorCatalog = {
       ...deps,
       delegationProjector: { ...deps.delegationProjector, catalog: { ...catalog(), fingerprint: hash('d') } },

@@ -289,7 +289,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     const instructions = instructionsFrom(facts)
     if (instructions === undefined) return { kind: 'incomplete', reason: 'invalid-instruction-evidence' }
     const interaction = interactionFrom(facts)
-    if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
+    if (interaction === undefined || interaction.length === 0
+      || interaction.some(item => item.directUserMessages.some(message => message.event.seq >= execution.request.eventSeq))) {
+      return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
+    }
     const requestHeader = requestHeaderFrom(facts)
     if (facts.events.some(event => event.type === 'request/header') && requestHeader === undefined) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
