@@ -43,6 +43,7 @@ export {
   assertDossierShape,
   effectiveToolBindingFromSchemaV1,
   effectiveToolBindingsFromRequestHeaderV1,
+  fingerprintDelegationToolCatalogV1,
   recomputeDossierHash,
   sealSourceVerifiedDossier,
   validateDelegationToolCatalog,

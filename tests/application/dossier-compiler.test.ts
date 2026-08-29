@@ -3,6 +3,7 @@ import {
   DefaultDossierCompiler,
   createActionSnapshot,
   effectiveToolBindingFromSchemaV1,
+  fingerprintDelegationToolCatalogV1,
   hashAction,
 } from '../../src/index.js'
 import type {
@@ -28,15 +29,16 @@ const session = {
 }
 
 function catalog() {
-  return {
+  const unsealed = {
     version: 1 as const,
     eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
     argumentSemanticsId: 'default-v1',
-    fingerprint: hash('c'),
+    fingerprint: '',
     descriptors: [
       { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
     ],
   }
+  return { ...unsealed, fingerprint: fingerprintDelegationToolCatalogV1(unsealed)! }
 }
 
 function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSessionFactSnapshotV1 {
@@ -59,7 +61,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
       session,
       request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
       toolClassification: {
-        classificationCatalogFingerprint: hash('c'),
+        classificationCatalogFingerprint: catalog().fingerprint,
         descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
       },
       projection: { projectorId: 'default-v1', action, actionHash: hashAction(action), observedAt: 1 },
@@ -146,7 +148,7 @@ describe('DefaultDossierCompiler', () => {
       })
       expect(result.metrics).toMatchObject({
         dossierVersion: 1,
-        delegationClassificationCatalogFingerprint: hash('c'),
+        delegationClassificationCatalogFingerprint: catalog().fingerprint,
       })
       expect(result.metrics.bytes).toBeGreaterThan(0)
       expect(result.metrics.sections.map(section => section.name)).toEqual([

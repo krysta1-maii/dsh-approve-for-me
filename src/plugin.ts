@@ -15,6 +15,7 @@ import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bri
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
+import { fingerprintDelegationToolCatalogV1 } from './domain/dossier.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from './application/fact-repositories.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
@@ -115,17 +116,21 @@ export function installApproveForMe(
   // The dossier catalog deliberately originates from the normalized descriptor
   // set, but the resolver does not authorize from it: the source adapter must
   // corroborate it against the historical Session request header.
-  const dossierCatalog = Object.freeze({
+  const unsealedDossierCatalog = {
     version: 1 as const,
     eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
     argumentSemanticsId: normalized.toolCatalog.argumentSemanticsId,
-    fingerprint: normalized.toolCatalog.fingerprint,
+    fingerprint: '',
     descriptors: Object.freeze(normalized.toolCatalog.descriptors.map(descriptor => Object.freeze({
       classification: 'ordinary' as const,
       toolName: descriptor.toolName,
       toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
       classificationId: `approval-class:${descriptor.classification}`,
     }))),
+  }
+  const dossierCatalog = Object.freeze({
+    ...unsealedDossierCatalog,
+    fingerprint: fingerprintDelegationToolCatalogV1(unsealedDossierCatalog)!,
   })
   const factSource = new DshParentSessionFactSource({
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),

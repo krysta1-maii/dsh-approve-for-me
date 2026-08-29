@@ -337,13 +337,56 @@ export function effectiveToolBindingsFromRequestHeaderV1(input: unknown): readon
   return Object.freeze(bindings)
 }
 
+const DELEGATION_CATALOG_HASH_DOMAIN = 'dsh-approve-for-me/delegation-tool-catalog/v1\0'
+
+/** Recomputes the content commitment for a closed-world classification catalog. */
+export function fingerprintDelegationToolCatalogV1(catalog: DelegationToolClassificationCatalogV1): string | undefined {
+  if (catalog.version !== 1 || catalog.eventProjectionPolicyId !== 'dsh-session-facts-v1'
+    || typeof catalog.argumentSemanticsId !== 'string' || catalog.argumentSemanticsId.length === 0
+    || !Array.isArray(catalog.descriptors)) return undefined
+  try {
+    const descriptors = catalog.descriptors.map(descriptor => {
+      if (descriptor === null || typeof descriptor !== 'object' || Array.isArray(descriptor)
+        || typeof descriptor.toolName !== 'string' || descriptor.toolName.length === 0
+        || typeof descriptor.toolSchemaFingerprint !== 'string' || descriptor.toolSchemaFingerprint.length === 0) {
+        throw new TypeError('invalid catalog descriptor')
+      }
+      if (descriptor.classification === 'ordinary') {
+        if (typeof descriptor.classificationId !== 'string' || descriptor.classificationId.length === 0) {
+          throw new TypeError('invalid ordinary descriptor')
+        }
+        return { classification: 'ordinary', toolName: descriptor.toolName, toolSchemaFingerprint: descriptor.toolSchemaFingerprint, classificationId: descriptor.classificationId }
+      }
+      if (descriptor.classification !== 'delegation' || typeof descriptor.projectorId !== 'string' || descriptor.projectorId.length === 0
+        || !['start', 'followup', 'orchestrate', 'interrupt', 'extension'].includes(descriptor.operation)) {
+        throw new TypeError('invalid delegation descriptor')
+      }
+      const policy = descriptor.receiptPolicy
+      if (policy.kind !== 'none' && (policy.kind !== 'required-on-completed' || !Array.isArray(policy.receiptKinds)
+        || policy.receiptKinds.some((kind: unknown) => typeof kind !== 'string' || kind.length === 0))) {
+        throw new TypeError('invalid delegation receipt policy')
+      }
+      return {
+        classification: 'delegation', projectorId: descriptor.projectorId, toolName: descriptor.toolName,
+        toolSchemaFingerprint: descriptor.toolSchemaFingerprint, operation: descriptor.operation,
+        receiptPolicy: policy.kind === 'none' ? { kind: 'none' } : { kind: 'required-on-completed', receiptKinds: [...policy.receiptKinds] },
+        ...(descriptor.configuration === undefined ? {} : { configuration: snapshotJson(descriptor.configuration) }),
+      }
+    }).sort((left, right) => left.toolName.localeCompare(right.toolName))
+    const core = { version: 1, eventProjectionPolicyId: catalog.eventProjectionPolicyId, argumentSemanticsId: catalog.argumentSemanticsId, descriptors }
+    return `sha256:${createHash('sha256').update(DELEGATION_CATALOG_HASH_DOMAIN).update(canonicalJson(core)).digest('hex')}`
+  } catch {
+    return undefined
+  }
+}
+
 export function validateDelegationToolCatalog(
   catalog: DelegationToolClassificationCatalogV1,
   effectiveTools: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string }[],
 ): DelegationCatalogValidationV1 {
-  if (catalog.version !== 1) return { kind: 'invalid', reason: 'catalog.version must be 1' }
-  if (catalog.eventProjectionPolicyId !== 'dsh-session-facts-v1') {
-    return { kind: 'invalid', reason: 'catalog.eventProjectionPolicyId must be dsh-session-facts-v1' }
+  const expectedFingerprint = fingerprintDelegationToolCatalogV1(catalog)
+  if (expectedFingerprint === undefined || catalog.fingerprint !== expectedFingerprint) {
+    return { kind: 'invalid', reason: 'catalog fingerprint is invalid or mismatched' }
   }
   const known = new Map<string, string>()
   for (const descriptor of catalog.descriptors) {

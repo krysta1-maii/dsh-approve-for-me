@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   effectiveToolBindingFromSchemaV1,
   effectiveToolBindingsFromRequestHeaderV1,
+  fingerprintDelegationToolCatalogV1,
   validateDelegationToolCatalog,
   validateToolTrajectorySection,
 } from '../../src/index.js'
@@ -18,13 +19,14 @@ function catalog(descriptors = [
     receiptPolicy: { kind: 'none' as const },
   },
 ]) {
-  return {
+  const unsealed = {
     version: 1 as const,
     eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
     argumentSemanticsId: 'default-v1',
-    fingerprint: `sha256:${'0'.repeat(64)}`,
+    fingerprint: '',
     descriptors,
   }
+  return { ...unsealed, fingerprint: fingerprintDelegationToolCatalogV1(unsealed)! }
 }
 
 describe('effective tool bindings', () => {
@@ -57,6 +59,10 @@ describe('validateDelegationToolCatalog', () => {
   })
 
   it('rejects missing, extra, fingerprint drift, and duplicates', () => {
+    expect(validateDelegationToolCatalog({ ...catalog(), fingerprint: `sha256:${'f'.repeat(64)}` }, [
+      { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
+      { toolName: 'subagent', toolSchemaFingerprint: 'subagent-fp' },
+    ])).toMatchObject({ kind: 'invalid', reason: /fingerprint/ })
     expect(validateDelegationToolCatalog(catalog(), [
       { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
     ])).toMatchObject({ kind: 'invalid', reason: /descriptor for subagent/ })
