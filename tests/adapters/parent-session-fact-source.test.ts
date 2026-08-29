@@ -84,6 +84,9 @@ describe('DshParentSessionFactSource', () => {
     const regressive = agent()
     ;(regressive.session.events as unknown as Array<{ time: number }>)[2]!.time = 99
     expect(source.snapshot(input({ agent: regressive as never }))).toBeUndefined()
+    const emptyCwd = agent()
+    ;(emptyCwd.session.header as unknown as { cwd?: unknown }).cwd = ''
+    expect(new DshParentSessionFactSource({ get: () => emptyCwd as never }).snapshot(input({ agent: emptyCwd as never }))).toBeUndefined()
     expect(new DshParentSessionFactSource({ get: () => undefined }).snapshot(input({ agent: requester as never }))).toBeUndefined()
   })
 

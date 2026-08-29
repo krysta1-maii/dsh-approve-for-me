@@ -102,7 +102,8 @@ function sessionIdentity(agent: Agent): { session: SessionLike; identity: Princi
   // disagreement heuristically: either shape could be stale or forged.
   if ((parentSessionId === undefined && depth !== 0) || (parentSessionId !== undefined && depth === 0)) return undefined
   const effectiveDelegationDepth = depth
-  const cwd = text(session.header.cwd)
+  const cwd = session.header.cwd === undefined ? undefined : text(session.header.cwd)
+  if (session.header.cwd !== undefined && cwd === undefined) return undefined
   return {
     session,
     identity: Object.freeze({
