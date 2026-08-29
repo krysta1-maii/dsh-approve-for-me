@@ -163,6 +163,19 @@ describe('DefaultGatePipeline', () => {
     await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
   })
 
+  it('does not allow when the request aborts during trust-envelope confirmation', async () => {
+    const abort = new AbortController()
+    const records = recordsStub({
+      createConfirmed: vi.fn(async (): Promise<GateDecisionRecordResult> => {
+        abort.abort()
+        return 'confirmed'
+      }),
+    })
+    const { pipeline, deps } = makePipeline({ trustInside: true, records })
+    await expect(pipeline.decide({ ...request(), signal: abort.signal })).resolves.toBe('cancelled')
+    expect(deps.allowCache.recordGuardianAllow).not.toHaveBeenCalled()
+  })
+
   it('confirms each cached allow without a Guardian review', async () => {
     const { pipeline, preReview, records } = makePipeline({ allowHit: true })
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
@@ -187,6 +200,16 @@ describe('DefaultGatePipeline', () => {
     expect(preReview.preReview).not.toHaveBeenCalled()
     // The same ask identity is consumed after replay, not endlessly replayable.
     await expect(pipeline.decide(request())).resolves.toBe('unavailable')
+    expect(seals.lookup('ask-1', 'call-1', hash('a')).kind).toBe('consumed')
+  })
+
+  it('requires durable confirmation for a replayed sealed allow', async () => {
+    const records = recordsStub({ createConfirmed: vi.fn(async (): Promise<GateDecisionRecordResult> => 'unavailable') })
+    const { pipeline, preReview, seals } = makePipeline({ records, mode: 'auto-then-user' })
+    seals.seal(sealed('allow'))
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+    expect(preReview.preReview).not.toHaveBeenCalled()
+    expect(records.createConfirmed).toHaveBeenCalledOnce()
     expect(seals.lookup('ask-1', 'call-1', hash('a')).kind).toBe('consumed')
   })
 

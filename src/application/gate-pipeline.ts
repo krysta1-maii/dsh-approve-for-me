@@ -177,6 +177,7 @@ export class DefaultGatePipeline implements GatePipeline {
       const record = recordFor(request, facts, 'allow', requestId)
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'confirmed') {
+        if (request.signal?.aborted) return 'cancelled'
         this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
         return 'allowed-once'
       }
@@ -189,7 +190,10 @@ export class DefaultGatePipeline implements GatePipeline {
       // each distinct approval ask still needs its own durable confirmation
       // before it can receive an automatic grant.
       const result = await this.deps.records.createConfirmed(recordFor(request, facts, 'allow', requestId))
-      if (result === 'confirmed') return 'allowed-once'
+      if (result === 'confirmed') {
+        if (request.signal?.aborted) return 'cancelled'
+        return 'allowed-once'
+      }
       if (result === 'conflict') return 'unavailable'
       return this.delegateOrUnavailable()
     }
@@ -203,7 +207,15 @@ export class DefaultGatePipeline implements GatePipeline {
         // here closes the infinite-replay hole; if another path raced us, the
         // registry reports consumed and the gate fails closed.
         if (!this.deps.seals.consume(requestId, callId)) return 'unavailable'
-        return this.mapDisposition(replay.disposition.disposition)
+        const mapped = this.mapDisposition(replay.disposition.disposition)
+        if (mapped !== 'allowed-once') return mapped
+        const result = await this.deps.records.createConfirmed(
+          recordFor(request, facts, 'allow', replay.disposition.reviewRunId),
+        )
+        if (result !== 'confirmed') return result === 'conflict' ? 'unavailable' : this.delegateOrUnavailable()
+        if (request.signal?.aborted) return 'cancelled'
+        if (replay.disposition.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
+        return 'allowed-once'
       }
       if (replay.kind === 'consumed' || replay.kind === 'mismatch') return 'unavailable'
     }
