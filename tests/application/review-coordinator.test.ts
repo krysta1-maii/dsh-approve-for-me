@@ -92,10 +92,10 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
 }
 
 const action = () => createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
-const verifiedDossier = (pendingAction = action(), callId = 'call-1') => sealSourceVerifiedDossier({
+const verifiedDossier = (pendingAction = action(), callId = 'call-1', parentSessionId = 'parent-1') => sealSourceVerifiedDossier({
   version: 1 as const,
   kind: 'guardian-dossier' as const,
-  freeze: { parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
+  freeze: { parent: { sessionId: parentSessionId, sessionFormatVersion: 0, createdAt: 0 }, throughSeq: 1, currentTurn: 1, currentStep: 0, frozenAt: 1 },
   environment: {}, instructions: {}, interaction: {}, currentTurnTools: {},
   pendingApproval: { callId, action: pendingAction as unknown as import('../../src/index.js').JsonValue, actionHash: hashAction(pendingAction) },
   completeness: { complete: true, sourceThroughSeq: 1, omissions: [] },
@@ -197,8 +197,8 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     let id = 0
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => `review-${++id}` })
-    const first = coordinator.review({ authority: authority({ id: 'parent-a' }), action: action(), verifiedDossier: verifiedDossier() })
-    const second = coordinator.review({ authority: authority({ id: 'parent-b' }), action: action(), verifiedDossier: verifiedDossier() })
+    const first = coordinator.review({ authority: authority({ id: 'parent-a' }), action: action(), verifiedDossier: verifiedDossier(action(), 'call-1', 'parent-a') })
+    const second = coordinator.review({ authority: authority({ id: 'parent-b' }), action: action(), verifiedDossier: verifiedDossier(action(), 'call-1', 'parent-b') })
     await waitFor(() => port.deliveries.length === 2)
     for (const delivery of port.deliveries) submit(decision(delivery.request), delivery.childId)
     await expect(Promise.all([first, second])).resolves.toHaveLength(2)
@@ -353,6 +353,16 @@ describe('DefaultReviewCoordinator', () => {
     const differentAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'rm -rf /tmp/example' } })
     await expect(coordinator.review({
       authority: authority({ id: 'parent-1' }), action: differentAction, verifiedDossier: verifiedDossier(action()),
+    })).rejects.toMatchObject({ code: 'invalid-result' })
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toHaveLength(0)
+  })
+
+  it('rejects a verified dossier from a different parent before creating a reviewer', async () => {
+    const port = new FakePort()
+    const { coordinator } = makeCoordinator(port)
+    await expect(coordinator.review({
+      authority: authority({ id: 'parent-2' }), action: action(), verifiedDossier: verifiedDossier(),
     })).rejects.toMatchObject({ code: 'invalid-result' })
     expect(port.creates).toBe(0)
     expect(port.deliveries).toHaveLength(0)

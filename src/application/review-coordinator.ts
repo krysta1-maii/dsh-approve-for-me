@@ -31,8 +31,10 @@ function isContaminationError(error: unknown): boolean {
 function dossierBindsReviewAction(
   verified: SourceVerifiedDossierV1,
   action: ActionSnapshot,
+  authoritySessionId: string,
   callId: string | undefined,
 ): boolean {
+  if (verified.dossier.freeze.parent.sessionId !== authoritySessionId) return false
   const pending = verified.dossier.pendingApproval
   if (pending === null || typeof pending !== 'object' || Array.isArray(pending)) return false
   const value = pending as Record<string, unknown>
@@ -106,7 +108,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       // deliver, no interrupt.
       return Promise.reject(new ReviewProtocolError('aborted', 'review was aborted before it started'))
     }
-    if (!dossierBindsReviewAction(input.verifiedDossier, action, input.callId)) {
+    if (!dossierBindsReviewAction(input.verifiedDossier, action, input.authority.sessionId, input.callId)) {
       return Promise.reject(new ReviewProtocolError('invalid-result', 'review action is not bound to the verified dossier'))
     }
     return this.options.lane.run(input.authority.sessionId, async () => {
