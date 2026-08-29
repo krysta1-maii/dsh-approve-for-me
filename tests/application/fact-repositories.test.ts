@@ -50,6 +50,18 @@ describe('in-memory fact repositories', () => {
     await expect(repo.get({ session, callId: 'missing', requestEventSeq: 5 })).resolves.toBeUndefined()
   })
 
+  it('isolates records that reuse a session id across lifecycle identities', async () => {
+    const executions = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const reused: SessionLifecycleIdentityV1 = { ...session, createdAt: 2_000 }
+    await executions.create(executionFact())
+    await approvals.create(approvalSnapshot())
+    await expect(executions.get({ session: reused, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
+    await expect(approvals.get({ session: reused, approvalRequestId: 'ask-1', approvalAskedSeq: 5 })).resolves.toBeUndefined()
+    await expect(executions.list(session)).resolves.toEqual([executionFact()])
+    await expect(approvals.list(reused)).resolves.toEqual([])
+  })
+
   it('attaches only the matching durable result once and detects conflicts', async () => {
     const repo = new InMemoryExecutionFactRepository()
     await repo.create(executionFact())

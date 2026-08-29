@@ -6,6 +6,8 @@ import type {
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 
 export interface ExecutionFactRepository {
+  /** List an exact immutable session lifecycle; never merge reused session IDs. */
+  list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]>
   /** Create once; a repeat must be byte-identical or report a conflict. */
   create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'>
   /** Attach the durable matching result event without replacing request facts. */
@@ -23,6 +25,8 @@ export interface ExecutionFactRepository {
 }
 
 export interface ApprovalSnapshotRepository {
+  /** List an exact immutable session lifecycle; never merge reused session IDs. */
+  list(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]>
   create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'>
   get(input: {
     session: SessionLifecycleIdentityV1
@@ -33,6 +37,13 @@ export interface ApprovalSnapshotRepository {
 
 export class InMemoryExecutionFactRepository implements ExecutionFactRepository {
   private readonly rows = new Map<string, ToolExecutionFactRecordV1>()
+
+  async list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]> {
+    const prefix = `${this.lifecycleKey(session)}\0`
+    return Object.freeze([...this.rows.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, record]) => record))
+  }
 
   async create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'> {
     const key = this.key(record.session, record.request.callId, record.request.eventSeq)
@@ -68,13 +79,24 @@ export class InMemoryExecutionFactRepository implements ExecutionFactRepository 
     return this.rows.get(this.key(input.session, input.callId, input.requestEventSeq))
   }
 
+  private lifecycleKey(session: SessionLifecycleIdentityV1): string {
+    return `${session.sessionId}\0${session.sessionFormatVersion}\0${session.createdAt}`
+  }
+
   private key(session: SessionLifecycleIdentityV1, callId: string, requestEventSeq: number): string {
-    return `${session.sessionId}\0${callId}\0${requestEventSeq}`
+    return `${this.lifecycleKey(session)}\0${callId}\0${requestEventSeq}`
   }
 }
 
 export class InMemoryApprovalSnapshotRepository implements ApprovalSnapshotRepository {
   private readonly rows = new Map<string, ApprovalSnapshotRecordV1>()
+
+  async list(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]> {
+    const prefix = `${this.lifecycleKey(session)}\0`
+    return Object.freeze([...this.rows.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, record]) => record))
+  }
 
   async create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'> {
     const key = this.key(record.session, record.approvalRequestId, record.approvalAskedSeq)
@@ -94,7 +116,11 @@ export class InMemoryApprovalSnapshotRepository implements ApprovalSnapshotRepos
     return this.rows.get(this.key(input.session, input.approvalRequestId, input.approvalAskedSeq))
   }
 
+  private lifecycleKey(session: SessionLifecycleIdentityV1): string {
+    return `${session.sessionId}\0${session.sessionFormatVersion}\0${session.createdAt}`
+  }
+
   private key(session: SessionLifecycleIdentityV1, approvalRequestId: string, approvalAskedSeq: number): string {
-    return `${session.sessionId}\0${approvalRequestId}\0${approvalAskedSeq}`
+    return `${this.lifecycleKey(session)}\0${approvalRequestId}\0${approvalAskedSeq}`
   }
 }

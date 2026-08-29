@@ -128,8 +128,12 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     ))
     if (matchingCall === undefined) return undefined
     const throughSeq = asked.seq
-    const executions = input.executionFacts.filter(item => item.session.sessionId === bound.identity.sessionId && item.request.eventSeq <= throughSeq)
-    const approvals = input.approvalSnapshots.filter(item => item.session.sessionId === bound.identity.sessionId && item.approvalAskedSeq === throughSeq)
+    const sameLifecycle = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number } }): boolean =>
+      item.session.sessionId === bound.identity.sessionId
+      && item.session.sessionFormatVersion === bound.identity.sessionFormatVersion
+      && item.session.createdAt === bound.identity.createdAt
+    const executions = input.executionFacts.filter(item => sameLifecycle(item) && item.request.eventSeq <= throughSeq)
+    const approvals = input.approvalSnapshots.filter(item => sameLifecycle(item) && item.approvalAskedSeq === throughSeq)
     if (approvals.some(item => item.approvalRequestId !== input.approvalRequestId)) return undefined
     return Object.freeze({
       version: 1,
