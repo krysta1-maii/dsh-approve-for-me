@@ -136,6 +136,24 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: schemaDriftInHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-effective-tool-binding' })
+    const historicalSchemaDrift = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked' as const, turn: 1, step: 0 } },
+      throughSeq: 9,
+      events: [
+        ...complete.events.slice(0, 3),
+        { seq: 3, time: 4, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-0' }, tools: [{ ...headerTools[0]!, description: 'Earlier schema drift.' }] }, reason: 'initial' as const } },
+        ...complete.events.slice(3).map(event => ({ ...event, seq: event.seq + 1, time: event.time + 1 })),
+      ],
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        request: { ...complete.executionFacts[0]!.request, eventSeq: 8 },
+        projection: { ...complete.executionFacts[0]!.projection, observedAt: 9 },
+      }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: historicalSchemaDrift }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-historical-effective-tool-binding' })
     if (result.kind === 'ready') {
       expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 8 })
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9, parent: { cwd: '/workspace' } })

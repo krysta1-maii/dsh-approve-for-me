@@ -110,8 +110,8 @@ function instructionsFrom(facts: ParentSessionFactSnapshotV1): readonly Instruct
   return Object.freeze(messages)
 }
 
-function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
-  let latest: JsonValue | undefined
+function requestHeadersFrom(facts: ParentSessionFactSnapshotV1): readonly JsonValue[] | undefined {
+  const headers: JsonValue[] = []
   for (const event of facts.events) {
     if (event.type !== 'request/header') continue
     const snapshot = event.retention === 'included' ? record(event.data) : undefined
@@ -122,9 +122,14 @@ function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | unde
       || (header.tools !== undefined && !Array.isArray(header.tools))
       || (header.system !== undefined && typeof header.system !== 'string')
       || (snapshot?.reason !== 'initial' && snapshot?.reason !== 'resume' && snapshot?.reason !== 'change')) return undefined
-    latest = header
+    headers.push(header)
   }
-  return latest
+  return Object.freeze(headers)
+}
+
+function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
+  const headers = requestHeadersFrom(facts)
+  return headers === undefined ? undefined : headers.at(-1)
 }
 
 function requestContextFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
@@ -419,8 +424,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || interaction.some(item => item.directUserMessages.some(message => message.event.seq >= execution.request.eventSeq))) {
       return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
     }
-    const requestHeader = requestHeaderFrom(facts)
-    if (facts.events.some(event => event.type === 'request/header') && requestHeader === undefined) {
+    const requestHeaders = requestHeadersFrom(facts)
+    const requestHeader = requestHeaders === undefined ? undefined : requestHeaders.at(-1)
+    if (facts.events.some(event => event.type === 'request/header') && requestHeaders === undefined) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
     }
     const requestContext = requestContextFrom(facts)
@@ -434,6 +440,13 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || !effectiveTools.some(tool => tool.toolName === execution.request.toolName)
       || validateDelegationToolCatalog(facts.eventProjection.classificationCatalog, effectiveTools).kind !== 'ok') {
       return { kind: 'incomplete', reason: 'invalid-effective-tool-binding' }
+    }
+    if (requestHeaders?.some(header => {
+      const historicalTools = effectiveToolBindingsFromRequestHeaderV1(header)
+      return historicalTools === undefined
+        || validateDelegationToolCatalog(facts.eventProjection.classificationCatalog, historicalTools).kind !== 'ok'
+    })) {
+      return { kind: 'incomplete', reason: 'invalid-historical-effective-tool-binding' }
     }
 
     if (!pendingTurnIsOpen(facts.events, turn, step)) {
