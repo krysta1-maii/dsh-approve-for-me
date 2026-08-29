@@ -317,6 +317,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
     const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' | 'tool-error' } }[] = []
+    const attemptedCallIds = new Set<string>()
     const assistantCalls: { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[] = []
     for (const [blockIndex, event] of callEvents.entries()) {
       const data = event.retention === 'included' ? record(event.data) : undefined
@@ -353,6 +354,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       if (outcome === undefined) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       assistantCalls.push({ callId, toolName, rawArguments: data.arguments })
       if (event.seq !== execution.request.eventSeq) {
+        if (attemptedCallIds.has(callId)) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+        attemptedCallIds.add(callId)
         pendingAttempts.push({
           request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq,
             issuedIn: Object.freeze({ seq: -1, type: 'assistant/message', turn, step }), blockIndex }),

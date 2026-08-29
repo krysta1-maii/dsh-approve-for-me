@@ -154,6 +154,28 @@ describe('DefaultDossierCompiler', () => {
         attempts: [{ request: { callId: 'call-0', blockIndex: 0 }, outcome: { kind: 'pending' } }],
       })
     }
+    const secondFirstAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'echo duplicate' } })
+    const duplicatePriorCallId = {
+      ...twoPending,
+      approvalBinding: { ...twoPending.approvalBinding, event: { seq: 10, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 10,
+      events: [
+        ...twoPending.events.slice(0, 6),
+        { ...twoPending.events[6]!, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"ls"}' }, { type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"echo duplicate"}' }, { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+        twoPending.events[7]!,
+        { seq: 8, time: 9, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-0', name: 'bash', arguments: '{"command":"echo duplicate"}' } },
+        { ...twoPending.events[8]!, seq: 9, time: 10 },
+        { ...twoPending.events[9]!, seq: 10, time: 11 },
+      ],
+      executionFacts: [
+        twoPending.executionFacts[0]!,
+        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, eventSeq: 8 }, projection: { ...twoPending.executionFacts[0]!.projection, action: secondFirstAction, actionHash: hashAction(secondFirstAction), observedAt: 9 } },
+        { ...twoPending.executionFacts[1]!, request: { ...twoPending.executionFacts[1]!.request, eventSeq: 9 }, projection: { ...twoPending.executionFacts[1]!.projection, observedAt: 10 } },
+      ],
+      approvalSnapshots: [{ ...twoPending.approvalSnapshots[0]!, approvalAskedSeq: 10 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: duplicatePriorCallId }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const completedFirst = {
       ...twoPending,
       approvalBinding: { ...twoPending.approvalBinding, event: { seq: 10, type: 'approval/asked', turn: 1, step: 0 } },
