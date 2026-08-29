@@ -126,6 +126,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const mismatchedProjectorCatalog = {
+      ...deps,
+      delegationProjector: { ...deps.delegationProjector, catalog: { ...catalog(), fingerprint: hash('d') } },
+    }
+    expect(new DefaultDossierCompiler(mismatchedProjectorCatalog).compile({ facts: complete }))
+      .toEqual({ kind: 'incomplete', reason: 'event-projection-policy-mismatch' })
     const malformedHeader = {
       ...complete,
       events: complete.events.map(event => event.seq === 3 ? { ...event, data: { header: { tools: [] }, reason: 'initial' } } : event),

@@ -166,7 +166,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (!Number.isSafeInteger(this.deps.maxDossierBytes) || this.deps.maxDossierBytes < 1) {
       return { kind: 'incomplete', reason: 'invalid-dossier-budget' }
     }
-    if (facts.version !== 1) return { kind: 'incomplete', reason: 'event-projection-policy-mismatch' }
+    if (facts.version !== 1 || facts.eventProjection.policyId !== 'dsh-session-facts-v1'
+      || canonicalJson(facts.eventProjection.classificationCatalog) !== canonicalJson(this.deps.delegationProjector.catalog)) {
+      return { kind: 'incomplete', reason: 'event-projection-policy-mismatch' }
+    }
     if (facts.session.effectiveDelegationDepth !== 0 || facts.session.parentSessionId !== undefined) {
       return { kind: 'incomplete', reason: 'unsupported-delegated-requester' }
     }
