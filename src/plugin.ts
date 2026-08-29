@@ -15,6 +15,8 @@ import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bri
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
+import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
+import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { fingerprintDelegationToolCatalogV1 } from './domain/dossier.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from './application/fact-repositories.js'
@@ -38,6 +40,8 @@ import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
 
 export interface ApproveForMePlugin {
   readonly config: NormalizedConfig
+  /** Non-sensitive bounded compiler baseline measurements. */
+  getDossierCompilationMetrics(): DossierCompilationMetricsSnapshotV1
   dispose(): Promise<void>
 }
 
@@ -48,6 +52,8 @@ export interface ApproveForMePlugin {
 export interface ApproveForMeInstallOptions {
   /** Project requested permissions from exact DSH execution facts. */
   projectPermissions?(execution: ToolExecution): readonly RequestedPermission[]
+  /** Best-effort non-sensitive compiler metrics consumer. */
+  dossierMetricsSink?: DossierCompilationMetricsSink
 }
 
 export { Config }
@@ -135,10 +141,19 @@ export function installApproveForMe(
   const factSource = new DshParentSessionFactSource({
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
   })
-  const compiler = new DefaultDossierCompiler({
-    delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
-    maxDossierBytes: normalized.maxDossierBytes,
-  })
+  const dossierMetrics = new InMemoryDossierCompilationMetrics()
+  const compiler = new InstrumentedDossierCompiler(
+    new DefaultDossierCompiler({
+      delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
+      maxDossierBytes: normalized.maxDossierBytes,
+    }),
+    {
+      observe(observation) {
+        dossierMetrics.observe(observation)
+        try { options.dossierMetricsSink?.observe(observation) } catch { /* optional telemetry never authorizes */ }
+      },
+    },
+  )
   const factStore = new SourceBackedGateFactResolver({
     factSource,
     compiler,
@@ -283,6 +298,7 @@ export function installApproveForMe(
 
   return {
     config: normalized,
+    getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
     async dispose(): Promise<void> {
       stopMachinePolicy()
       stopSessionEvent()
