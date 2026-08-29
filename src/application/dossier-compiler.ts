@@ -31,6 +31,16 @@ function directUserMessage(event: SessionFactEventV1, turn: number | undefined):
   })
 }
 
+function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
+  let latest: JsonValue | undefined
+  for (const event of facts.events) {
+    if (event.type !== 'request/header') continue
+    if (event.retention !== 'included' || record(event.data) === undefined) return undefined
+    latest = event.data
+  }
+  return latest
+}
+
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
   const byTurn = new Map<number, DirectUserMessageV1[]>()
   let activeTurn: number | undefined
@@ -103,12 +113,16 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'tool/call', 'approval/asked'])
+    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'user/message', 'tool/call', 'approval/asked'])
     if (facts.events.some(event => !allowed.has(event.type)) || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
     const interaction = interactionFrom(facts)
     if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
+    const requestHeader = requestHeaderFrom(facts)
+    if (facts.events.some(event => event.type === 'request/header') && requestHeader === undefined) {
+      return { kind: 'incomplete', reason: 'invalid-request-header' }
+    }
 
     const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
       ? callData?.turn as number
@@ -134,7 +148,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         // facts produce different dossier hashes on every compile.
         frozenAt: 0,
       },
-      environment: snapshot.environment,
+      environment: Object.freeze({
+        approvalSnapshot: snapshot.environment,
+        ...requestHeader === undefined ? {} : { requestHeader },
+      }),
       instructions: Object.freeze({ messages: [] }),
       interaction: Object.freeze({
         turns: Object.freeze(interaction),

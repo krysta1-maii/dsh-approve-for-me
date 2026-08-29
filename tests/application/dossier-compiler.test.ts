@@ -85,21 +85,23 @@ describe('DefaultDossierCompiler', () => {
     const base = facts()
     const complete = {
       ...base,
-      approvalBinding: { ...base.approvalBinding, event: { seq: 3, type: 'approval/asked', turn: 1, step: 0 } },
-      throughSeq: 3,
+      approvalBinding: { ...base.approvalBinding, event: { seq: 4, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 4,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
-        { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
-        { seq: 2, time: 3, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
-        { seq: 3, time: 4, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+        { seq: 1, time: 2, type: 'request/header', retention: 'included' as const, data: { config: { model: 'model-1' }, tools: [] } },
+        { seq: 2, time: 3, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 3, time: 4, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+        { seq: 4, time: 5, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
-      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 2 } }],
-      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 3 }],
+      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 3 } }],
+      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 4 }],
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
     if (result.kind === 'ready') {
-      expect(result.verified.dossier.completeness).toMatchObject({ ready: true, sourceThroughSeq: 3 })
+      expect(result.verified.dossier.completeness).toMatchObject({ ready: true, sourceThroughSeq: 4 })
+      expect(result.verified.dossier.environment).toMatchObject({ requestHeader: { config: { model: 'model-1' } } })
     }
   })
 
