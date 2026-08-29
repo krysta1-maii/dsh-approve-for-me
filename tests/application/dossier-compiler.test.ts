@@ -120,6 +120,17 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+    const lateStepStart = {
+      ...complete,
+      events: [complete.events[0]!, complete.events[1]!, complete.events[3]!, complete.events[4]!, complete.events[5]!, complete.events[6]!, complete.events[2]!, complete.events[7]!, complete.events[8]!]
+        .map((event, seq) => ({ ...event, seq, time: seq + 1 })),
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        projection: { ...complete.executionFacts[0]!.projection, observedAt: 8 },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: lateStepStart }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-current-turn-lifecycle' })
     const targetOmittedFromHeader = {
       ...complete,
       events: complete.events.map(event => event.seq === 3

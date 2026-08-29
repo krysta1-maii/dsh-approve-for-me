@@ -187,23 +187,33 @@ function assistantMessagesForCalls(
 }
 
 function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, step: number): boolean {
-  const exactStart = (type: 'turn/start' | 'step/start', expected: Record<string, number>) => {
-    const starts = events.filter(event => {
+  const exactEvent = (type: 'turn/start' | 'step/start', expected: Record<string, number>) => {
+    const matches = events.filter(event => {
       if (event.type !== type || event.retention !== 'included') return false
       const data = record(event.data)
       return data !== undefined && Object.entries(expected).every(([key, value]) => data[key] === value)
     })
-    return starts.length === 1
+    return matches.length === 1 ? matches[0] : undefined
   }
-  if (!exactStart('turn/start', { turn })) return false
+  const turnStart = exactEvent('turn/start', { turn })
+  if (turnStart === undefined) return false
+  let previousEndSeq = turnStart.seq
   for (let candidateStep = 0; candidateStep <= step; candidateStep++) {
-    if (!exactStart('step/start', { turn, step: candidateStep })) return false
+    const stepStart = exactEvent('step/start', { turn, step: candidateStep })
+    if (stepStart === undefined || stepStart.seq <= previousEndSeq) return false
     const ends = events.filter(event => {
       if (event.type !== 'step/end' || event.retention !== 'included') return false
       const data = record(event.data)
       return data?.turn === turn && data.step === candidateStep
     })
     if ((candidateStep < step && ends.length !== 1) || (candidateStep === step && ends.length !== 0)) return false
+    const end = ends[0]
+    if (end !== undefined && end.seq <= stepStart.seq) return false
+    if (events.some(event => {
+      const data = event.retention === 'included' ? record(event.data) : undefined
+      return data?.turn === turn && data.step === candidateStep && event.seq < stepStart.seq
+    })) return false
+    if (end !== undefined) previousEndSeq = end.seq
   }
   return !events.some(event => {
     if (event.type !== 'turn/end') return false
