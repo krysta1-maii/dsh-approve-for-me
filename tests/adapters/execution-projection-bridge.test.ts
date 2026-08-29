@@ -75,6 +75,26 @@ describe('DshExecutionFactProjectionBridge', () => {
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
 
+  it('drains prior durable result writes at the approval barrier', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const owner = agent([
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-0', name: 'bash' } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-0' }, content: [{ type: 'tool-result', toolCallId: 'call-0', content: [] }] } } },
+      { seq: 2, time: 22, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 3, time: 23, type: 'approval/asked', data: { id: 'approval-1', callId: 'call-1', toolName: 'bash' } },
+    ])
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository, approvals)
+    const first = { ...execution(owner), callId: 'call-0' as ToolExecution['callId'], rootCallId: 'call-0' as ToolExecution['callId'] }
+    await bridge.project(first)
+    bridge.observeResult(first, { isError: false, value: null, content: [] })
+    const second = execution(owner)
+    await bridge.project(second)
+    await bridge.awaitApprovalSnapshot(owner, 'approval-1', 'call-1', 'bash')
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-0', requestEventSeq: 0 }))
+      .resolves.toMatchObject({ result: { eventSeq: 1, outcome: { kind: 'completed' } } })
+  })
+
   it('rejects a result whose durable source sequence differs from the call', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const owner = agent([

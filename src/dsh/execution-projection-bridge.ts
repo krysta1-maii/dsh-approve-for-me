@@ -31,6 +31,7 @@ function string(value: unknown): string | undefined {
  */
 export class DshExecutionFactProjectionBridge {
   private readonly approvalWrites = new Map<string, Promise<void>>()
+  private readonly resultWrites = new Map<string, Promise<void>>()
   private readonly terminalOutcomes = new Map<string, Extract<ToolExecutionFactRecordV1['result'], { readonly outcome: unknown }>['outcome']>()
 
   constructor(
@@ -124,7 +125,16 @@ export class DshExecutionFactProjectionBridge {
 
   /** Records the bounded approval audit after DSH has committed it to history. */
   observeSessionEvent(agent: Agent, event: EventLike): Promise<void> {
-    if (event.type === 'tool/result') return this.attachResult(agent, event)
+    if (event.type === 'tool/result') {
+      const lifecycle = this.lifecycle(agent)
+      if (lifecycle === undefined) return Promise.resolve()
+      const key = `${canonicalJson(lifecycle)}\0${event.seq}`
+      const existing = this.resultWrites.get(key)
+      if (existing !== undefined) return existing
+      const write = this.attachResult(agent, event)
+      this.resultWrites.set(key, write)
+      return write
+    }
     if (this.approvals === undefined || event.type !== 'approval/asked') return Promise.resolve()
     const data = event.data as Record<string, unknown>
     const requestId = string(data.id)
@@ -191,6 +201,9 @@ export class DshExecutionFactProjectionBridge {
       && (candidate.data as Record<string, unknown>)?.callId === callId
       && (candidate.data as Record<string, unknown>)?.toolName === toolName)
     if (event?.length !== 1 || event[0] === undefined) return
+    await Promise.all(session.events
+      .filter(candidate => candidate.type === 'tool/result' && candidate.seq < event[0]!.seq)
+      .map(candidate => this.observeSessionEvent(agent, candidate)))
     await this.observeSessionEvent(agent, event[0])
   }
 
