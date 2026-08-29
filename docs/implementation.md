@@ -73,7 +73,7 @@
 | `src/application/delegation-projector.ts` | `DefaultPrincipalDelegationProjector`：把 delegation attempt + safe receipt 投影为 `PrincipalDelegationEntryV1`，校验 receipt policy / toolName / callId |
 | `src/application/fact-repositories.ts` | `InMemoryExecutionFactRepository` / `InMemoryApprovalSnapshotRepository`：sidecar 事实与审批快照的 get/create |
 
-当前已有 D1 编译端口、校验、首个确定性编译器、delegation projector 与 in-memory fact repos；完整 instruction/tool 投影与双射验证尚未实现。
+当前已有 D1 编译端口、校验、首个确定性编译器、delegation projector 与 in-memory fact repos。插件已从 canonical `tools/pre-execute`/`session/event` 投影 execution facts 与 immutable approval snapshots；机器决策会等待同一 durable `approval/asked` 事件的 snapshot write，消除 fire-and-forget observer 与 resolver 的竞速。完整 instruction/tool 投影、Storage Domain sidecar 与双射验证尚未实现。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 

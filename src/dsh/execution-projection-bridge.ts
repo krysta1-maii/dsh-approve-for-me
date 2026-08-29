@@ -28,6 +28,8 @@ function string(value: unknown): string | undefined {
  * tool itself; a missing projection is later an authorization failure.
  */
 export class DshExecutionFactProjectionBridge {
+  private readonly approvalWrites = new Map<string, Promise<void>>()
+
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
     private readonly catalog: DelegationToolClassificationCatalogV1,
@@ -94,29 +96,53 @@ export class DshExecutionFactProjectionBridge {
   }
 
   /** Records the bounded approval audit after DSH has committed it to history. */
-  async observeSessionEvent(agent: Agent, event: EventLike): Promise<void> {
-    if (this.approvals === undefined || event.type !== 'approval/asked') return
+  observeSessionEvent(agent: Agent, event: EventLike): Promise<void> {
+    if (this.approvals === undefined || event.type !== 'approval/asked') return Promise.resolve()
     const data = event.data as Record<string, unknown>
     const requestId = string(data.id)
     const callId = string(data.callId)
     const toolName = string(data.toolName)
+    const lifecycle = this.lifecycle(agent)
+    if (requestId === undefined || callId === undefined || toolName === undefined || lifecycle === undefined) return Promise.resolve()
+    const key = `${lifecycle.sessionId}\0${lifecycle.sessionFormatVersion}\0${lifecycle.createdAt}\0${event.seq}`
+    const existing = this.approvalWrites.get(key)
+    if (existing !== undefined) return existing
+    const write = this.writeApprovalSnapshot(lifecycle, event.seq, requestId, callId, toolName)
+    this.approvalWrites.set(key, write)
+    return write
+  }
+
+  /**
+   * Closes the observer-policy race: a machine decision waits for the write
+   * already scheduled by the same durable approval event (or schedules it from
+   * canonical history itself). Missing/ambiguous history remains non-authorizing.
+   */
+  async awaitApprovalSnapshot(agent: Agent, requestId: string, callId: string, toolName: string): Promise<void> {
+    const session = agent.session as unknown as SessionLike
+    const event = session.events?.filter(candidate => candidate.type === 'approval/asked'
+      && (candidate.data as Record<string, unknown>)?.id === requestId
+      && (candidate.data as Record<string, unknown>)?.callId === callId
+      && (candidate.data as Record<string, unknown>)?.toolName === toolName)
+    if (event?.length !== 1 || event[0] === undefined) return
+    await this.observeSessionEvent(agent, event[0])
+  }
+
+  private lifecycle(agent: Agent): { sessionId: string; sessionFormatVersion: number; createdAt: number } | undefined {
     const session = agent.session as unknown as SessionLike
     const sessionId = string(session.id)
     const version = session.header?.version
     const createdAt = session.header?.createdAt
-    if (requestId === undefined || callId === undefined || toolName === undefined || sessionId === undefined
-      || !Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)) return
-    const lifecycle = { sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number }
+    if (sessionId === undefined || !Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)) return undefined
+    return { sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number }
+  }
+
+  private async writeApprovalSnapshot(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number }, approvalAskedSeq: number, requestId: string, callId: string, toolName: string): Promise<void> {
     const matches = (await this.repository.list(lifecycle)).filter(record =>
-      record.request.callId === callId && record.request.toolName === toolName && record.request.eventSeq < event.seq)
-    if (matches.length !== 1) return
+      record.request.callId === callId && record.request.toolName === toolName && record.request.eventSeq < approvalAskedSeq)
+    if (matches.length !== 1 || this.approvals === undefined) return
     const snapshot: ApprovalSnapshotRecordV1 = Object.freeze({
-      version: 1,
-      session: Object.freeze(lifecycle),
-      approvalRequestId: requestId,
-      approvalAskedSeq: event.seq,
-      // Environment evidence is deliberately empty until a host-backed
-      // projector is available; it is still an immutable, bounded record.
+      version: 1, session: Object.freeze(lifecycle), approvalRequestId: requestId, approvalAskedSeq,
+      // Environment evidence remains deliberately bounded until a host-backed projector exists.
       environment: Object.freeze({}),
     })
     await this.approvals.create(snapshot)

@@ -139,6 +139,8 @@ export function installApproveForMe(
     projector: { project: () => undefined },
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
+      await executionProjection.awaitApprovalSnapshot(pending.agent, pending.requestId, pending.callId, pending.toolName)
+      if (signal?.aborted) return undefined
       const session = pending.agent.session as unknown as { header?: { version?: unknown; createdAt?: unknown } }
       const version = session.header?.version
       const createdAt = session.header?.createdAt

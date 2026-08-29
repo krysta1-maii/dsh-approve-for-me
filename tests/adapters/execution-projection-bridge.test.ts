@@ -38,10 +38,15 @@ describe('DshExecutionFactProjectionBridge', () => {
   it('captures an immutable snapshot only for one prior canonical call', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const approvals = new InMemoryApprovalSnapshotRepository()
-    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } }])
+    const owner = agent([
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'approval-1', callId: 'call-1', toolName: 'bash' } },
+    ])
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository, approvals)
     await bridge.project(execution(owner))
-    await bridge.observeSessionEvent(owner, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'approval-1', callId: 'call-1', toolName: 'bash' } })
+    // The resolver-side barrier can reconstruct the observer write directly
+    // from canonical history when the fire-and-forget listener has not settled.
+    await bridge.awaitApprovalSnapshot(owner, 'approval-1', 'call-1', 'bash')
     const snapshot = await approvals.get({
       session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 },
       approvalRequestId: 'approval-1', approvalAskedSeq: 1,
