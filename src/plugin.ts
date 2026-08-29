@@ -146,14 +146,18 @@ export function installApproveForMe(
       if (signal?.aborted) return undefined
       await executionProjection.awaitApprovalSnapshot(pending.agent, pending.requestId, pending.callId, pending.toolName)
       if (signal?.aborted) return undefined
-      const session = pending.agent.session as unknown as { header?: { version?: unknown; createdAt?: unknown } }
+      const session = pending.agent.session as unknown as { header?: { version?: unknown; createdAt?: unknown; cwd?: unknown } }
       const version = session.header?.version
       const createdAt = session.header?.createdAt
-      if (!Number.isSafeInteger(version) || !Number.isSafeInteger(createdAt)) return undefined
+      const cwd = session.header?.cwd
+      if (!Number.isSafeInteger(version) || (version as number) < 0
+        || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0
+        || (cwd !== undefined && (typeof cwd !== 'string' || cwd.length === 0))) return undefined
       const lifecycle = {
         sessionId: pending.authority.sessionId,
         sessionFormatVersion: version as number,
         createdAt: createdAt as number,
+        ...(cwd === undefined ? {} : { cwd }),
       }
       return {
         agent: pending.agent,
