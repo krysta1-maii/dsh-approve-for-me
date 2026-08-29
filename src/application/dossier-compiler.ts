@@ -552,9 +552,6 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'dossier-completeness-not-ready' }
     }
     const dossierSize = canonicalSize(dossier)
-    if (dossierSize.bytes > this.deps.maxDossierBytes) {
-      return { kind: 'incomplete', reason: 'budget-overflow' }
-    }
     const sections = Object.freeze([
       ['environment', dossier.environment],
       ['instructions', dossier.instructions],
@@ -562,21 +559,25 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       ['currentTurnTools', dossier.currentTurnTools],
       ['pendingApproval', dossier.pendingApproval],
     ].map(([name, value]) => Object.freeze({ name: name as 'environment' | 'instructions' | 'interaction' | 'currentTurnTools' | 'pendingApproval', ...canonicalSize(value as JsonValue) })))
+    const metrics = Object.freeze({
+      dossierVersion: 1 as const,
+      delegationClassificationCatalogFingerprint: facts.eventProjection.classificationCatalog.fingerprint,
+      ...dossierSize,
+      sections,
+      eventCount: facts.events.length,
+      includedEventCount: facts.events.filter(event => event.retention === 'included').length,
+      excludedEventCount: facts.events.filter(event => event.retention === 'excluded-content').length,
+      delegationEntryCount: 0,
+      attemptCount: facts.executionFacts.length,
+      totalBytes: facts.events.reduce((sum, event) => sum + ('originalBytes' in event ? event.originalBytes ?? 0 : 0), 0),
+    })
+    if (dossierSize.bytes > this.deps.maxDossierBytes) {
+      return { kind: 'incomplete', reason: 'budget-overflow', metrics }
+    }
     return {
       kind: 'ready',
       verified: sealSourceVerifiedDossier(dossier as never),
-      metrics: {
-        dossierVersion: 1,
-        delegationClassificationCatalogFingerprint: facts.eventProjection.classificationCatalog.fingerprint,
-        ...dossierSize,
-        sections,
-        eventCount: facts.events.length,
-        includedEventCount: facts.events.filter(event => event.retention === 'included').length,
-        excludedEventCount: facts.events.filter(event => event.retention === 'excluded-content').length,
-        delegationEntryCount: 0,
-        attemptCount: facts.executionFacts.length,
-        totalBytes: facts.events.reduce((sum, event) => sum + ('originalBytes' in event ? event.originalBytes ?? 0 : 0), 0),
-      },
+      metrics,
     }
   }
 }

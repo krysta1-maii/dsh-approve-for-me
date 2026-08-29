@@ -352,8 +352,14 @@ describe('DefaultDossierCompiler', () => {
     const readDeps = { ...deps, delegationProjector: { ...deps.delegationProjector, catalog: expandedCatalog } }
     const duplicateIdResult = new DefaultDossierCompiler(readDeps).compile({ facts: duplicateIdDifferentTool })
     expect(duplicateIdResult).toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
-    expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
-      .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const overflow = new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete })
+    expect(overflow).toMatchObject({ kind: 'incomplete', reason: 'budget-overflow' })
+    if (overflow.kind === 'incomplete' && overflow.reason === 'budget-overflow' && 'metrics' in overflow) {
+      expect(overflow.metrics.bytes).toBeGreaterThan(1)
+      expect(overflow.metrics.sections.map(section => section.name)).toEqual([
+        'environment', 'instructions', 'interaction', 'currentTurnTools', 'pendingApproval',
+      ])
+    }
     const invalidParentIdentity = {
       ...complete,
       session: { ...complete.session, createdAt: 1.5 },

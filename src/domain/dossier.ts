@@ -592,7 +592,9 @@ export interface DossierMetricsV1 {
 
 export type DossierCompilationResultV1 =
   | { readonly kind: 'ready'; readonly verified: SourceVerifiedDossierV1; readonly metrics: DossierMetricsV1 }
-  | { readonly kind: 'incomplete'; readonly reason: string }
+  /** Budget overflows retain only non-sensitive candidate accounting; no dossier is branded. */
+  | { readonly kind: 'incomplete'; readonly reason: 'budget-overflow'; readonly metrics: DossierMetricsV1 }
+  | { readonly kind: 'incomplete'; readonly reason: Exclude<string, 'budget-overflow'> }
 
 export interface GuardianDossierCompilerDependencies {
   readonly delegationProjector: PrincipalDelegationProjector
