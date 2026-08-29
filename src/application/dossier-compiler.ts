@@ -69,6 +69,28 @@ function requestContextFrom(facts: ParentSessionFactSnapshotV1): JsonValue | und
   return latest
 }
 
+function currentAssistantMessagesMatchCall(
+  events: readonly SessionFactEventV1[],
+  callId: string,
+  toolName: string,
+  rawArguments: JsonValue | undefined,
+): boolean {
+  const messages = events.filter(event => event.type === 'assistant/message')
+  if (messages.length === 0) return true
+  // `tool/call` is the canonical request record. When its assembled model
+  // message is available, retain no duplicate model text: require it to be an
+  // exact one-tool-call wrapper around that canonical request instead.
+  if (messages.length !== 1) return false
+  const data = messages[0]?.retention === 'included' ? record(messages[0].data) : undefined
+  const message = data === undefined ? undefined : record(data.message as JsonValue)
+  const source = message === undefined ? undefined : record(message.source as JsonValue)
+  const content = message?.content
+  const block = Array.isArray(content) && content.length === 1 ? record(content[0] as JsonValue) : undefined
+  return data?.interrupted !== true && message?.role === 'assistant' && typeof message.id === 'string' && message.id.length > 0
+    && source?.kind === 'model' && block?.type === 'tool-call' && block.id === callId
+    && block.name === toolName && block.arguments === rawArguments
+}
+
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
   const byTurn = new Map<number, DirectUserMessageV1[]>()
   let activeTurn: number | undefined
@@ -126,8 +148,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       item.approvalRequestId === facts.approvalBinding.approvalRequestId)
     if (snapshot === undefined) return { kind: 'incomplete', reason: 'missing-required-projection' }
     // v1's first complete shape deliberately accepts only a single pending
-    // execution. Any prior tool, assistant, instruction, or unknown history
-    // waits for its dedicated projector rather than being silently omitted.
+    // execution. Its raw stream and assembled one-tool-call wrapper are safe
+    // transport duplicates; prior tools, instructions, or unknown history wait
+    // for dedicated projectors rather than being silently omitted.
     if (facts.events.length !== facts.throughSeq + 1 || facts.events.some((event, index) => event.seq !== index)) {
       return { kind: 'incomplete', reason: 'non-contiguous-event-prefix' }
     }
@@ -147,8 +170,12 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'tool/call', 'approval/asked'])
-    if (facts.events.some(event => !allowed.has(event.type)) || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
+    if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments)) {
+      return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
+    }
+    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'approval/asked'])
+    if (facts.events.some(event => !allowed.has(event.type)) || facts.events.filter(event => event.type === 'tool/call').length !== 1
+      || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
     const interaction = interactionFrom(facts)
