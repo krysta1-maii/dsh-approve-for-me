@@ -524,6 +524,15 @@ export interface ApprovalSnapshotRecordV1 {
   readonly session: SessionLifecycleIdentityV1
   readonly approvalRequestId: string
   readonly approvalAskedSeq: number
+  /** Immutable binding to the exact pre-execute fact that caused this ask. */
+  readonly execution: {
+    readonly requestEventSeq: number
+    readonly callId: string
+    readonly toolName: string
+    readonly actionHash: string
+    readonly classificationCatalogFingerprint: string
+    readonly projectorId: string
+  }
   readonly environment: JsonValue
 }
 

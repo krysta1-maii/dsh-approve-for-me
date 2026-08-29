@@ -37,6 +37,7 @@ function approvalSnapshot(): ApprovalSnapshotRecordV1 {
     session,
     approvalRequestId: 'ask-1',
     approvalAskedSeq: 5,
+    execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
     environment: { version: 1, sessionId: 'parent-1' },
   }
 }

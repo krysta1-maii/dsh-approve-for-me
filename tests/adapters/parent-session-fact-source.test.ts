@@ -25,6 +25,7 @@ const execution: ToolExecutionFactRecordV1 = {
 }
 const approval: ApprovalSnapshotRecordV1 = {
   version: 1, session: lifecycle, approvalRequestId: 'ask-1', approvalAskedSeq: 3,
+  execution: { requestEventSeq: 2, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
   environment: { version: 1, sessionId: 'parent-1' },
 }
 
@@ -100,6 +101,7 @@ describe('DshParentSessionFactSource', () => {
     expect(source.snapshot(input({ agent: agent({ session: { ...agent().session, id: 'other' } }) as never }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalRequestId: 'other' }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, approvalRequestId: 'other' }] }))).toBeUndefined()
+    expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, execution: { ...approval.execution, actionHash: hash('b') } }] }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, session: { ...lifecycle, cwd: '/other-project' } } as ToolExecutionFactRecordV1] }))).toBeUndefined()
     const regressive = agent()
     ;(regressive.session.events as unknown as Array<{ time: number }>)[2]!.time = 99

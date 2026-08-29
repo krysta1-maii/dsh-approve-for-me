@@ -57,7 +57,11 @@ describe('DshExecutionFactProjectionBridge', () => {
       session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10, cwd: '/workspace' },
       approvalRequestId: 'approval-1', approvalAskedSeq: 1,
     })
-    expect(snapshot).toMatchObject({ approvalAskedSeq: 1, environment: {} })
+    expect(snapshot).toMatchObject({
+      approvalAskedSeq: 1,
+      execution: { requestEventSeq: 0, callId: 'call-1', toolName: 'bash', classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'dsh-execution-fact-projection-v1' },
+      environment: {},
+    })
     expect(Object.isFrozen(snapshot)).toBe(true)
   })
 

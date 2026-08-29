@@ -223,8 +223,17 @@ export class DshExecutionFactProjectionBridge {
     const matches = (await this.repository.list(lifecycle)).filter(record =>
       record.request.callId === callId && record.request.toolName === toolName && record.request.eventSeq < approvalAskedSeq)
     if (matches.length !== 1 || this.approvals === undefined) return
+    const execution = matches[0]!
     const snapshot: ApprovalSnapshotRecordV1 = Object.freeze({
       version: 1, session: Object.freeze(lifecycle), approvalRequestId: requestId, approvalAskedSeq,
+      execution: Object.freeze({
+        requestEventSeq: execution.request.eventSeq,
+        callId: execution.request.callId,
+        toolName: execution.request.toolName,
+        actionHash: execution.projection.actionHash,
+        classificationCatalogFingerprint: execution.toolClassification.classificationCatalogFingerprint,
+        projectorId: execution.projection.projectorId,
+      }),
       // Environment evidence remains deliberately bounded until a host-backed projector exists.
       environment: Object.freeze({}),
     })

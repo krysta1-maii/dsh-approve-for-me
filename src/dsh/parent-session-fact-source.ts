@@ -187,6 +187,15 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && item.request.callId === input.callId
       && item.request.toolName === input.toolName)
     if (correlatedExecutions.length !== 1) return undefined
+    const approval = approvals[0]!
+    const execution = correlatedExecutions[0]!
+    if (approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
+      || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId
+      || approval.execution.toolName !== input.toolName || approval.execution.toolName !== execution.request.toolName
+      || approval.execution.actionHash !== execution.projection.actionHash
+      || approval.execution.classificationCatalogFingerprint !== input.classificationCatalog.fingerprint
+      || approval.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
+      || approval.execution.projectorId !== execution.projection.projectorId) return undefined
     const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
     if (eventSnapshots === undefined) return undefined
     return Object.freeze({

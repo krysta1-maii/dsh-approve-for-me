@@ -304,7 +304,14 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       item.approvalRequestId === facts.approvalBinding.approvalRequestId)
     if (snapshots.length !== 1) return { kind: 'incomplete', reason: 'missing-required-projection' }
     const snapshot = snapshots[0]!
-    if (snapshot.version !== 1 || !sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq) {
+    if (snapshot.version !== 1 || !sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq
+      || !Number.isSafeInteger(snapshot.execution.requestEventSeq) || snapshot.execution.requestEventSeq < 0
+      || snapshot.execution.requestEventSeq !== execution.request.eventSeq
+      || snapshot.execution.callId.length === 0 || snapshot.execution.callId !== execution.request.callId
+      || snapshot.execution.toolName.length === 0 || snapshot.execution.toolName !== execution.request.toolName
+      || snapshot.execution.actionHash !== execution.projection.actionHash
+      || snapshot.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
+      || snapshot.execution.projectorId.length === 0 || snapshot.execution.projectorId !== execution.projection.projectorId) {
       return { kind: 'incomplete', reason: 'missing-required-projection' }
     }
     // This v1 slice accepts only native ordinary calls still pending in the
