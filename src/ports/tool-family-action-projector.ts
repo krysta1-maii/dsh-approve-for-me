@@ -49,6 +49,11 @@ export class ToolFamilyActionProjectorRegistry<Execution extends { readonly name
     }
   }
 
+  /** Returns the full closed set of tool names registered for semantic capture. */
+  registeredToolNames(): readonly string[] {
+    return Object.freeze([...this.byToolName.keys()].sort())
+  }
+
   /** True only when a catalog descriptor binds this exact registered projector. */
   matches(toolName: string, family: string, projectorId: string): boolean {
     const projector = this.byToolName.get(toolName)

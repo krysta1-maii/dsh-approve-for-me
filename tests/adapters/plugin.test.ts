@@ -7,6 +7,7 @@ import {
   REVIEWER_PROVIDER,
   SUBMIT_DECISION_TOOL,
   fingerprintApprovalToolCatalogV1,
+  createFilesystemActionProjector,
   createShellProcessActionProjector,
   ToolFamilyActionProjectorRegistry,
   installApproveForMe,
@@ -273,6 +274,31 @@ describe('installApproveForMe composition root', () => {
     expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: wrongTool }))
       .toThrow(/no matching registered semantic projector/)
     expect(h.registered).toBeUndefined()
+
+    const extraTool = new ToolFamilyActionProjectorRegistry([createShellProcessActionProjector(), createFilesystemActionProjector({ read: 'read' })])
+    expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: extraTool }))
+      .toThrow(/absent from toolCatalog/)
+    expect(h.registered).toBeUndefined()
+  })
+
+  it('accepts every explicitly-bound tool family in a closed catalog', async () => {
+    const h = harness()
+    const unsealed = {
+      version: 1 as const,
+      argumentSemanticsId: 'default-v1',
+      fingerprint: '',
+      descriptors: [
+        { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' as const, actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'dsh-approve-for-me/shell-process-v1' },
+        { toolName: 'read', toolSchemaFingerprint: 'read-fp', classification: 'ordinary' as const, actionSemanticsFamily: 'filesystem-v1', actionProjectorId: 'dsh-approve-for-me/filesystem-v1' },
+      ],
+    }
+    const catalogConfig: Config = { ...config, toolCatalog: { ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! } }
+    const projectors = new ToolFamilyActionProjectorRegistry([
+      createShellProcessActionProjector(), createFilesystemActionProjector({ read: 'read' }),
+    ])
+    const plugin = installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: projectors })
+    expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
+    await plugin.dispose()
   })
 
   it('fails loud when toolCatalog is configured without the patched machine-policy fork', () => {

@@ -113,9 +113,15 @@ export function installApproveForMe(
     if (registeredProjectors === undefined) {
       throw new TypeError('a non-empty toolCatalog requires a closed-world toolFamilyActionProjectors registry')
     }
+    const catalogToolNames = new Set(normalized.toolCatalog.descriptors.map(descriptor => descriptor.toolName))
     for (const descriptor of normalized.toolCatalog.descriptors) {
       if (!registeredProjectors.matches(descriptor.toolName, descriptor.actionSemanticsFamily, descriptor.actionProjectorId)) {
         throw new TypeError(`toolCatalog descriptor ${descriptor.toolName} has no matching registered semantic projector`)
+      }
+    }
+    for (const toolName of registeredProjectors.registeredToolNames()) {
+      if (!catalogToolNames.has(toolName)) {
+        throw new TypeError(`registered semantic projector tool ${toolName} is absent from toolCatalog`)
       }
     }
   }
