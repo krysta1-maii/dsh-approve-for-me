@@ -314,7 +314,7 @@ interface LoggedContextMessageV1 {
 - `session` 的持久字段来自父 Session header；`runtimeSubagentDepth` 来自 exact live `request.agent.options.subagentDepth`，effective depth 取 header／runtime 最大值并写入 immutable approval snapshot；
 - `requestHeader` 使用当前 step 对应的最新完整 `request/header`，字段是 DSH 的 `config`／`adapterDefaults`／`system`／`tools`；
 - `requestContext` 使用当前 route 对应的最新 `request/context`；
-- `system` 和 `requestHeader.tools` 保留父模型本次请求实际看到的版本；`effectiveTools` 由 exact live Agent scope 冻结模型调用与 Code Mode dispatch 的并集，tool name 必须唯一，每个 schema 以项目 canonical digest 绑定 classification catalog 的 `toolSchemaFingerprint`；
+- `system` 和 `requestHeader.tools` 保留父模型本次请求实际看到的版本；`effectiveTools` 由 exact live Agent scope 冻结模型调用与 Code Mode dispatch 的并集，tool name 必须唯一，每个 schema 以项目 canonical digest 绑定 classification catalog 的 `toolSchemaFingerprint`；当前 source-backed v1 已对 native `requestHeader.tools` 以 `dsh-approve-for-me/effective-tool-schema/v1\0` 指纹实施该闭集校验，Code Mode dispatch surface 仍未接入，不能生成 ready dossier；
 - `effectiveTools`、event projection policy 和完整 classification catalog 与本次 ask 的 immutable approval snapshot 一起持久化；历史重建不得用后来 profile 的工具集替换；
 - `runtimeContexts` 收录当前 surface 中 DSH 生成的 runtime snapshot 类上下文，但排除下一段单独呈现的 `agent-instructions`；
 - approval policy 使用 DSH 正式 resolver 的当前有效值；ready dossier 必须为 `ask`；

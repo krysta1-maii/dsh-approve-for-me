@@ -11,7 +11,11 @@ import type {
   ParentSessionFactSnapshotV1,
   SessionFactEventV1,
 } from '../domain/dossier.js'
-import { sealSourceVerifiedDossier } from '../domain/dossier.js'
+import {
+  effectiveToolBindingsFromRequestHeaderV1,
+  sealSourceVerifiedDossier,
+  validateDelegationToolCatalog,
+} from '../domain/dossier.js'
 import { hashAction } from '../domain/protocol.js'
 
 function record(value: JsonValue): Record<string, JsonValue> | undefined {
@@ -422,6 +426,14 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     const requestContext = requestContextFrom(facts)
     if (facts.events.some(event => event.type === 'request/context') && requestContext === undefined) {
       return { kind: 'incomplete', reason: 'invalid-request-context' }
+    }
+    const effectiveTools = requestHeader === undefined
+      ? undefined
+      : effectiveToolBindingsFromRequestHeaderV1(requestHeader)
+    if (effectiveTools === undefined
+      || !effectiveTools.some(tool => tool.toolName === execution.request.toolName)
+      || validateDelegationToolCatalog(facts.eventProjection.classificationCatalog, effectiveTools).kind !== 'ok') {
+      return { kind: 'incomplete', reason: 'invalid-effective-tool-binding' }
     }
 
     if (!pendingTurnIsOpen(facts.events, turn, step)) {

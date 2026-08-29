@@ -49,7 +49,7 @@
 
 Session log 未持久化的执行期结构化事实只进入官方 Storage Domain sidecar。DSH 公共 invariant 机制能够支持已声明的插件 Session events，但本项目 v1 为保持父 Session 的卸载／独立恢复边界，不新增 `approve-for-me/*` 事件；未来变更必须单独版本化。
 
-退出条件：根 requester、Session 生命周期身份、callId、event seq 与 action hash 关联可验证；enabled tools 有闭集、版本化的 delegation／ordinary 分类，projector 与 safe receipt 不泄漏 child output；sidecar 缺失或冲突失败关闭，同时父 Session 始终可独立恢复。
+退出条件：根 requester、Session 生命周期身份、callId、event seq 与 action hash 关联可验证；enabled tools 有闭集、版本化的 delegation／ordinary 分类，projector 与 safe receipt 不泄漏 child output；sidecar 缺失或冲突失败关闭，同时父 Session 始终可独立恢复。当前 native v1 已将冻结 `request/header.tools` 的完整 schema 指纹与分类目录逐项绑定；Code Mode 与 delegation tool surface 仍待接入。
 
 ### 3.2 Parent Session Fact Source
 

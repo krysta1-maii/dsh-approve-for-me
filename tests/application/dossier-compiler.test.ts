@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DefaultDossierCompiler,
   createActionSnapshot,
+  effectiveToolBindingFromSchemaV1,
   hashAction,
 } from '../../src/index.js'
 import type {
@@ -10,6 +11,13 @@ import type {
 } from '../../src/index.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
+
+const headerTools = [{
+  name: 'bash',
+  description: 'Run a shell command.',
+  parameters: { type: 'object', properties: { command: { type: 'string' } } },
+}]
+const bashToolSchemaFingerprint = effectiveToolBindingFromSchemaV1(headerTools[0])!.toolSchemaFingerprint
 
 const session = {
   sessionId: 'parent-1',
@@ -26,7 +34,7 @@ function catalog() {
     argumentSemanticsId: 'default-v1',
     fingerprint: hash('c'),
     descriptors: [
-      { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' },
+      { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
     ],
   }
 }
@@ -52,7 +60,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
       request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
       toolClassification: {
         classificationCatalogFingerprint: hash('c'),
-        descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' },
+        descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
       },
       projection: { projectorId: 'default-v1', action, actionHash: hashAction(action), observedAt: 1 },
     }],
@@ -94,7 +102,7 @@ describe('DefaultDossierCompiler', () => {
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
         { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
         { seq: 2, time: 3, type: 'step/start', retention: 'included' as const, data: { turn: 1, step: 0 } },
-        { seq: 3, time: 4, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
+        { seq: 3, time: 4, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' } },
         { seq: 4, time: 5, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
         { seq: 5, time: 6, type: 'assistant/chunk', retention: 'included' as const, data: { turn: 1, step: 0, chunk: { type: 'tool-call-delta' } } },
         { seq: 6, time: 7, type: 'assistant/message', retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
@@ -110,6 +118,22 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+    const targetOmittedFromHeader = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 3
+        ? { ...event, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' as const } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: targetOmittedFromHeader }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-effective-tool-binding' })
+    const schemaDriftInHeader = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 3
+        ? { ...event, data: { header: { config: { model: 'model-1' }, tools: [{ ...headerTools[0]!, description: 'Different command runner.' }] }, reason: 'initial' as const } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: schemaDriftInHeader }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-effective-tool-binding' })
     if (result.kind === 'ready') {
       expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 8 })
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9, parent: { cwd: '/workspace' } })
@@ -282,7 +306,7 @@ describe('DefaultDossierCompiler', () => {
       throughSeq: 9,
       events: [
         ...complete.events.slice(0, 8),
-        { seq: 8, time: 9, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'changed-model' }, tools: [] }, reason: 'change' } },
+        { seq: 8, time: 9, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'changed-model' }, tools: headerTools }, reason: 'change' } },
         { ...complete.events[8]!, seq: 9, time: 10 },
       ],
       approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9 }],
@@ -323,7 +347,7 @@ describe('DefaultDossierCompiler', () => {
       .toEqual({ kind: 'incomplete', reason: 'event-projection-policy-mismatch' })
     const malformedHeader = {
       ...complete,
-      events: complete.events.map(event => event.seq === 3 ? { ...event, data: { header: { tools: [] }, reason: 'initial' } } : event),
+      events: complete.events.map(event => event.seq === 3 ? { ...event, data: { header: { tools: headerTools }, reason: 'initial' } } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
@@ -443,7 +467,7 @@ describe('DefaultDossierCompiler', () => {
         { seq: 2, time: 3, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
         { seq: 3, time: 4, type: 'step/end' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
         { seq: 4, time: 5, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 1 } },
-        { seq: 5, time: 6, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
+        { seq: 5, time: 6, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' } },
         { seq: 6, time: 7, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
         { seq: 7, time: 8, type: 'assistant/chunk' as const, retention: 'included' as const, data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta' } } },
         { seq: 8, time: 9, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 1, step: 1, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{\"command\":\"pwd\"}' }] } } },
@@ -484,7 +508,7 @@ describe('DefaultDossierCompiler', () => {
     const unclosedPriorStep = {
       ...priorCompletedStep,
       events: priorCompletedStep.events.map(event => event.seq === 7
-        ? { ...event, type: 'request/header' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'change' } }
+        ? { ...event, type: 'request/header' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'change' } }
         : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: unclosedPriorStep }))
