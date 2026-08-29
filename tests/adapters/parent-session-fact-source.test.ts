@@ -80,6 +80,7 @@ describe('DshParentSessionFactSource', () => {
     expect(source.snapshot(input({ agent: agent({ session: { ...agent().session, id: 'other' } }) as never }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalRequestId: 'other' }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, approvalRequestId: 'other' }] }))).toBeUndefined()
+    expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, session: { ...lifecycle, cwd: '/other-project' } } as ToolExecutionFactRecordV1] }))).toBeUndefined()
     const regressive = agent()
     ;(regressive.session.events as unknown as Array<{ time: number }>)[2]!.time = 99
     expect(source.snapshot(input({ agent: regressive as never }))).toBeUndefined()
