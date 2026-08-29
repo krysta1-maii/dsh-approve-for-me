@@ -100,7 +100,10 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> testing patched source overlay"
   (
     cd "${WORKTREE_DIR}"
-    npm_config_ignore_scripts=true pnpm exec vitest run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
+    # Invoke the installed binary directly. `pnpm exec` performs a workspace
+    # dependency-status install after the overlay changes package metadata,
+    # which would re-run the upstream worktree hook scripts.
+    node node_modules/vitest/vitest.mjs run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
   )
 
   echo "==> rebuilding patched package lib/ from sources"
@@ -113,13 +116,13 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     # loader requires the optional `unrun` peer; the pinned upstream lock does
     # not install it, so add it to this throwaway worktree only.
     if ! node -e "require.resolve('unrun')" >/dev/null 2>&1; then
-      pnpm add -D -w unrun
+      pnpm add -D -w unrun --ignore-scripts
     fi
     node node_modules/typescript/bin/tsc -b "${PKG_DIR}/tsconfig.json"
   )
   (
     cd "${PKG_DIR}"
-    pnpm exec tsdown
+    ../../../node_modules/.bin/tsdown
   )
 
   echo "==> copying built package out of the worktree"
