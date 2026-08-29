@@ -154,6 +154,34 @@ describe('DefaultDossierCompiler', () => {
         attempts: [{ request: { callId: 'call-0', blockIndex: 0 }, outcome: { kind: 'pending' } }],
       })
     }
+    const completedFirst = {
+      ...twoPending,
+      approvalBinding: { ...twoPending.approvalBinding, event: { seq: 10, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 10,
+      events: [
+        ...twoPending.events.slice(0, 8),
+        { seq: 8, time: 9, type: 'tool/result' as const, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const, sourceEventSeqs: [7] },
+        { ...twoPending.events[8]!, seq: 9, time: 10 },
+        { ...twoPending.events[9]!, seq: 10, time: 11 },
+      ],
+      executionFacts: [
+        { ...twoPending.executionFacts[0]!, result: { eventSeq: 8, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } } },
+        { ...twoPending.executionFacts[1]!, request: { ...twoPending.executionFacts[1]!.request, eventSeq: 9 }, projection: { ...twoPending.executionFacts[1]!.projection, observedAt: 10 } },
+      ],
+      approvalSnapshots: [{ ...twoPending.approvalSnapshots[0]!, approvalAskedSeq: 10 }],
+    }
+    const completedFirstResult = new DefaultDossierCompiler(deps).compile({ facts: completedFirst })
+    expect(completedFirstResult.kind).toBe('ready')
+    if (completedFirstResult.kind === 'ready') {
+      expect(completedFirstResult.verified.dossier).toMatchObject({
+        currentTurnTools: { attempts: [{ request: { callId: 'call-0' }, outcome: { kind: 'completed' } }] },
+      })
+    }
+    const { result: _completedResult, ...firstWithoutResult } = completedFirst.executionFacts[0]!
+    expect(new DefaultDossierCompiler(deps).compile({ facts: {
+      ...completedFirst,
+      executionFacts: [firstWithoutResult, completedFirst.executionFacts[1]!],
+    } })).toEqual({ kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' })
     const readDescriptor = { classification: 'ordinary' as const, toolName: 'read', toolSchemaFingerprint: 'read-fp', classificationId: 'read-class' }
     const expandedCatalog = { ...catalog(), fingerprint: hash('d'), descriptors: [...catalog().descriptors, readDescriptor] }
     const firstReadAction = createActionSnapshot({ toolName: 'read', arguments: { command: 'ls' } })

@@ -300,7 +300,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || !actionArgumentsMatchCall(execution.projection.action.arguments, callData.arguments)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'approval/asked'])
+    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'tool/result', 'approval/asked'])
     const callEvents = facts.events.filter(event => event.type === 'tool/call')
     if (facts.events.some(event => !allowed.has(event.type)) || callEvents.length === 0
       || facts.executionFacts.length !== callEvents.length || facts.delegationReceipts.length !== 0) {
@@ -316,7 +316,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || facts.approvalBinding.event.step !== step) {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
-    const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' } }[] = []
+    const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' } }[] = []
     const assistantCalls: { readonly callId: string; readonly toolName: string; readonly rawArguments: unknown }[] = []
     for (const [blockIndex, event] of callEvents.entries()) {
       const data = event.retention === 'included' ? record(event.data) : undefined
@@ -330,7 +330,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       const candidate = candidates[0]!
       const descriptor = facts.eventProjection.classificationCatalog.descriptors.find(item => item.toolName === toolName)
       if (candidate.version !== 1 || candidate.request.kind !== 'model-tool-call' || candidate.request.eventType !== 'tool/call'
-        || candidate.result !== undefined || candidate.delegationReceipt !== undefined || descriptor?.classification !== 'ordinary'
+        || candidate.delegationReceipt !== undefined || descriptor?.classification !== 'ordinary'
         || !sameLifecycle(candidate.session, facts.session) || candidate.projection.action.toolName !== toolName
         || candidate.projection.actionHash !== hashAction(candidate.projection.action)
         || candidate.projection.observedAt !== event.time || candidate.toolClassification.classificationCatalogFingerprint !== facts.eventProjection.classificationCatalog.fingerprint
@@ -338,14 +338,31 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         || !actionArgumentsMatchCall(candidate.projection.action.arguments, data.arguments)) {
         return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       }
+      const outcome = candidate.result === undefined
+        ? Object.freeze({ kind: 'pending' as const })
+        : (() => {
+            const resultEvent = facts.events[candidate.result.eventSeq]
+            if (candidate.result.eventType !== 'tool/result' || candidate.result.outcome.kind !== 'completed'
+              || candidate.result.eventSeq <= event.seq || candidate.result.eventSeq >= facts.throughSeq
+              || resultEvent?.type !== 'tool/result' || resultEvent.retention !== 'excluded-content'
+              || resultEvent.exclusion !== 'tool-result-content' || resultEvent.sourceEventSeqs?.length !== 1
+              || resultEvent.sourceEventSeqs[0] !== event.seq) return undefined
+            return Object.freeze({ kind: 'completed' as const })
+          })()
+      if (outcome === undefined) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       assistantCalls.push({ callId, toolName, rawArguments: data.arguments })
       if (event.seq !== execution.request.eventSeq) {
         pendingAttempts.push({
           request: Object.freeze({ kind: 'model-tool-call', callId, toolName, rawArguments: canonicalJson(candidate.projection.action.arguments), eventSeq: event.seq,
             issuedIn: Object.freeze({ seq: -1, type: 'assistant/message', turn, step }), blockIndex }),
-          outcome: Object.freeze({ kind: 'pending' as const }),
+          outcome,
         })
       }
+    }
+    const resultEventSeqs = facts.executionFacts.flatMap(item => item.result === undefined ? [] : [item.result.eventSeq])
+    if (new Set(resultEventSeqs).size !== resultEventSeqs.length
+      || facts.events.some(event => event.type === 'tool/result' && !resultEventSeqs.includes(event.seq))) {
+      return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
     const assistantMessage = currentAssistantMessageForCalls(facts.events, assistantCalls, turn, step)
     if (assistantMessage === undefined || assistantMessage.seq >= callEvents[0]!.seq

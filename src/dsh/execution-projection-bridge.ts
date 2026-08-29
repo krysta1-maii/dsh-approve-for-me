@@ -1,5 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { createActionSnapshot, hashAction } from '../domain/protocol.js'
 import { canonicalJson } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, DelegationToolClassificationCatalogV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
@@ -11,6 +11,7 @@ interface EventLike {
   readonly time: number
   readonly type: string
   readonly data: unknown
+  readonly sourceEventSeqs?: readonly number[]
 }
 
 interface SessionLike {
@@ -30,6 +31,7 @@ function string(value: unknown): string | undefined {
  */
 export class DshExecutionFactProjectionBridge {
   private readonly approvalWrites = new Map<string, Promise<void>>()
+  private readonly completedExecutions = new Set<string>()
 
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
@@ -104,6 +106,21 @@ export class DshExecutionFactProjectionBridge {
     await this.repository.create(record)
   }
 
+  /** Records a success marker before the agent loop appends its durable result event. */
+  observeResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): undefined {
+    if (result.isError || exec.agent === undefined) return undefined
+    const lifecycle = this.lifecycle(exec.agent)
+    const session = exec.agent.session as unknown as SessionLike
+    const callId = String(exec.callId)
+    if (lifecycle === undefined) return undefined
+    const candidates = session.events.filter(event => {
+      const data = event.data as Record<string, unknown>
+      return event.type === 'tool/call' && data.callId === callId && data.name === exec.name
+    })
+    if (candidates.length === 1) this.completedExecutions.add(this.resultKey(lifecycle, callId, candidates[0]!.seq))
+    return undefined
+  }
+
   /** Records the bounded approval audit after DSH has committed it to history. */
   observeSessionEvent(agent: Agent, event: EventLike): Promise<void> {
     if (event.type === 'tool/result') return this.attachResult(agent, event)
@@ -126,29 +143,36 @@ export class DshExecutionFactProjectionBridge {
   private async attachResult(agent: Agent, event: EventLike): Promise<void> {
     const lifecycle = this.lifecycle(agent)
     const data = event.data as Record<string, unknown>
-    const message = data.message as { readonly content?: unknown } | undefined
+    const message = data.message as { readonly source?: { readonly kind?: unknown; readonly callId?: unknown }; readonly content?: unknown } | undefined
     const blocks = message?.content
     const turn = data.turn
     const step = data.step
     if (lifecycle === undefined || !Array.isArray(blocks) || blocks.length !== 1
       || !Number.isSafeInteger(turn) || (turn as number) < 0
       || !Number.isSafeInteger(step) || (step as number) < 0) return
-    const block = blocks[0] as { readonly type?: unknown; readonly toolCallId?: unknown } | undefined
-    const callId = block?.type === 'tool-result' ? string(block.toolCallId) : undefined
-    if (callId === undefined) return
+    const block = blocks[0] as { readonly type?: unknown; readonly toolCallId?: unknown; readonly isError?: unknown } | undefined
+    const callId = block?.type === 'tool-result' && block.isError !== true ? string(block.toolCallId) : undefined
+    if (callId === undefined || message?.source?.kind !== 'tool' || message.source.callId !== callId
+      || event.sourceEventSeqs?.length !== 1 || !Number.isSafeInteger(event.sourceEventSeqs[0])) return
+    const requestEventSeq = event.sourceEventSeqs[0]!
     const session = agent.session as unknown as SessionLike
     const candidates = (await this.repository.list(lifecycle)).filter(record => {
       const call = session.events[record.request.eventSeq]
       const callData = call?.data as Record<string, unknown> | undefined
       return record.request.kind === 'model-tool-call' && record.request.callId === callId
-        && record.request.eventSeq < event.seq && call?.type === 'tool/call'
+        && record.request.eventSeq === requestEventSeq && record.request.eventSeq < event.seq && call?.type === 'tool/call'
         && callData?.turn === turn && callData?.step === step
     })
-    if (candidates.length !== 1) return
-    await this.repository.attachResult({
-      session: lifecycle, callId, requestEventSeq: candidates[0]!.request.eventSeq,
-      result: { eventSeq: event.seq, eventType: 'tool/result' },
+    if (candidates.length !== 1 || !this.completedExecutions.has(this.resultKey(lifecycle, callId, requestEventSeq))) return
+    const outcome = await this.repository.attachResult({
+      session: lifecycle, callId, requestEventSeq,
+      result: { eventSeq: event.seq, eventType: 'tool/result', outcome: { kind: 'completed' } },
     })
+    if (outcome === 'updated' || outcome === 'identical') this.completedExecutions.delete(this.resultKey(lifecycle, callId, requestEventSeq))
+  }
+
+  private resultKey(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string }, callId: string, requestEventSeq: number): string {
+    return `${canonicalJson(lifecycle)}\0${callId}\0${requestEventSeq}`
   }
 
   /**

@@ -65,13 +65,14 @@ describe('DshExecutionFactProjectionBridge', () => {
     const repository = new InMemoryExecutionFactRepository()
     const owner = agent([
       { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
-      { seq: 1, time: 21, type: 'tool/result', data: { turn: 1, step: 0, message: { content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'private output' }] }] } } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'private output' }] }] } } },
     ])
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, catalog, repository)
     await bridge.project(execution(owner))
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).events[1]!)
+    bridge.observeResult(execution(owner), { isError: false, value: null, content: [] })
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
-      .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result' } })
+      .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
 
   it('does not attach an ambiguous native result', async () => {

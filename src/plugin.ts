@@ -266,7 +266,10 @@ export function installApproveForMe(
 
   const stopPreExecute = ctx.on('tools/pre-execute', (exec, next) =>
     bridge.preExecute(exec, () => executionProjection.preExecute(exec, next)), { prepend: true })
-  const stopResult = ctx.on('tools/result', bridge.observeResult)
+  const stopResult = ctx.on('tools/result', (exec, result) => {
+    bridge.observeResult(exec)
+    executionProjection.observeResult(exec, result)
+  })
   const stopSessionEvent = ctx.on('session/event', (session, event) => {
     const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
     const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)

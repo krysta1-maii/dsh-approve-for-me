@@ -65,10 +65,10 @@ describe('in-memory fact repositories', () => {
   it('attaches only the matching durable result once and detects conflicts', async () => {
     const repo = new InMemoryExecutionFactRepository()
     await repo.create(executionFact())
-    const result = { eventSeq: 6, eventType: 'tool/result' as const }
+    const result = { eventSeq: 6, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } }
     await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result })).resolves.toBe('updated')
     await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result })).resolves.toBe('identical')
-    await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result: { eventSeq: 7, eventType: 'tool/result' } })).resolves.toBe('conflict')
+    await expect(repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'completed' } } })).resolves.toBe('conflict')
     await expect(repo.attachResult({ session, callId: 'missing', requestEventSeq: 5, result })).resolves.toBe('missing')
   })
 
