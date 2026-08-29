@@ -108,10 +108,8 @@ export class DshExecutionFactProjectionBridge {
 
   /** Records a success marker before the agent loop appends its durable result event. */
   observeResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): undefined {
-    if (exec.agent === undefined) return undefined
-    const outcome = result.isError
-      ? Object.freeze({ kind: 'tool-error' as const, ...(result.error.info?.code === undefined ? {} : { code: result.error.info.code }) })
-      : Object.freeze({ kind: 'completed' as const })
+    if (result.isError || exec.agent === undefined) return undefined
+    const outcome = Object.freeze({ kind: 'completed' as const })
     const lifecycle = this.lifecycle(exec.agent)
     const session = exec.agent.session as unknown as SessionLike
     const callId = String(exec.callId)
@@ -156,14 +154,11 @@ export class DshExecutionFactProjectionBridge {
     const block = blocks[0] as { readonly type?: unknown; readonly toolCallId?: unknown; readonly isError?: unknown } | undefined
     const callId = block?.type === 'tool-result' ? string(block.toolCallId) : undefined
     const isError = block?.isError
-    if (callId === undefined || message?.source?.kind !== 'tool' || message.source.callId !== callId
+    if (callId === undefined || isError === true || message?.source?.kind !== 'tool' || message.source.callId !== callId
       || event.sourceEventSeqs?.length !== 1 || !Number.isSafeInteger(event.sourceEventSeqs[0])) return
     const requestEventSeq = event.sourceEventSeqs[0]!
     const terminalOutcome = this.terminalOutcomes.get(this.resultKey(lifecycle, callId, requestEventSeq))
-    const error = data.error as { readonly code?: unknown } | undefined
-    if (terminalOutcome === undefined || (terminalOutcome.kind === 'completed' && isError === true)
-      || (terminalOutcome.kind === 'tool-error' && isError !== true)
-      || (terminalOutcome.kind === 'tool-error' && terminalOutcome.code !== undefined && error?.code !== terminalOutcome.code)) return
+    if (terminalOutcome === undefined) return
     const session = agent.session as unknown as SessionLike
     const candidates = (await this.repository.list(lifecycle)).filter(record => {
       const call = session.events[record.request.eventSeq]

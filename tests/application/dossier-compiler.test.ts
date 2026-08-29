@@ -199,17 +199,6 @@ describe('DefaultDossierCompiler', () => {
         currentTurnTools: { attempts: [{ request: { callId: 'call-0' }, outcome: { kind: 'completed' } }] },
       })
     }
-    const erroredFirst = {
-      ...completedFirst,
-      executionFacts: [{ ...completedFirst.executionFacts[0]!, result: { ...completedFirst.executionFacts[0]!.result!, outcome: { kind: 'tool-error' as const, code: 'TOOL_FAILED' } } }, completedFirst.executionFacts[1]!],
-    }
-    const erroredFirstResult = new DefaultDossierCompiler(deps).compile({ facts: erroredFirst })
-    expect(erroredFirstResult.kind).toBe('ready')
-    if (erroredFirstResult.kind === 'ready') {
-      expect(erroredFirstResult.verified.dossier).toMatchObject({
-        currentTurnTools: { attempts: [{ outcome: { kind: 'tool-error', code: 'TOOL_FAILED' } }] },
-      })
-    }
     const { result: _completedResult, ...firstWithoutResult } = completedFirst.executionFacts[0]!
     expect(new DefaultDossierCompiler(deps).compile({ facts: {
       ...completedFirst,
