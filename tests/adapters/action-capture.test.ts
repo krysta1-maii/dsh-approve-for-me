@@ -6,12 +6,14 @@ import {
   DefaultActionCapture,
   createCaptureBridge,
   createDefaultActionProjector,
+  createShellProcessActionProjector,
   createActionSnapshot,
+  ToolFamilyActionProjectorRegistry,
 } from '../../src/index.js'
 import type { ActionProjector } from '../../src/index.js'
 
 function fakeAgent(id: string): Agent {
-  return { id: SessionId(id), session: { id: SessionId(id) } } as unknown as Agent
+  return { id: SessionId(id), session: { id: SessionId(id), header: { cwd: '/workspace' } } } as unknown as Agent
 }
 
 function fakeExecution(agent: Agent, overrides: {
@@ -51,6 +53,31 @@ describe('DefaultActionCapture', () => {
     const action = createActionSnapshot({ toolName: 'bash', arguments: {} })
     store.remember(owner, 'call-1', action)
     expect(() => store.remember(owner, 'call-1', action)).toThrow(/already captured/)
+  })
+})
+
+describe('shell/process semantic projection', () => {
+  it('captures command, argv, cwd and environment under a stable semantic identity', () => {
+    const projector = new ToolFamilyActionProjectorRegistry([
+      createShellProcessActionProjector(['bash']),
+    ])
+    const action = createActionSnapshot(projector.project(fakeExecution(fakeAgent('parent-1'), {
+      arguments: { command: 'git status', argv: ['git', 'status'], env: { LANG: 'C' } },
+    })))
+    expect(action).toMatchObject({
+      projectorId: 'dsh-approve-for-me/shell-process-v1',
+      semantics: { family: 'shell-process-v1', value: { command: 'git status', argv: ['git', 'status'], cwd: '/workspace', environment: { LANG: 'C' } } },
+    })
+  })
+
+  it.each([
+    [{}, /non-empty command/],
+    [{ command: 'pwd', argv: [1] }, /argv/],
+    [{ command: 'pwd', env: { HOME: 1 } }, /env/],
+    [{ command: 'x'.repeat(32_769) }, /command/],
+  ])('fails closed for incomplete or ambiguous shell arguments', (rawArguments, message) => {
+    const projector = createShellProcessActionProjector()
+    expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { arguments: rawArguments }))).toThrow(message)
   })
 })
 

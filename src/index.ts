@@ -221,6 +221,7 @@ export { createManagedReviewerPort } from './dsh/managed-controller.js'
 export {
   createCaptureBridge,
   createDefaultActionProjector,
+  createShellProcessActionProjector,
 } from './dsh/action-capture.js'
 export type { CaptureBridge } from './dsh/action-capture.js'
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
