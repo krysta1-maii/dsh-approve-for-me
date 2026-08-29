@@ -5,6 +5,7 @@ import {
   effectiveToolBindingFromSchemaV1,
   fingerprintDelegationToolCatalogV1,
   hashAction,
+  recomputeDossierHash,
 } from '../../src/index.js'
 import type {
   GuardianDossierCompilerDependencies,
@@ -126,13 +127,13 @@ describe('DefaultDossierCompiler', () => {
       events: complete.events.map(event => event.seq === 0 ? { ...event, seq: -0 } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: negativeZeroSequence }))
-      .toEqual({ kind: 'incomplete', reason: 'non-contiguous-event-prefix' })
+      .toEqual({ kind: 'incomplete', reason: 'invalid-fact-snapshot' })
     const negativeZeroTime = {
       ...complete,
       events: complete.events.map(event => event.seq === 0 ? { ...event, time: -0 } : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: negativeZeroTime }))
-      .toEqual({ kind: 'incomplete', reason: 'invalid-event-time-order' })
+      .toEqual({ kind: 'incomplete', reason: 'invalid-fact-snapshot' })
     const lateStepStart = {
       ...complete,
       events: [complete.events[0]!, complete.events[1]!, complete.events[3]!, complete.events[4]!, complete.events[5]!, complete.events[6]!, complete.events[2]!, complete.events[7]!, complete.events[8]!]
@@ -220,6 +221,24 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: historicalSchemaDrift }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-historical-effective-tool-binding' })
+    const mutableInput = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 3
+        ? { ...event, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' as const } }
+        : event),
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, environment: { version: 1, sessionId: 'parent-1', metadata: { value: 'original' } } }],
+    }
+    const detached = new DefaultDossierCompiler(deps).compile({ facts: mutableInput })
+    const mutableHeader = mutableInput.events.find(event => event.seq === 3) as { data: { header: { config: { model: string } } } }
+    mutableHeader.data.header.config.model = 'mutated-after-compilation'
+    ;(mutableInput.approvalSnapshots[0]!.environment as { metadata: { value: string } }).metadata.value = 'mutated-after-compilation'
+    expect(detached.kind).toBe('ready')
+    if (detached.kind === 'ready') {
+      expect(detached.verified.dossier).toMatchObject({
+        environment: { requestHeader: { config: { model: 'model-1' } }, approvalSnapshot: { metadata: { value: 'original' } } },
+      })
+      expect(recomputeDossierHash(detached.verified.dossier)).toBe(detached.verified.dossierHash)
+    }
     if (result.kind === 'ready') {
       expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 8 })
       expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9, parent: { cwd: '/workspace' } })
@@ -633,7 +652,7 @@ describe('DefaultDossierCompiler', () => {
     }).kind).toBe('incomplete')
     expect(compiler.compile({
       facts: facts({ session: { ...session, effectiveDelegationDepth: -0 } }),
-    })).toEqual({ kind: 'incomplete', reason: 'invalid-parent-session-identity' })
+    })).toEqual({ kind: 'incomplete', reason: 'invalid-fact-snapshot' })
     expect(compiler.compile({
       facts: facts({ approvalBinding: { ...facts().approvalBinding, callId: '' } }),
     }).kind).toBe('incomplete')

@@ -1,4 +1,4 @@
-import { canonicalJson, parseUniqueJson } from '../domain/json.js'
+import { canonicalJson, freezeJson, parseUniqueJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type {
   DirectUserMessageV1,
@@ -266,8 +266,13 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     readonly facts: ParentSessionFactSnapshotV1
     readonly signal?: AbortSignal
   }): DossierCompilationResultV1 {
-    const { facts } = input
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
+    let facts: ParentSessionFactSnapshotV1
+    try {
+      facts = freezeJson(snapshotJson(input.facts)) as unknown as ParentSessionFactSnapshotV1
+    } catch {
+      return { kind: 'incomplete', reason: 'invalid-fact-snapshot' }
+    }
     if (!Number.isSafeInteger(this.deps.maxDossierBytes) || this.deps.maxDossierBytes < 1) {
       return { kind: 'incomplete', reason: 'invalid-dossier-budget' }
     }
