@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { Config, inject, name, normalizeConfig } from '../src/index.js'
+import { Config, fingerprintApprovalToolCatalogV1, inject, name, normalizeConfig } from '../src/index.js'
+
+const toolCatalog = (descriptors: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string; readonly classification: 'ordinary' | 'gate-ask' | 'body-escalation' }[]) => {
+  const unsealed = { version: 1 as const, argumentSemanticsId: 'default-v1', fingerprint: '', descriptors }
+  return { ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! }
+}
 
 const valid = () => ({
   reviewer: {
@@ -63,22 +68,24 @@ describe('plugin config', () => {
     expect(normalizeConfig(valid()).toolCatalog).toEqual({
       version: 1,
       argumentSemanticsId: 'default-v1',
-      fingerprint: `sha256:${'0'.repeat(64)}`,
+      fingerprint: fingerprintApprovalToolCatalogV1({ version: 1, argumentSemanticsId: 'default-v1', fingerprint: '', descriptors: [] }),
       descriptors: [],
     })
     const normalized = normalizeConfig({
       ...valid(),
-      toolCatalog: {
-        version: 1,
-        argumentSemanticsId: 'default-v1',
-        fingerprint: `sha256:${'a'.repeat(64)}`,
-        descriptors: [
-          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
-        ],
-      },
+      toolCatalog: toolCatalog([
+        { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
+      ]),
     })
     expect(normalized.toolCatalog.descriptors).toHaveLength(1)
     expect(Object.isFrozen(normalized.toolCatalog.descriptors)).toBe(true)
+  })
+
+  it('rejects a tool catalog whose supplied fingerprint is not its canonical commitment', () => {
+    expect(() => normalizeConfig({
+      ...valid(),
+      toolCatalog: { ...toolCatalog([{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'ordinary' }]), fingerprint: `sha256:${'a'.repeat(64)}` },
+    })).toThrow(/toolCatalog\.fingerprint/)
   })
 
   it('rejects duplicate tool catalog descriptors', () => {

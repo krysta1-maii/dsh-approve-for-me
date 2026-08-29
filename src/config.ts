@@ -9,6 +9,7 @@ import type {
   TrustEnvelopeConfigV1,
   TrustEnvelopeToolFamily,
 } from './approval-gate/trust-envelope.js'
+import { fingerprintApprovalToolCatalogV1 } from './approval-gate/catalog.js'
 import type { ApprovalToolCatalog } from './approval-gate/catalog.js'
 import { validateCaseCaptureConfig } from './domain/records.js'
 import type { GuardianCaseCaptureConfigV1 } from './domain/records.js'
@@ -87,14 +88,15 @@ const DEFAULT_MAX_REVIEWS_PER_CHILD = 64
 /** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
 const DEFAULT_MAX_DOSSIER_BYTES = 256_000
 
-const ZERO_HASH = `sha256:${'0'.repeat(64)}`
-
-const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = Object.freeze({
-  version: 1,
-  argumentSemanticsId: 'default-v1',
-  fingerprint: ZERO_HASH,
-  descriptors: Object.freeze([]),
-})
+const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = (() => {
+  const unsealed = {
+    version: 1 as const,
+    argumentSemanticsId: 'default-v1',
+    fingerprint: '',
+    descriptors: Object.freeze([]),
+  }
+  return Object.freeze({ ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! })
+})()
 
 const DEFAULT_CASE_CAPTURE: Readonly<GuardianCaseCaptureConfigV1> = Object.freeze({
   mode: 'off',
@@ -125,12 +127,17 @@ function normalizeToolCatalog(input?: ApprovalToolCatalog): ApprovalToolCatalog 
       throw new TypeError('toolCatalog descriptor.toolSchemaFingerprint must be a non-empty string')
     }
   }
-  return Object.freeze({
-    version: 1,
+  const normalized = {
+    version: 1 as const,
     argumentSemanticsId: input.argumentSemanticsId,
     fingerprint: input.fingerprint,
     descriptors: Object.freeze([...input.descriptors]),
-  })
+  }
+  const expectedFingerprint = fingerprintApprovalToolCatalogV1(normalized)
+  if (expectedFingerprint === undefined || input.fingerprint !== expectedFingerprint) {
+    throw new TypeError('toolCatalog.fingerprint must match the canonical catalog commitment')
+  }
+  return Object.freeze(normalized)
 }
 
 const DEFAULT_TRUST_ENVELOPE: Readonly<TrustEnvelopeConfigV1> = Object.freeze({

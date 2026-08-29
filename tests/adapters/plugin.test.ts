@@ -6,12 +6,23 @@ import type { ManagedAgentProvider, ManagedProviderRegistration } from 'dsh-mana
 import {
   REVIEWER_PROVIDER,
   SUBMIT_DECISION_TOOL,
+  fingerprintApprovalToolCatalogV1,
   installApproveForMe,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
 import type { Config } from '../../src/index.js'
 
 type CtxEvent = 'tools/pre-execute' | 'tools/result'
+
+const validToolCatalog = () => {
+  const unsealed = {
+    version: 1 as const,
+    argumentSemanticsId: 'default-v1',
+    fingerprint: '',
+    descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' as const }],
+  }
+  return { ...unsealed, fingerprint: fingerprintApprovalToolCatalogV1(unsealed)! }
+}
 
 const config: Config = {
   reviewer: {
@@ -221,14 +232,7 @@ describe('installApproveForMe composition root', () => {
     const h = harness()
     const catalogConfig: Config = {
       ...config,
-      toolCatalog: {
-        version: 1,
-        argumentSemanticsId: 'default-v1',
-        fingerprint: `sha256:${'0'.repeat(64)}`,
-        descriptors: [
-          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
-        ],
-      },
+      toolCatalog: validToolCatalog(),
     }
     const plugin = installApproveForMe(h.ctx as unknown as Context, catalogConfig)
     const policy = h.machinePolicy as {
@@ -257,14 +261,7 @@ describe('installApproveForMe composition root', () => {
     const h = harness()
     const catalogConfig: Config = {
       ...config,
-      toolCatalog: {
-        version: 1,
-        argumentSemanticsId: 'default-v1',
-        fingerprint: `sha256:${'0'.repeat(64)}`,
-        descriptors: [
-          { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' },
-        ],
-      },
+      toolCatalog: validToolCatalog(),
     }
     const withoutFork = { ...h.ctx, approval: undefined } as unknown as Context
     expect(() => installApproveForMe(withoutFork, catalogConfig)).toThrow(/patched @deepseek-ai\/dsh-user-approval/)

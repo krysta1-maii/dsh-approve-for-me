@@ -169,6 +169,7 @@ export type {
 } from './ports/action-projector.js'
 
 // Approval-gate ports (DSH-neutral).
+export { fingerprintApprovalToolCatalogV1 } from './approval-gate/catalog.js'
 export type {
   AllowCacheKeyV1,
   AllowCacheV1,
