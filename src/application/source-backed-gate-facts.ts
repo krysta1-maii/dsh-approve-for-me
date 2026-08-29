@@ -2,8 +2,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GateMachineRequestV1 } from '../approval-gate/machine-policy.js'
 import type { ParentAuthority } from '../ports/managed-reviewer.js'
 import type { ParentSessionFactSource } from '../ports/parent-session-facts.js'
-import type { GuardianDossierCompiler, ParentSessionFactSnapshotV1 } from '../domain/dossier.js'
+import type { GuardianDossierCompiler, InteractionSectionV1, ParentSessionFactSnapshotV1, PendingApprovalSectionV1 } from '../domain/dossier.js'
 import type { GateActionFactResolver, GateActionFacts } from './gate-pipeline.js'
+import type { ToolApprovalClassifier } from '../approval-gate/catalog.js'
+import { canonicalJson } from '../domain/json.js'
+import { hashAction } from '../domain/protocol.js'
 
 /**
  * A pending approval handle is correlation metadata only. It intentionally
@@ -34,6 +37,58 @@ export interface SourceBackedGateFactResolverDependencies {
   readonly projector: SourceBackedFactProjector
   /** Obtains the exact projections for this same immutable approval ask. */
   snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal): Promise<Parameters<ParentSessionFactSource['snapshot']>[0] | undefined>
+}
+
+/**
+ * Rebuilds every gate key from the branded packet instead of registration-time
+ * capture metadata. A packet lacking a direct user frontier cannot be cached or
+ * automatically authorized.
+ */
+export class DossierGateFactProjector implements SourceBackedFactProjector {
+  constructor(
+    private readonly classifier: ToolApprovalClassifier,
+    private readonly generation: string,
+    private readonly configurationFingerprint: string,
+  ) {}
+
+  project(input: Parameters<SourceBackedFactProjector['project']>[0]): GateActionFacts | undefined {
+    const dossier = input.verifiedDossier.dossier as unknown as {
+      readonly freeze: { readonly currentTurn: number }
+      readonly interaction: InteractionSectionV1
+      readonly pendingApproval: PendingApprovalSectionV1
+    }
+    const pending = dossier.pendingApproval
+    if (input.request.actionHash !== input.pending.actionHash
+      || pending.callId !== input.pending.callId
+      || pending.toolName !== input.pending.toolName
+      || pending.actionHash !== input.pending.actionHash
+      || hashAction(pending.action) !== input.pending.actionHash) return undefined
+    const descriptor = input.facts.eventProjection.classificationCatalog.descriptors.find(item =>
+      item.toolName === pending.toolName)
+    if (descriptor === undefined) return undefined
+    const classification = this.classifier.classify({
+      toolName: pending.toolName,
+      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+    })
+    const frontiers = dossier.interaction.turns.flatMap(turn =>
+      turn.directUserMessages.map(message => message.event.seq))
+    const directUserFrontierSeq = frontiers.length === 0 ? undefined : Math.max(...frontiers)
+    if (directUserFrontierSeq === undefined) return undefined
+    const parentLifecycleFingerprint = canonicalJson(input.facts.session)
+    const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq, actionHash: input.pending.actionHash })
+    return Object.freeze({
+      action: pending.action,
+      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+      classification,
+      breakerKey: key,
+      allowCacheKey: Object.freeze({ ...key, generation: this.generation, configurationFingerprint: this.configurationFingerprint }),
+      rootRequester: input.facts.session.effectiveDelegationDepth === 0 && input.facts.session.parentSessionId === undefined,
+      directChildOrigin: false,
+      generation: this.generation,
+      configurationFingerprint: this.configurationFingerprint,
+      verifiedDossier: input.verifiedDossier,
+    })
+  }
 }
 
 /**

@@ -12,7 +12,7 @@ import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
-import { SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
+import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
@@ -136,7 +136,11 @@ export function installApproveForMe(
   const factStore = new SourceBackedGateFactResolver({
     factSource,
     compiler,
-    projector: { project: () => undefined },
+    projector: new DossierGateFactProjector(
+      classifier,
+      'dsh-approve-for-me/v1',
+      normalized.toolCatalog.fingerprint,
+    ),
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
       await executionProjection.awaitApprovalSnapshot(pending.agent, pending.requestId, pending.callId, pending.toolName)

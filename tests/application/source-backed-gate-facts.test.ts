@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
-import { SourceBackedGateFactResolver } from '../../src/application/source-backed-gate-facts.js'
+import { DossierGateFactProjector, SourceBackedGateFactResolver } from '../../src/application/source-backed-gate-facts.js'
+import { createToolApprovalClassifier } from '../../src/application/tool-classifier.js'
+import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
 
 const agent = { id: 'session-1', session: { id: 'session-1' } } as unknown as Agent
 const authority = { sessionId: 'session-1' } as unknown as ParentAuthority<Agent, string>
@@ -24,6 +26,45 @@ function resolver() {
     }),
   }
 }
+
+describe('DossierGateFactProjector', () => {
+  it('rebuilds cache scope from branded direct-user evidence only', () => {
+    const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
+    const actionHash = hashAction(action)
+    const projector = new DossierGateFactProjector(createToolApprovalClassifier({
+      version: 1, argumentSemanticsId: 'json-v1', fingerprint: 'config-1',
+      descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1', classification: 'gate-ask' }],
+    }), 'generation-1', 'config-1')
+    const facts = projector.project({
+      request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },
+      facts: {
+        session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
+        eventProjection: { classificationCatalog: { descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1' }] } },
+      },
+      verifiedDossier: {
+        dossier: {
+          freeze: { currentTurn: 3 },
+          interaction: { turns: [{ directUserMessages: [{ event: { seq: 7 } }] }] },
+          pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash },
+        },
+      },
+    } as never)
+    expect(facts).toMatchObject({ rootRequester: true, breakerKey: { turn: 3, directUserFrontierSeq: 7, actionHash } })
+    expect(facts?.classification).toEqual({ kind: 'classified', classification: 'gate-ask' })
+
+    const withoutUserFrontier = projector.project({
+      request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },
+      facts: {
+        session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
+        eventProjection: { classificationCatalog: { descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1' }] } },
+      },
+      verifiedDossier: {
+        dossier: { freeze: { currentTurn: 3 }, interaction: { turns: [] }, pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash } },
+      },
+    } as never)
+    expect(withoutUserFrontier).toBeUndefined()
+  })
+})
 
 describe('SourceBackedGateFactResolver', () => {
   it('does not consult a source without the complete exact ask correlation', async () => {

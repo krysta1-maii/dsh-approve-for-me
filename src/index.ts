@@ -255,7 +255,7 @@ export type {
 export { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
 export { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
 export type { GateFactRegistration } from './application/capture-gate-facts.js'
-export { SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
+export { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 export type {
   PendingSourceBackedAsk,
   SourceBackedFactProjector,
