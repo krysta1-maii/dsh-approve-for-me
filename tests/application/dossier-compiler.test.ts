@@ -287,6 +287,16 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: crossToolProjection }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const mismatchedActionArguments = createActionSnapshot({ toolName: 'bash', arguments: { command: 'rm -rf /' } })
+    const crossArgumentsProjection = {
+      ...complete,
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        projection: { ...complete.executionFacts[0]!.projection, action: mismatchedActionArguments, actionHash: hashAction(mismatchedActionArguments) },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: crossArgumentsProjection }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
     const conflictingCatalogDescriptor = {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, toolClassification: { ...complete.executionFacts[0]!.toolClassification, descriptor: { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'other-fp', classificationId: 'class-1' } } }],
@@ -316,7 +326,7 @@ describe('DefaultDossierCompiler', () => {
       events: [
         { seq: 0, time: 1, type: 'runtime/unknown', retention: 'included' as const, data: {} },
         { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, data: { id: 'user-1', turn: 1, source: { kind: 'user' }, content: [] } },
-        { seq: 2, time: 3, type: 'tool/call', retention: 'included' as const, data: { callId: 'call-1', name: 'bash' } },
+        { seq: 2, time: 3, type: 'tool/call', retention: 'included' as const, data: { callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
         { seq: 3, time: 4, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
       executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 2 } }],

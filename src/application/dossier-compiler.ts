@@ -41,6 +41,15 @@ function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']):
     && (session.parentSessionId === undefined || (typeof session.parentSessionId === 'string' && session.parentSessionId.length > 0))
 }
 
+function actionArgumentsMatchCall(actionArguments: JsonValue, rawArguments: unknown): boolean {
+  if (typeof rawArguments !== 'string') return false
+  try {
+    return canonicalJson(JSON.parse(rawArguments) as JsonValue) === canonicalJson(actionArguments)
+  } catch {
+    return false
+  }
+}
+
 function directUserMessage(event: SessionFactEventV1, turn: number | undefined): DirectUserMessageV1 | undefined {
   if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
   const data = record(event.data)
@@ -285,7 +294,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (execution.request.eventType !== 'tool/call' || execution.request.eventSeq >= facts.throughSeq
       || callEvent?.type !== execution.request.eventType
       || callData?.callId !== execution.request.callId
-      || callData.name !== execution.request.toolName) {
+      || callData.name !== execution.request.toolName
+      || !actionArgumentsMatchCall(execution.projection.action.arguments, callData.arguments)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
     const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'assistant/chunk', 'assistant/message', 'tool/call', 'approval/asked'])
