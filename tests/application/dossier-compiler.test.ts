@@ -115,6 +115,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const malformedHeader = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 1 ? { ...event, data: { config: {} } } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: malformedHeader }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
   })
 
   it('fails closed rather than omit unsupported historical events', () => {

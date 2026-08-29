@@ -40,8 +40,12 @@ function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | unde
   let latest: JsonValue | undefined
   for (const event of facts.events) {
     if (event.type !== 'request/header') continue
-    if (event.retention !== 'included' || record(event.data) === undefined) return undefined
-    latest = event.data
+    const header = event.retention === 'included' ? record(event.data) : undefined
+    // The parent model's effective request must be structurally present. A
+    // partial object cannot safely stand in for the config/schema it saw.
+    if (header === undefined || header.config === undefined || !Array.isArray(header.tools)
+      || (header.system !== undefined && typeof header.system !== 'string')) return undefined
+    latest = header
   }
   return latest
 }
