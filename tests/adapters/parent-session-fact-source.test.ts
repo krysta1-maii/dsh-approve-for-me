@@ -31,6 +31,7 @@ const approval: ApprovalSnapshotRecordV1 = {
 function agent(overrides: object = {}) {
   return {
     id: 'parent-1',
+    options: {},
     session: {
       id: 'parent-1',
       header: { version: 0, id: 'parent-1', createdAt: 100 },
@@ -60,6 +61,17 @@ describe('DshParentSessionFactSource', () => {
     expect(facts?.approvalSnapshots).toEqual([approval])
     expect(facts?.events).toHaveLength(4)
     expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
+  })
+
+  it('preserves runtime delegation depth so a resumed child cannot appear root', () => {
+    const requester = agent({ options: { subagentDepth: 1 } })
+    const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })
+    expect(source.snapshot(input({ agent: requester as never }))?.session).toMatchObject({
+      runtimeSubagentDepth: 1,
+      effectiveDelegationDepth: 1,
+    })
+    const invalid = agent({ options: { subagentDepth: -1 } })
+    expect(new DshParentSessionFactSource({ get: () => invalid as never }).snapshot(input({ agent: invalid as never }))).toBeUndefined()
   })
 
   it('refuses an ambiguous call or a projection bound to a different durable event', () => {

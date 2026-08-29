@@ -1,4 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import type { JsonValue } from '../domain/json.js'
 import type {
   EventRefV1,
@@ -101,7 +102,16 @@ function sessionIdentity(agent: Agent): { session: SessionLike; identity: Princi
   // Header lineage and depth are independent evidence. Never repair a
   // disagreement heuristically: either shape could be stale or forged.
   if ((parentSessionId === undefined && depth !== 0) || (parentSessionId !== undefined && depth === 0)) return undefined
-  const effectiveDelegationDepth = depth
+  const runtimeDepth = (agent as unknown as { readonly options?: { readonly subagentDepth?: unknown } }).options?.subagentDepth
+  const runtimeSubagentDepth = runtimeDepth === undefined ? undefined : nonNegative(runtimeDepth)
+  if (runtimeDepth !== undefined && runtimeSubagentDepth === undefined) return undefined
+  let effectiveDelegationDepth: number
+  try {
+    effectiveDelegationDepth = delegationDepthOf(agent)
+  } catch {
+    return undefined
+  }
+  if (effectiveDelegationDepth !== Math.max(depth, runtimeSubagentDepth ?? 0)) return undefined
   const cwd = session.header.cwd === undefined ? undefined : text(session.header.cwd)
   if (session.header.cwd !== undefined && cwd === undefined) return undefined
   return {
@@ -113,6 +123,7 @@ function sessionIdentity(agent: Agent): { session: SessionLike; identity: Princi
       ...cwd === undefined ? {} : { cwd },
       ...parentSessionId === undefined ? {} : { parentSessionId },
       ...session.header.delegationDepth === undefined ? {} : { headerDelegationDepth: depth },
+      ...runtimeSubagentDepth === undefined ? {} : { runtimeSubagentDepth },
       effectiveDelegationDepth,
     }),
   }
