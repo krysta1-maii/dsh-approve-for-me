@@ -15,7 +15,7 @@ DSH 内部有 20+ 处按模块名解析 `@deepseek-ai/dsh-user-approval`（含 `
 | 变更 | 位置 | 说明 |
 |---|---|---|
 | `requestId` | `ApprovalRequestEvent` | `ApprovalService.request()` 把已生成的 ask id 传给机器策略与 answerer，消除 callId+reason 启发式关联 |
-| `registerMachinePolicy()` | `ApprovalService` | `never` 之后、`approval/request` waterfall 之前的确定性机器决策槽；首个非 `'delegate'` 结果认领请求；异常 fail-closed `unavailable`；disposer 支持卸载 |
+| `registerMachinePolicy()` | `ApprovalService` | `never` 之后、`approval/request` waterfall 之前的全局独占机器决策槽；唯一 policy 的非 `'delegate'` 结果认领请求；异常 fail-closed `unavailable`；disposer 支持卸载 |
 
 未注册机器策略时行为与上游完全一致。
 

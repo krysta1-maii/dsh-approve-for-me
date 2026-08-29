@@ -4,16 +4,15 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { Config, normalizeConfig } from './config.js'
 import type { Config as ApproveForMeConfig, NormalizedConfig } from './config.js'
 import { DefaultDecisionChannel } from './application/decision-channel.js'
+import { GateFailure } from './application/gate-failure.js'
 import { DefaultReviewCoordinator } from './application/review-coordinator.js'
 import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
-import { createApprovalAnswerer } from './dsh/approval-answerer.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
-import { createDelegatingGate } from './application/delegating-gate.js'
 import { DefaultGatePipeline } from './application/gate-pipeline.js'
 import type { GatePreReview } from './application/gate-pipeline.js'
 import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
@@ -77,8 +76,6 @@ export function installApproveForMe(
     timeoutMs: normalized.timeoutMs,
     preset: normalized.preset,
   })
-  const answerer = createApprovalAnswerer({ coordinator, captures, mode: normalized.mode })
-
   const classifier = createToolApprovalClassifier(normalized.toolCatalog)
   const trustEnvelope = createTrustEnvelopeEvaluator(normalized.trustEnvelope)
   const breaker = new InMemoryExactDenialBreaker()
@@ -92,7 +89,7 @@ export function installApproveForMe(
   const preReview: GatePreReview = {
     async preReview(input) {
       const authority = factStore.authorityFor(input.parentSessionId) as ParentAuthority<Agent, string> | undefined
-      if (authority === undefined) throw new Error('no live parent authority for pre-review')
+      if (authority === undefined) throw new GateFailure('integrity', 'no live parent authority for pre-review')
       const pre = new DefaultPreReviewCoordinator<Agent, string>(coordinator, seals)
       return pre.preReview({
         authority,
@@ -121,24 +118,25 @@ export function installApproveForMe(
     mode: normalized.mode,
   })
 
-  // With no frozen tool catalog the plugin keeps the transitional delegating
-  // gate so existing answerer behavior is unchanged; a configured catalog
-  // activates the real machine-policy pipeline.
-  const gate: GateMachinePolicyV1 = normalized.toolCatalog.descriptors.length > 0
-    ? { id: 'dsh-approve-for-me/v1', decide: request => pipeline.decide(request) }
-    : createDelegatingGate()
+  // Every AFM decision uses the single machine-policy path. An empty catalog
+  // is a non-authorizing pipeline state, never a reason to restore a legacy
+  // approval/request answerer.
+  const gate: GateMachinePolicyV1 = { id: 'dsh-approve-for-me/v1', decide: request => pipeline.decide(request) }
 
   const machinePolicy = createMachinePolicyAdapter({
     gate,
     mode: normalized.mode,
     resolveActionHash: ({ agent, callId, toolName }) => {
       if (callId === undefined) {
-        throw new Error('cannot resolve action hash for an approval ask without a tool call id')
+        throw new GateFailure('integrity', 'cannot resolve action hash for an approval ask without a tool call id')
       }
-      const parentSessionId = String(agent.id)
+      const parentSessionId = String(agent.session?.id ?? '')
+      if (parentSessionId.length === 0) {
+        throw new GateFailure('integrity', 'cannot resolve action hash without an exact parent Session')
+      }
       const captured = captures.lookup(agent, callId, toolName)
       if (captured === undefined) {
-        throw new Error(`cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
+        throw new GateFailure('integrity', `cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)
       }
       const descriptor = normalized.toolCatalog.descriptors.find(item => item.toolName === toolName)
       const toolSchemaFingerprint = descriptor?.toolSchemaFingerprint ?? ''
@@ -176,23 +174,21 @@ export function installApproveForMe(
   const approvalService = ctx as unknown as {
     approval?: { registerMachinePolicy?: (policy: PatchedMachineApprovalPolicyLike) => () => void }
   }
-  if (normalized.toolCatalog.descriptors.length > 0 && approvalService.approval?.registerMachinePolicy === undefined) {
+  if (approvalService.approval?.registerMachinePolicy === undefined) {
     throw new Error(
-      'toolCatalog is configured but the patched @deepseek-ai/dsh-user-approval fork '
-      + '(registerMachinePolicy) is not installed; refusing to silently run without machine policy',
+      'the patched @deepseek-ai/dsh-user-approval fork (registerMachinePolicy) is not installed; '
+      + 'refusing to mount a second approval/request authorization path',
     )
   }
-  const stopMachinePolicy = approvalService.approval?.registerMachinePolicy?.(machinePolicy)
+  const stopMachinePolicy = approvalService.approval.registerMachinePolicy(machinePolicy)
 
   const stopPreExecute = ctx.on('tools/pre-execute', bridge.preExecute, { prepend: true })
   const stopResult = ctx.on('tools/result', bridge.observeResult)
-  const stopAnswerer = ctx.on('approval/request', answerer, { prepend: true })
 
   return {
     config: normalized,
     async dispose(): Promise<void> {
-      stopMachinePolicy?.()
-      stopAnswerer()
+      stopMachinePolicy()
       stopResult()
       stopPreExecute()
       await lanes.drain()

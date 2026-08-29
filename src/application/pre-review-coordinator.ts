@@ -11,6 +11,7 @@ import type {
 } from '../approval-gate/sealed-decision.js'
 import type { ParentAuthority } from '../ports/managed-reviewer.js'
 import type { ReviewCoordinator } from './review-coordinator.js'
+import { GateFailure } from './gate-failure.js'
 
 export interface PreReviewInput<Parent, SessionId extends string> {
   readonly authority: ParentAuthority<Parent, SessionId>
@@ -66,7 +67,7 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
       || decision.actionHash !== actionHash
       || decision.generation !== input.generation
     ) {
-      throw new Error('Guardian decision identity does not match the pre-review request')
+      throw new GateFailure('integrity', 'Guardian decision identity does not match the pre-review request')
     }
     const disposition: SealedDispositionV1 = Object.freeze({
       version: 1,

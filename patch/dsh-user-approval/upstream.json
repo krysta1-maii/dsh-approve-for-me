@@ -3,10 +3,10 @@
   "upstreamVersion": "0.1.2-alpha.1",
   "upstreamTag": "dsh-v0.1.2-alpha.1",
   "upstreamCommit": "cd5ef8148158c3a752a658978873241fdf8e2bbc",
-  "patchVersion": 1,
+  "patchVersion": 2,
   "changes": [
     "ApprovalRequestEvent.requestId: service-issued ask id reaches answerers and machine policies",
-    "ApprovalService.registerMachinePolicy(): deterministic machine-policy slot after the session never check and before the approval/request waterfall"
+    "ApprovalService.registerMachinePolicy(): globally exclusive machine-policy slot after the session never check and before the approval/request waterfall"
   ],
   "forkMarker": "dshApprovalPatch"
 }

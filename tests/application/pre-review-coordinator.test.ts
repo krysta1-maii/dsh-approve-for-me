@@ -82,7 +82,10 @@ describe('DefaultPreReviewCoordinator', () => {
       reviewReturning(decision({ generation: 'generation-other' })),
       seals,
     )
-    await expect(coordinator.preReview(input())).rejects.toThrow(/identity does not match/)
+    await expect(coordinator.preReview(input())).rejects.toMatchObject({
+      name: 'GateFailure',
+      code: 'integrity',
+    })
     expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) }).kind).toBe('missing')
   })
 

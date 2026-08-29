@@ -159,8 +159,8 @@ export class ApprovalService extends Service {
     policy: z.union(['ask', 'never'] as const).default('ask'),
   })
 
-  /** Machine policies in registration order; the first non-delegate result claims the request. */
-  private readonly machinePolicies: { id: string; policy: MachineApprovalPolicy }[] = []
+  /** The sole machine policy; the slot is intentionally globally exclusive. */
+  private machinePolicy: { id: string; policy: MachineApprovalPolicy } | undefined
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'approval')
@@ -187,23 +187,22 @@ export class ApprovalService extends Service {
   /**
    * Register a deterministic machine policy consulted after the session
    * `never` check and BEFORE every interactive `approval/request` listener,
-   * so waterfall ordering can never preempt a machine decision. Policies run
-   * in registration order; the first result other than `'delegate'` claims
-   * the request. `'delegate'` continues to the next policy and then the
-   * interactive waterfall. A throwing policy fails the request closed with
-   * `'unavailable'`. Duplicate policy ids are rejected.
-   * @param policy - the machine policy contribution.
-   * @returns the exact disposer that unregisters the policy.
+   * so waterfall ordering can never preempt a machine decision. This is one
+   * globally exclusive slot: accepting ordered third-party policies would make
+   * authorization depend on plugin registration order. `'delegate'` continues
+   * only to the interactive waterfall. A throwing policy fails the request
+   * closed with `'unavailable'`.
+   * @param policy - the sole machine policy contribution.
+   * @returns the exact disposer that unregisters this policy.
    */
   registerMachinePolicy(policy: MachineApprovalPolicy): () => void {
-    if (this.machinePolicies.some(entry => entry.id === policy.id)) {
-      throw new Error(`duplicate machine approval policy id "${policy.id}"`)
+    if (this.machinePolicy !== undefined) {
+      throw new Error(`machine approval policy slot is already owned by "${this.machinePolicy.id}"`)
     }
     const entry = { id: policy.id, policy }
-    this.machinePolicies.push(entry)
+    this.machinePolicy = entry
     return () => {
-      const index = this.machinePolicies.indexOf(entry)
-      if (index >= 0) this.machinePolicies.splice(index, 1)
+      if (this.machinePolicy === entry) this.machinePolicy = undefined
     }
   }
 
@@ -310,10 +309,10 @@ export class ApprovalService extends Service {
     // escape the containment into the caller.
     const answer: Promise<ApprovalOutcome> = Promise.resolve().then(
       async () => {
-        for (const entry of this.machinePolicies) {
+        const entry = this.machinePolicy
+        if (entry !== undefined) {
           const decision: MachineApprovalDecision = await entry.policy.decide(req)
-          if (decision === 'delegate') continue
-          return OUTCOMES.includes(decision) ? decision : 'unavailable'
+          if (decision !== 'delegate') return OUTCOMES.includes(decision) ? decision : 'unavailable'
         }
         return this.ctx.waterfall(
           scopeTarget(req.agent, req.agent), 'approval/request', req,

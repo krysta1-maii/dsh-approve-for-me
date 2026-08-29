@@ -11,7 +11,7 @@ import {
 } from '../../src/index.js'
 import type { Config } from '../../src/index.js'
 
-type CtxEvent = 'tools/pre-execute' | 'tools/result' | 'approval/request'
+type CtxEvent = 'tools/pre-execute' | 'tools/result'
 
 const config: Config = {
   reviewer: {
@@ -56,7 +56,6 @@ interface InstallHarness {
   listeners: {
     preExecute: ((exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     result: ((exec: unknown, result: unknown) => unknown) | undefined
-    answerer: ((request: { agent: { id: string }; toolName: string; callId?: string; reason?: string; signal?: AbortSignal }, next: () => Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>) => Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>) | undefined
   }
   disposeRegistration: ReturnType<typeof vi.fn>
 }
@@ -65,7 +64,6 @@ function harness(): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
     result: undefined,
-    answerer: undefined,
   }
   const composition: InstallHarness['composition'] = {
     suppressions: 0,
@@ -168,7 +166,6 @@ function harness(): InstallHarness {
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
-      if (event === 'approval/request') listeners.answerer = listener as InstallHarness['listeners']['answerer']
       return () => {}
     },
     effect(setup: () => (() => void | Promise<void>)) { return setup() },
@@ -187,14 +184,13 @@ function harness(): InstallHarness {
 }
 
 describe('installApproveForMe composition root', () => {
-  it('registers the managed Reviewer, captures the complete action, and accepts its scoped result', async () => {
+  it('registers the managed Reviewer and retains capture hooks without an approval/request listener', async () => {
     const h = harness()
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)
     expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
 
-    // Complete action capture on pre-execute; the fake child submits during
-    // deliver, so the answerer must return the automatic grant. The capture
-    // store keys by EXACT Agent identity, so every phase reuses one object.
+    // Complete action capture remains available to the sole machine-policy path.
+    // No legacy approval/request listener is registered.
     const parent = { id: 'parent-1', session: { id: 'parent-1' } }
     await h.listeners.preExecute!({
       agent: parent,
@@ -202,30 +198,20 @@ describe('installApproveForMe composition root', () => {
       name: 'bash',
       arguments: { command: 'pwd' },
     }, async () => ({ kind: 'ask' }))
-    await expect(h.listeners.answerer!({
-      agent: parent,
-      toolName: 'bash',
-      callId: 'call-1',
-    }, async () => 'rejected')).resolves.toBe('allowed-once')
+    const policy = h.machinePolicy as { decide(request: { agent: typeof parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+    await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
 
-    // The create-time setup composed the complete locked-down Reviewer scope.
+    // A non-authorizing empty catalog must not materialize a Reviewer.
     expect(h.composition).toEqual({
-      suppressions: 1,
-      restrictions: 1,
-      approvalNever: 1,
-      sandboxReadOnly: 1,
-      resultObservers: 1,
+      suppressions: 0,
+      restrictions: 0,
+      approvalNever: 0,
+      sandboxReadOnly: 0,
+      resultObservers: 0,
     })
-    expect(h.childTool?.name).toBe(SUBMIT_DECISION_TOOL)
+    expect(h.childTool).toBeUndefined()
 
-    // Release happens on tools/result: the next approval for the same call
-    // must fail closed.
     h.listeners.result!({ agent: parent, callId: 'call-1' }, {})
-    await expect(h.listeners.answerer!({
-      agent: parent,
-      toolName: 'bash',
-      callId: 'call-1',
-    }, async () => 'rejected')).resolves.toBe('unavailable')
 
     await plugin.dispose()
     expect(h.disposeRegistration).toHaveBeenCalledOnce()
@@ -297,46 +283,37 @@ describe('installApproveForMe composition root', () => {
       name: 'bash',
       arguments: { command: 'pwd' },
     }, async () => ({ kind: 'ask' }))
-    // The transitional gate declines so the existing waterfall answerer still
-    // owns authorization until P2.
+    // Empty catalog is non-authorizing and does not restore a waterfall listener.
     await expect(policy.decide({
       agent: parent,
       toolName: 'bash',
       callId: 'call-1',
       requestId: 'ask-1',
-    })).resolves.toBe('delegate')
+    })).resolves.toBe('unavailable')
 
     await plugin.dispose()
     expect(h.disposeMachinePolicy).toHaveBeenCalledOnce()
   })
 
-  it('delegates to the downstream answerer in auto-then-user mode when capture is missing', async () => {
+  it('keeps missing capture closed even in auto-then-user mode', async () => {
     const h = harness()
     const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, mode: 'auto-then-user' })
-    const next = vi.fn(async () => 'rejected' as const)
-    await expect(h.listeners.answerer!({
-      agent: { id: 'parent-1' },
+    const policy = h.machinePolicy as { decide(request: { agent: { id: string; session: { id: string } }; toolName: string; callId: string; requestId: string }): Promise<string> }
+    await expect(policy.decide({
+      agent: { id: 'agent-1', session: { id: 'parent-1' } },
       toolName: 'bash',
       callId: 'missing',
-    }, next)).resolves.toBe('rejected')
-    expect(next).toHaveBeenCalledOnce()
+      requestId: 'ask-1',
+    })).resolves.toBe('unavailable')
     await plugin.dispose()
   })
 
-  it('prepends capture and answerer so policy watchers see the action first', () => {
-    const calls: string[] = []
-    const ctx = {
-      managedAgents: { registerProvider: () => ({ controller: { create: async () => SessionId('r'), list: async () => [], rotate: async () => SessionId('r'), deliver: async () => MessageId('m'), interrupt: () => {} }, dispose: async () => {} }) },
-      on(event: string, _listener: unknown, options?: { prepend?: boolean }) {
-        calls.push(`${event}:${String(options?.prepend ?? false)}`)
-        return () => {}
-      },
-      effect(setup: () => (() => void | Promise<void>)) { return setup() },
-    }
-    installApproveForMe(ctx as unknown as Context, config)
-    expect(calls).toContain('tools/pre-execute:true')
-    expect(calls).toContain('approval/request:true')
-    expect(calls).toContain('tools/result:false')
+  it('prepends capture but never registers an approval/request listener', () => {
+    const h = harness()
+    installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.listeners.preExecute).toBeTypeOf('function')
+    expect(h.listeners.result).toBeTypeOf('function')
+    expect(Object.hasOwn(h.listeners, 'answerer')).toBe(false)
   })
 
   it('disposes the old registration and can be remounted after unload', async () => {

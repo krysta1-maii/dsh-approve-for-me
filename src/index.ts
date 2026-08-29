@@ -213,8 +213,6 @@ export {
   createDefaultActionProjector,
 } from './dsh/action-capture.js'
 export type { CaptureBridge } from './dsh/action-capture.js'
-export { createApprovalAnswerer } from './dsh/approval-answerer.js'
-export type { ApprovalAnswerer, ApprovalAnswererOptions } from './dsh/approval-answerer.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export type {
   MachinePolicyAdapterOptions,
@@ -223,7 +221,8 @@ export type {
 } from './dsh/machine-policy-adapter.js'
 
 // Application gate pieces (DSH-neutral).
-export { createDelegatingGate } from './application/delegating-gate.js'
+export { GateFailure, gateFailureOutcome } from './application/gate-failure.js'
+export type { GateFailureCode } from './application/gate-failure.js'
 export {
   InMemoryAllowCache,
   InMemoryExactDenialBreaker,

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createDelegatingGate, createMachinePolicyAdapter } from '../../src/index.js'
+import { GateFailure, createMachinePolicyAdapter } from '../../src/index.js'
 import type { GateMachinePolicyV1, GateMachineRequestV1 } from '../../src/approval-gate/machine-policy.js'
 
 function fakeAgent(id = 'parent-1'): Agent {
-  return { id: SessionId(id) } as unknown as Agent
+  return { id: SessionId(`agent-${id}`), session: { id: SessionId(id) } } as unknown as Agent
 }
 
 function gateRecording() {
@@ -52,7 +52,7 @@ describe('createMachinePolicyAdapter', () => {
     expect(decisions[0]!.signal).toBeInstanceOf(AbortSignal)
   })
 
-  it('passes undefined optional fields without inventing identities', async () => {
+  it('fails closed without requestId or callId before invoking the gate', async () => {
     const { gate, decisions } = gateRecording()
     const adapter = createMachinePolicyAdapter({
       gate,
@@ -60,21 +60,9 @@ describe('createMachinePolicyAdapter', () => {
       resolveActionHash: () => `sha256:${'b'.repeat(64)}`,
     })
 
-    await adapter.decide({
-      agent: fakeAgent(),
-      toolName: 'read',
-    })
-
-    expect(decisions[0]).toMatchObject({
-      parentSessionId: 'parent-1',
-      toolName: 'read',
-      actionHash: `sha256:${'b'.repeat(64)}`,
-      mode: 'auto-then-user',
-    })
-    expect(decisions[0]!.requestId).toBeUndefined()
-    expect(decisions[0]!.callId).toBeUndefined()
-    expect(decisions[0]!.reason).toBeUndefined()
-    expect(decisions[0]!.signal).toBeUndefined()
+    await expect(adapter.decide({ agent: fakeAgent(), toolName: 'read', callId: 'call-1' })).resolves.toBe('unavailable')
+    await expect(adapter.decide({ agent: fakeAgent(), toolName: 'read', requestId: 'ask-1' })).resolves.toBe('unavailable')
+    expect(decisions).toEqual([])
   })
 
   it('lets the gate outcome pass through as the machine-policy answer', async () => {
@@ -93,39 +81,39 @@ describe('createMachinePolicyAdapter', () => {
     await expect(adapter.decide({
       agent: fakeAgent(),
       toolName: 'bash',
+      requestId: 'ask-1',
       callId: 'call-1',
     })).resolves.toBe('allowed-once')
   })
 
-  it('fails closed when the action hash cannot be resolved', async () => {
-    const adapter = createMachinePolicyAdapter({
-      gate: createDelegatingGate(),
-      mode: 'auto',
-      resolveActionHash: () => '',
+  it('maps unresolved and integrity action failures closed', async () => {
+    const { gate } = gateRecording()
+    const empty = createMachinePolicyAdapter({ gate, mode: 'auto', resolveActionHash: () => '' })
+    await expect(empty.decide({ agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1' })).resolves.toBe('unavailable')
+    const integrity = createMachinePolicyAdapter({
+      gate,
+      mode: 'auto-then-user',
+      resolveActionHash: () => { throw new GateFailure('integrity', 'capture conflicted') },
     })
-
-    await expect(adapter.decide({
-      agent: fakeAgent(),
-      toolName: 'bash',
-      callId: 'call-1',
-    })).rejects.toThrow(/could not resolve an action hash/)
+    await expect(integrity.decide({ agent: fakeAgent(), toolName: 'bash', requestId: 'ask-2', callId: 'call-2' })).resolves.toBe('unavailable')
   })
 
-  it('exposes the stable machine-policy id', () => {
-    expect(createMachinePolicyAdapter({
-      gate: createDelegatingGate(),
-      mode: 'auto',
-      resolveActionHash: () => `sha256:${'d'.repeat(64)}`,
-    }).id).toBe('dsh-approve-for-me/v1')
+  it('delegates only explicit retryable failures in auto-then-user mode', async () => {
+    const { gate } = gateRecording()
+    const retryable = () => { throw new GateFailure('retryable-capability', 'reviewer unavailable') }
+    const auto = createMachinePolicyAdapter({ gate, mode: 'auto', resolveActionHash: retryable })
+    const user = createMachinePolicyAdapter({ gate, mode: 'auto-then-user', resolveActionHash: retryable })
+    const ask = { agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1' }
+    await expect(auto.decide(ask)).resolves.toBe('unavailable')
+    await expect(user.decide(ask)).resolves.toBe('delegate')
   })
 
-  it('uses the transitional gate while P2 is not installed', async () => {
-    const gate = createDelegatingGate()
-    await expect(gate.decide({
-      parentSessionId: 'parent-1',
-      toolName: 'bash',
-      actionHash: `sha256:${'e'.repeat(64)}`,
-      mode: 'auto',
-    })).resolves.toBe('delegate')
+  it('cancels an already aborted request and exposes a stable id', async () => {
+    const { gate } = gateRecording()
+    const adapter = createMachinePolicyAdapter({ gate, mode: 'auto', resolveActionHash: () => `sha256:${'d'.repeat(64)}` })
+    const abort = new AbortController()
+    abort.abort()
+    await expect(adapter.decide({ agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1', signal: abort.signal })).resolves.toBe('cancelled')
+    expect(adapter.id).toBe('dsh-approve-for-me/v1')
   })
 })

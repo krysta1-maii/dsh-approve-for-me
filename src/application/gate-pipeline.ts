@@ -19,6 +19,7 @@ import type {
   TrustEnvelopeEvaluatorV1,
   TrustEnvelopeInputV1,
 } from '../approval-gate/trust-envelope.js'
+import { gateFailureOutcome } from './gate-failure.js'
 
 /**
  * Resolved facts that the DSH adapter/application layer must supply before the
@@ -135,19 +136,31 @@ export class DefaultGatePipeline implements GatePipeline {
   constructor(private readonly deps: GatePipelineDependencies) {}
 
   async decide(request: GateMachineRequestV1): Promise<GateMachineDecisionV1> {
-    if (request.callId === undefined) return this.delegateOrUnavailable()
+    if (request.signal?.aborted) return 'cancelled'
+    if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
+    try {
+      return await this.decideVerified(request)
+    } catch (error: unknown) {
+      return gateFailureOutcome(error, this.deps.mode)
+    }
+  }
+
+  private async decideVerified(request: GateMachineRequestV1): Promise<GateMachineDecisionV1> {
+    const requestId = request.requestId
+    const callId = request.callId
+    if (requestId === undefined || callId === undefined) return 'unavailable'
     const facts = await this.deps.facts.resolve(request)
-    if (facts === undefined) return this.delegateOrUnavailable()
+    if (facts === undefined) return 'unavailable'
     if (facts.directChildOrigin || !facts.rootRequester) return 'unavailable'
 
     const classification = facts.classification
     if (classification.kind === 'catalog-mismatch') return 'unavailable'
-    if (classification.kind === 'unclassified') return this.delegateOrUnavailable()
+    if (classification.kind === 'unclassified') return 'unavailable'
 
     if (this.deps.breaker.lookup(facts.breakerKey)) return 'rejected'
 
     if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
-      const record = recordFor(request, facts, 'allow', request.requestId ?? 'trust-envelope')
+      const record = recordFor(request, facts, 'allow', requestId)
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'confirmed') {
         this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
@@ -159,24 +172,24 @@ export class DefaultGatePipeline implements GatePipeline {
 
     if (this.deps.allowCache.lookup(facts.allowCacheKey)) return 'allowed-once'
 
-    if (request.requestId !== undefined && request.callId !== undefined) {
-      const replay = this.deps.seals.lookup(request.requestId, request.callId, request.actionHash)
+    {
+      const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
         const now = this.deps.now?.() ?? Date.now()
         if (!replay.disposition.replayable || replay.disposition.deadlineAt < now) return 'unavailable'
         // A sealed outcome is a single-use replay for an ask identity. Consuming
         // here closes the infinite-replay hole; if another path raced us, the
         // registry reports consumed and the gate fails closed.
-        if (!this.deps.seals.consume(request.requestId, request.callId)) return 'unavailable'
+        if (!this.deps.seals.consume(requestId, callId)) return 'unavailable'
         return this.mapDisposition(replay.disposition.disposition)
       }
       if (replay.kind === 'consumed' || replay.kind === 'mismatch') return 'unavailable'
     }
 
     const sealed = await this.deps.preReview.preReview({
-      requestId: request.requestId ?? '',
+      requestId,
       parentSessionId: request.parentSessionId,
-      callId: request.callId,
+      callId,
       action: facts.action,
       ...request.reason === undefined ? {} : { reason: request.reason },
       ...request.signal === undefined ? {} : { signal: request.signal },

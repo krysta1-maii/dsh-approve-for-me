@@ -1,5 +1,5 @@
 /**
- * A pre-review decision that the approval/request answerer may only replay.
+ * A pre-review decision that the sole machine-policy gate may only replay.
  * Sealing binds the decision to the exact ask identity and action hash, so a
  * late, duplicated, or mismatched request cannot consume another review's
  * outcome.

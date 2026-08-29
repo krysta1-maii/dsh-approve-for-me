@@ -1,6 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { GateMachinePolicyV1, GateMachineRequestV1 } from '../approval-gate/machine-policy.js'
+import { gateFailureOutcome } from '../application/gate-failure.js'
 import type { ReviewMode } from '../domain/protocol.js'
 
 /**
@@ -56,28 +57,35 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
   return Object.freeze({
     id: 'dsh-approve-for-me/v1',
     async decide(request: PatchedApprovalRequestLike): Promise<ApprovalOutcome | 'delegate'> {
-      const parentSessionId = String(request.agent.id)
-      const callId = request.callId === undefined ? undefined : String(request.callId)
-      const actionHash = options.resolveActionHash({
-        agent: request.agent,
-        parentSessionId,
-        ...callId === undefined ? {} : { callId },
-        toolName: request.toolName,
-      })
-      if (actionHash.length === 0) {
-        throw new Error('machine policy adapter could not resolve an action hash for the approval ask')
+      if (request.signal?.aborted) return 'cancelled'
+      // requestId and callId are mandatory links to durable approval and tool
+      // history. Their absence is not a recoverable reason to ask a human.
+      if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
+      const parentSessionId = String(request.agent.session?.id ?? '')
+      if (parentSessionId.length === 0) return 'unavailable'
+      const callId = String(request.callId)
+      try {
+        const actionHash = options.resolveActionHash({
+          agent: request.agent,
+          parentSessionId,
+          callId,
+          toolName: request.toolName,
+        })
+        if (actionHash.length === 0) return 'unavailable'
+        const gateRequest: GateMachineRequestV1 = {
+          requestId: request.requestId,
+          parentSessionId,
+          callId,
+          toolName: request.toolName,
+          ...request.reason === undefined ? {} : { reason: request.reason },
+          actionHash,
+          mode: options.mode,
+          ...request.signal === undefined ? {} : { signal: request.signal },
+        }
+        return await options.gate.decide(gateRequest)
+      } catch (error: unknown) {
+        return gateFailureOutcome(error, options.mode)
       }
-      const gateRequest: GateMachineRequestV1 = {
-        ...request.requestId === undefined ? {} : { requestId: request.requestId },
-        parentSessionId,
-        ...callId === undefined ? {} : { callId },
-        toolName: request.toolName,
-        ...request.reason === undefined ? {} : { reason: request.reason },
-        actionHash,
-        mode: options.mode,
-        ...request.signal === undefined ? {} : { signal: request.signal },
-      }
-      return await options.gate.decide(gateRequest)
     },
   })
 }

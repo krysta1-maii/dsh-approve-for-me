@@ -11,7 +11,6 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type {
   ManagedAgentComposition,
   ManagedAgentController,
@@ -20,14 +19,12 @@ import type {
   ManagedProviderRegistration,
 } from 'dsh-managed-agent'
 import {
-  createApprovalAnswerer,
   createDecisionTool,
   createReviewerPolicyV1,
   createReviewerProvider,
   createReviewerProviderData,
   snapshotJson,
 } from '../../src/index.js'
-import type { ApprovalDecision } from '../../src/index.js'
 
 describe('real guarded-continuable contract fixture', () => {
   it('exposes ctx.managedAgents instead of augmenting stock SubagentRuntime', () => {
@@ -81,20 +78,6 @@ describe('real guarded-continuable contract fixture', () => {
     } satisfies ToolRunContext
     const value = await definition.execute({}, exec)
     expect(value).toEqual({ recorded: true })
-  })
-
-  it('lets the answerer satisfy the real approval/request listener shape', () => {
-    const answerer = createApprovalAnswerer({
-      coordinator: { review: vi.fn(async () => ({ decision: 'deny' }) as ApprovalDecision) },
-      captures: { remember: () => {}, lookup: () => undefined, release: () => false },
-      mode: 'auto',
-    })
-    // Exact DSH waterfall listener signature: (req, next) => Promise<ApprovalOutcome>.
-    const handler = answerer as (
-      req: ApprovalRequest,
-      next: () => Promise<ApprovalOutcome>,
-    ) => Promise<ApprovalOutcome>
-    expect(typeof handler).toBe('function')
   })
 
   it('keeps the policy content in the real ContentBlock vocabulary', () => {

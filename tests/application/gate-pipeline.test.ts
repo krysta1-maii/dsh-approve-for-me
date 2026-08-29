@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DefaultGatePipeline,
+  GateFailure,
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
 } from '../../src/index.js'
@@ -120,11 +121,15 @@ function makePipeline(overrides: {
 }
 
 describe('DefaultGatePipeline', () => {
-  it('fails closed / delegates when callId is missing', async () => {
+  it('fails closed in every mode when requestId or callId is missing', async () => {
     const auto = makePipeline()
     await expect(auto.pipeline.decide(request('auto', false))).resolves.toBe('unavailable')
     const user = makePipeline({ mode: 'auto-then-user' })
-    await expect(user.pipeline.decide(request('auto-then-user', false))).resolves.toBe('delegate')
+    await expect(user.pipeline.decide(request('auto-then-user', false))).resolves.toBe('unavailable')
+    const withoutRequestId = request('auto-then-user') as { requestId?: string } & Omit<GateMachineRequestV1, 'requestId'>
+    delete withoutRequestId.requestId
+    await expect(user.pipeline.decide(withoutRequestId)).resolves.toBe('unavailable')
+    expect(user.factsResolver.resolve).not.toHaveBeenCalled()
   })
 
   it('never delegates on direct child origin or missing root requester', async () => {
@@ -218,5 +223,24 @@ describe('DefaultGatePipeline', () => {
       mode: 'auto-then-user',
     })
     await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+  })
+
+  it('delegates only explicit retryable pre-review failures', async () => {
+    const retryable = { preReview: vi.fn(async () => { throw new GateFailure('retryable-capability', 'reviewer temporarily unavailable') }) }
+    const auto = makePipeline({ preReview: retryable, mode: 'auto' })
+    await expect(auto.pipeline.decide(request())).resolves.toBe('unavailable')
+    const user = makePipeline({ preReview: retryable, mode: 'auto-then-user' })
+    await expect(user.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+  })
+
+  it('keeps integrity failures and aborts out of the human waterfall', async () => {
+    const integrity = makePipeline({
+      mode: 'auto-then-user',
+      preReview: { preReview: vi.fn(async () => { throw new GateFailure('integrity', 'dossier mismatch') }) },
+    })
+    await expect(integrity.pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+    const abort = new AbortController()
+    abort.abort()
+    await expect(integrity.pipeline.decide({ ...request('auto-then-user'), signal: abort.signal })).resolves.toBe('cancelled')
   })
 })

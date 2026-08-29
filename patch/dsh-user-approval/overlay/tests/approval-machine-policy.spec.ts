@@ -74,7 +74,7 @@ describe('ApprovalService.registerMachinePolicy', () => {
     expect(consulted).not.toHaveBeenCalled()
   })
 
-  it('delegates to the next machine policy and then the interactive waterfall', async () => {
+  it('delegates from the sole machine policy to the interactive waterfall', async () => {
     const ctx = await mounted()
     const { agent } = fakeAgent()
     const order: string[] = []
@@ -82,45 +82,23 @@ describe('ApprovalService.registerMachinePolicy', () => {
       order.push('listener')
       return Promise.resolve<ApprovalOutcome>('allowed-once')
     }, { prepend: true })
-    ctx.approval.registerMachinePolicy(policy('afm/first', async () => {
-      order.push('first')
-      return 'delegate'
-    }))
-    ctx.approval.registerMachinePolicy(policy('afm/second', async () => {
-      order.push('second')
+    ctx.approval.registerMachinePolicy(policy('afm/sole', async () => {
+      order.push('machine')
       return 'delegate'
     }))
 
     const outcome = await ctx.approval.request(requestOf(agent))
 
     expect(outcome).toBe('allowed-once')
-    expect(order).toEqual(['first', 'second', 'listener'])
+    expect(order).toEqual(['machine', 'listener'])
   })
 
-  it('claims with the first non-delegate result in registration order', async () => {
-    const ctx = await mounted()
-    const { agent } = fakeAgent()
-    const order: string[] = []
-    ctx.approval.registerMachinePolicy(policy('afm/first', async () => {
-      order.push('first')
-      return 'allowed-once'
-    }))
-    const second = vi.fn(async () => 'rejected' as const)
-    ctx.approval.registerMachinePolicy(policy('afm/second', second))
-
-    const outcome = await ctx.approval.request(requestOf(agent))
-
-    expect(outcome).toBe('allowed-once')
-    expect(order).toEqual(['first'])
-    expect(second).not.toHaveBeenCalled()
-  })
-
-  it('rejects duplicate ids and removes an entry through its disposer', async () => {
+  it('rejects any second policy and removes the owner through its disposer', async () => {
     const ctx = await mounted()
     const { agent } = fakeAgent()
     const dispose = ctx.approval.registerMachinePolicy(policy('afm/v1', async () => 'rejected'))
 
-    expect(() => ctx.approval.registerMachinePolicy(policy('afm/v1', async () => 'allowed-once'))).toThrow(/duplicate machine approval policy id/)
+    expect(() => ctx.approval.registerMachinePolicy(policy('another-policy', async () => 'allowed-once'))).toThrow(/slot is already owned/)
     dispose()
     const outcome = await ctx.approval.request(requestOf(agent))
     expect(outcome).toBe('unavailable')

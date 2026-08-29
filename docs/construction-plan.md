@@ -65,10 +65,11 @@ stock DSH 0.1.2-alpha.1（不修改）
 ### P1：机器决策槽接入
 
 - `src/approval-gate/machine-policy.ts` 的 DSH adapter：把 patched `MachineApprovalPolicy` 映射到应用端口；
-- `apply()` 注册 `registerMachinePolicy()`，disposer 归 Cordis effect；
-- `approval-answerer` 迁移为 machine policy 内的映射器（allow/deny/delegate），不再作为安全边界。
+- `apply()` 只注册 `registerMachinePolicy()`，disposer 归 Cordis effect；删除 AFM 的 `approval/request` answerer 和 transitional delegating gate；
+- fork 把 machine policy 实现为全局独占槽，任意第二个注册失败；`delegate` 只进入官方人工 waterfall；
+- 缺 requestId/callId、缺捕获、身份/完整性冲突均 `unavailable`；只有显式 retryable capability failure 可在 `auto-then-user` 中 `delegate`。
 
-退出条件：机器决策先于任何 prepend answerer；`never` 优先；duplicate id 拒绝；异常 fail-closed。
+退出条件：唯一机器决策先于 interactive waterfall；`never` 优先；任意第二 policy 拒绝；异常及完整性缺失 fail-closed。
 
 ### P2：裁决管线产品化
 
