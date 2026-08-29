@@ -247,7 +247,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       && item.request.toolName === facts.approvalBinding.toolName)
     if (executions.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     const execution = executions[0]!
-    if (!sameLifecycle(execution.session, facts.session)
+    if (execution.version !== 1
+      || !sameLifecycle(execution.session, facts.session)
       || execution.projection.action.toolName !== execution.request.toolName
       || execution.projection.actionHash !== hashAction(execution.projection.action)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
@@ -263,7 +264,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       item.approvalRequestId === facts.approvalBinding.approvalRequestId)
     if (snapshots.length !== 1) return { kind: 'incomplete', reason: 'missing-required-projection' }
     const snapshot = snapshots[0]!
-    if (!sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq) {
+    if (snapshot.version !== 1 || !sameLifecycle(snapshot.session, facts.session) || snapshot.approvalAskedSeq !== facts.throughSeq) {
       return { kind: 'incomplete', reason: 'missing-required-projection' }
     }
     // v1's first complete shape deliberately accepts only a single pending
@@ -295,6 +296,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callEvent?.type !== execution.request.eventType
       || callData?.callId !== execution.request.callId
       || callData.name !== execution.request.toolName
+      || execution.projection.observedAt !== callEvent.time
       || !actionArgumentsMatchCall(execution.projection.action.arguments, callData.arguments)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }

@@ -101,7 +101,11 @@ describe('DefaultDossierCompiler', () => {
         { seq: 7, time: 8, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
         { seq: 8, time: 9, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
-      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 7 } }],
+      executionFacts: [{
+        ...base.executionFacts[0]!,
+        request: { ...base.executionFacts[0]!.request, eventSeq: 7 },
+        projection: { ...base.executionFacts[0]!.projection, observedAt: 8 },
+      }],
       approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 8 }],
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
@@ -271,6 +275,18 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: duplicateExecutionFact }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const unsupportedExecutionVersion = {
+      ...complete,
+      executionFacts: [{ ...complete.executionFacts[0]!, version: 2 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: unsupportedExecutionVersion as ParentSessionFactSnapshotV1 }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const unsupportedApprovalSnapshotVersion = {
+      ...complete,
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, version: 2 }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: unsupportedApprovalSnapshotVersion as ParentSessionFactSnapshotV1 }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
     const corruptedActionHash = {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, projection: { ...complete.executionFacts[0]!.projection, actionHash: hash('f') } }],
@@ -296,6 +312,12 @@ describe('DefaultDossierCompiler', () => {
       }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: crossArgumentsProjection }))
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
+    const mismatchedObservedAt = {
+      ...complete,
+      executionFacts: [{ ...complete.executionFacts[0]!, projection: { ...complete.executionFacts[0]!.projection, observedAt: 0 } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedObservedAt }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
     const conflictingCatalogDescriptor = {
       ...complete,
@@ -329,7 +351,11 @@ describe('DefaultDossierCompiler', () => {
         { seq: 2, time: 3, type: 'tool/call', retention: 'included' as const, data: { callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
         { seq: 3, time: 4, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
-      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 2 } }],
+      executionFacts: [{
+        ...base.executionFacts[0]!,
+        request: { ...base.executionFacts[0]!.request, eventSeq: 2 },
+        projection: { ...base.executionFacts[0]!.projection, observedAt: 3 },
+      }],
       approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 3 }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: incomplete })).toEqual({ kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' })
