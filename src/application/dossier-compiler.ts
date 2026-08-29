@@ -337,7 +337,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       return { kind: 'incomplete', reason: 'missing-current-turn' }
     }
     const pendingAttempts: { readonly request: object; readonly outcome: { readonly kind: 'pending' | 'completed' } }[] = []
-    const attemptedCallIds = new Set<string>()
+    const attemptedCallIds = new Set<string>([execution.request.callId])
     const assistantCalls: { readonly eventSeq: number; readonly callId: string; readonly toolName: string; readonly rawArguments: unknown; readonly turn: number; readonly step: number }[] = []
     for (const event of callEvents) {
       const data = event.retention === 'included' ? record(event.data) : undefined

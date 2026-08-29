@@ -222,12 +222,7 @@ describe('DefaultDossierCompiler', () => {
     }
     const readDeps = { ...deps, delegationProjector: { ...deps.delegationProjector, catalog: expandedCatalog } }
     const duplicateIdResult = new DefaultDossierCompiler(readDeps).compile({ facts: duplicateIdDifferentTool })
-    expect(duplicateIdResult.kind).toBe('ready')
-    if (duplicateIdResult.kind === 'ready') {
-      expect(duplicateIdResult.verified.dossier.currentTurnTools).toMatchObject({
-        attempts: [{ request: { callId: 'call-1', toolName: 'read', blockIndex: 0 }, outcome: { kind: 'pending' } }],
-      })
-    }
+    expect(duplicateIdResult).toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
     const invalidParentIdentity = {
