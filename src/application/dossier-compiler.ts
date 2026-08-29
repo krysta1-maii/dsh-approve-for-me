@@ -230,7 +230,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         turn,
         excludedPendingRequest: {
           callId: facts.approvalBinding.callId,
-          requestEventSeq: facts.approvalBinding.event.seq,
+          requestEventSeq: execution.request.eventSeq,
         },
         attempts: [],
       }),

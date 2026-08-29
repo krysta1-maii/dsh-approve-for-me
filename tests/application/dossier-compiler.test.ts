@@ -110,6 +110,9 @@ describe('DefaultDossierCompiler', () => {
         requestHeader: { config: { model: 'model-1' } },
         requestContext: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 },
       })
+      expect(result.verified.dossier.currentTurnTools).toMatchObject({
+        excludedPendingRequest: { callId: 'call-1', requestEventSeq: 6 },
+      })
       expect(result.metrics).toMatchObject({
         dossierVersion: 1,
         delegationClassificationCatalogFingerprint: hash('c'),
