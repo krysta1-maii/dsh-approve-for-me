@@ -4,6 +4,7 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { Config, normalizeConfig } from './config.js'
 import type { Config as ApproveForMeConfig, NormalizedConfig } from './config.js'
 import { DefaultDecisionChannel } from './application/decision-channel.js'
+import { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
 import { GateFailure } from './application/gate-failure.js'
 import { DefaultReviewCoordinator } from './application/review-coordinator.js'
 import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
@@ -98,6 +99,7 @@ export function installApproveForMe(
 ): ApproveForMePlugin {
   const normalized = normalizeConfig(config)
   const channel = new DefaultDecisionChannel()
+  const lifecycle = new ApprovalRunLifecycle()
   const captures = new DefaultActionCapture<Agent, string>()
   const bridge = createCaptureBridge(createDefaultActionProjector(options.projectPermissions), captures)
 
@@ -175,6 +177,7 @@ export function installApproveForMe(
   const machinePolicy = createMachinePolicyAdapter({
     gate,
     mode: normalized.mode,
+    lifecycle,
     resolveActionHash: ({ agent, callId, requestId, toolName }) => {
       if (callId === undefined) {
         throw new GateFailure('integrity', 'cannot resolve action hash for an approval ask without a tool call id')
@@ -236,6 +239,7 @@ export function installApproveForMe(
     config: normalized,
     async dispose(): Promise<void> {
       stopMachinePolicy()
+      await lifecycle.dispose()
       stopResult()
       stopPreExecute()
       await lanes.drain()

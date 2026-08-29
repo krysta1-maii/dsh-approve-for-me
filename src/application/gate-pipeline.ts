@@ -156,6 +156,7 @@ export class DefaultGatePipeline implements GatePipeline {
     const callId = request.callId
     if (requestId === undefined || callId === undefined) return 'unavailable'
     const facts = await this.deps.facts.resolve(request)
+    if (request.signal?.aborted) return 'cancelled'
     if (facts === undefined) return 'unavailable'
     // This precedes every trust/cache/replay route; a packet-less action can
     // never acquire an automatic authorization in the real plugin.
@@ -169,6 +170,7 @@ export class DefaultGatePipeline implements GatePipeline {
     if (this.deps.breaker.lookup(facts.breakerKey)) return 'rejected'
 
     if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
+      if (request.signal?.aborted) return 'cancelled'
       const record = recordFor(request, facts, 'allow', requestId)
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'confirmed') {
@@ -206,6 +208,7 @@ export class DefaultGatePipeline implements GatePipeline {
       generation: facts.generation,
       configurationFingerprint: facts.configurationFingerprint,
     })
+    if (request.signal?.aborted) return 'cancelled'
     const mapped = this.mapDisposition(sealed.disposition)
     const record = recordFor(request, facts, sealed.disposition, sealed.reviewRunId)
 

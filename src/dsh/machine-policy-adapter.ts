@@ -2,6 +2,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { GateMachinePolicyV1, GateMachineRequestV1 } from '../approval-gate/machine-policy.js'
 import { gateFailureOutcome } from '../application/gate-failure.js'
+import type { ApprovalRunLifecycle } from '../application/approval-run-lifecycle.js'
 import type { ReviewMode } from '../domain/protocol.js'
 
 /**
@@ -33,6 +34,8 @@ export interface PatchedMachineApprovalPolicyLike {
 export interface MachinePolicyAdapterOptions {
   readonly gate: GateMachinePolicyV1
   readonly mode: ReviewMode
+  /** Abort/drain barrier owned by the plugin lifecycle. */
+  readonly lifecycle?: ApprovalRunLifecycle
   /**
    * Resolve the domain action hash for one exact approval ask. The DSH
    * adapter supplies this from the capture/execution side; when no capture is
@@ -58,14 +61,14 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
   return Object.freeze({
     id: 'dsh-approve-for-me/v1',
     async decide(request: PatchedApprovalRequestLike): Promise<ApprovalOutcome | 'delegate'> {
-      if (request.signal?.aborted) return 'cancelled'
-      // requestId and callId are mandatory links to durable approval and tool
-      // history. Their absence is not a recoverable reason to ask a human.
-      if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
-      const parentSessionId = String(request.agent.session?.id ?? '')
-      if (parentSessionId.length === 0) return 'unavailable'
-      const callId = String(request.callId)
-      try {
+      const execute = async (signal: AbortSignal): Promise<ApprovalOutcome | 'delegate'> => {
+        if (signal.aborted) return 'cancelled'
+        // requestId and callId are mandatory links to durable approval and tool
+        // history. Their absence is not a recoverable reason to ask a human.
+        if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
+        const parentSessionId = String(request.agent.session?.id ?? '')
+        if (parentSessionId.length === 0) return 'unavailable'
+        const callId = String(request.callId)
         const actionHash = options.resolveActionHash({
           agent: request.agent,
           parentSessionId,
@@ -73,7 +76,7 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           requestId: request.requestId,
           toolName: request.toolName,
         })
-        if (actionHash.length === 0) return 'unavailable'
+        if (actionHash.length === 0 || signal.aborted) return signal.aborted ? 'cancelled' : 'unavailable'
         const gateRequest: GateMachineRequestV1 = {
           requestId: request.requestId,
           parentSessionId,
@@ -82,9 +85,14 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           ...request.reason === undefined ? {} : { reason: request.reason },
           actionHash,
           mode: options.mode,
-          ...request.signal === undefined ? {} : { signal: request.signal },
+          signal,
         }
-        return await options.gate.decide(gateRequest)
+        return options.gate.decide(gateRequest)
+      }
+      try {
+        return options.lifecycle === undefined
+          ? await execute(request.signal ?? new AbortController().signal)
+          : await options.lifecycle.run(request.signal, execute)
       } catch (error: unknown) {
         return gateFailureOutcome(error, options.mode)
       }

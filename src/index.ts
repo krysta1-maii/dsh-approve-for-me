@@ -225,6 +225,7 @@ export type {
 
 // Application gate pieces (DSH-neutral).
 export { GateFailure, gateFailureOutcome } from './application/gate-failure.js'
+export { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
 export type { GateFailureCode } from './application/gate-failure.js'
 export {
   InMemoryAllowCache,

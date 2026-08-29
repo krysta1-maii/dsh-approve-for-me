@@ -81,10 +81,10 @@ function sessionIdentity(agent: Agent): { session: SessionLike; identity: Princi
   if (session.header.parentSession !== undefined && parentSessionId === undefined) return undefined
   const depth = session.header.delegationDepth === undefined ? 0 : nonNegative(session.header.delegationDepth)
   if (depth === undefined) return undefined
-  // Header lineage and depth are independent evidence. A disagreement is not
-  // repaired heuristically: retain it as a non-principal identity so compiler
-  // callers fail closed before review.
-  const effectiveDelegationDepth = parentSessionId === undefined ? depth : Math.max(1, depth)
+  // Header lineage and depth are independent evidence. Never repair a
+  // disagreement heuristically: either shape could be stale or forged.
+  if ((parentSessionId === undefined && depth !== 0) || (parentSessionId !== undefined && depth === 0)) return undefined
+  const effectiveDelegationDepth = depth
   const cwd = text(session.header.cwd)
   return {
     session,

@@ -67,6 +67,9 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
       ...input.reason === undefined ? {} : { reason: input.reason },
       ...input.signal === undefined ? {} : { signal: input.signal },
     })
+    if (input.signal?.aborted) {
+      throw new GateFailure('abort', 'approval review completed after its lifecycle was cancelled')
+    }
     const actionHash = hashAction(input.action)
     if (
       decision.parentSessionId !== input.authority.sessionId
