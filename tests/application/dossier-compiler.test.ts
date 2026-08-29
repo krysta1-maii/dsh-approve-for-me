@@ -126,6 +126,26 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete }))
       .toEqual({ kind: 'incomplete', reason: 'budget-overflow' })
+    const withInstruction = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 5
+        ? { ...event, type: 'user/message', surfaceState: 'visible' as const, data: { id: 'instruction-1', source: { kind: 'agent-instructions', form: 'instructions', baseline: true, baselineIdentity: 'agents-root', changes: [{ path: 'AGENTS.md' }] }, content: [{ type: 'text', text: 'Follow project rules.' }] } }
+        : event),
+    }
+    const instructionResult = new DefaultDossierCompiler(deps).compile({ facts: withInstruction })
+    expect(instructionResult.kind).toBe('ready')
+    if (instructionResult.kind === 'ready') {
+      expect((instructionResult.verified.dossier.instructions as unknown as { readonly messages: readonly unknown[] }).messages)
+        .toMatchObject([{ messageId: 'instruction-1', source: { form: 'instructions', baseline: true } }])
+    }
+    const malformedInstruction = {
+      ...withInstruction,
+      events: withInstruction.events.map(event => event.seq === 5
+        ? { ...event, data: { id: 'instruction-1', source: { kind: 'agent-instructions', form: 'instructions', baseline: 'yes' }, content: [] } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: malformedInstruction }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-instruction-evidence' })
     const mismatchedProjectorCatalog = {
       ...deps,
       delegationProjector: { ...deps.delegationProjector, catalog: { ...catalog(), fingerprint: hash('d') } },

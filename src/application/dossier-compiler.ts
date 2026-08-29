@@ -6,6 +6,7 @@ import type {
   GuardianDossierCompiler,
   GuardianDossierCompilerDependencies,
   InteractionTurnV1,
+  InstructionMessageV1,
   ParentSessionFactSnapshotV1,
   SessionFactEventV1,
 } from '../domain/dossier.js'
@@ -45,6 +46,45 @@ function directUserMessage(event: SessionFactEventV1, turn: number | undefined):
     content: Object.freeze([...content] as JsonValue[]),
     surfaceState: event.surfaceState ?? 'visible',
   })
+}
+
+function instructionMessage(event: SessionFactEventV1): InstructionMessageV1 | undefined {
+  if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
+  const data = record(event.data)
+  const source = data === undefined ? undefined : record(data.source as JsonValue)
+  const messageId = data?.id
+  const content = data?.content
+  if (source?.form !== 'instructions' || typeof source.kind !== 'string' || source.kind.length === 0
+    || typeof messageId !== 'string' || messageId.length === 0 || !Array.isArray(content)) return undefined
+  if (source.baseline !== undefined && typeof source.baseline !== 'boolean') return undefined
+  if (source.baselineIdentity !== undefined && (typeof source.baselineIdentity !== 'string' || source.baselineIdentity.length === 0)) return undefined
+  if (source.changes !== undefined && !Array.isArray(source.changes)) return undefined
+  return Object.freeze({
+    event: Object.freeze({ seq: event.seq, type: event.type }),
+    messageId,
+    source: Object.freeze({
+      kind: source.kind,
+      form: 'instructions' as const,
+      ...(source.baseline === undefined ? {} : { baseline: source.baseline as boolean }),
+      ...(source.baselineIdentity === undefined ? {} : { baselineIdentity: source.baselineIdentity as string }),
+      ...(source.changes === undefined ? {} : { changes: Object.freeze([...source.changes] as JsonValue[]) }),
+    }),
+    content: Object.freeze([...content] as JsonValue[]),
+  })
+}
+
+function instructionsFrom(facts: ParentSessionFactSnapshotV1): readonly InstructionMessageV1[] | undefined {
+  const messages: InstructionMessageV1[] = []
+  for (const event of facts.events) {
+    if (event.type !== 'user/message') continue
+    const data = event.retention === 'included' ? record(event.data) : undefined
+    const source = data === undefined ? undefined : record(data.source as JsonValue)
+    if (source?.form !== 'instructions') continue
+    const message = instructionMessage(event)
+    if (message === undefined) return undefined
+    messages.push(message)
+  }
+  return Object.freeze(messages)
 }
 
 function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
@@ -136,6 +176,9 @@ function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[
       continue
     }
     if (event.type !== 'user/message') continue
+    const data = event.retention === 'included' ? record(event.data) : undefined
+    const source = data === undefined ? undefined : record(data.source as JsonValue)
+    if (source?.form === 'instructions') continue
     const message = directUserMessage(event, activeTurn)
     if (message === undefined || message.event.turn === undefined) return undefined
     const messages = byTurn.get(message.event.turn) ?? []
@@ -243,6 +286,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (!currentAssistantMessagesMatchCall(facts.events, execution.request.callId, execution.request.toolName, callData.arguments, turn, step)) {
       return { kind: 'incomplete', reason: 'invalid-current-assistant-message' }
     }
+    const instructions = instructionsFrom(facts)
+    if (instructions === undefined) return { kind: 'incomplete', reason: 'invalid-instruction-evidence' }
     const interaction = interactionFrom(facts)
     if (interaction === undefined || interaction.length === 0) return { kind: 'incomplete', reason: 'missing-direct-user-evidence' }
     const requestHeader = requestHeaderFrom(facts)
@@ -278,7 +323,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         ...requestHeader === undefined ? {} : { requestHeader },
         ...requestContext === undefined ? {} : { requestContext },
       }),
-      instructions: Object.freeze({ messages: [] }),
+      instructions: Object.freeze({ messages: instructions }),
       interaction: Object.freeze({
         turns: Object.freeze(interaction),
         delegations: Object.freeze({
