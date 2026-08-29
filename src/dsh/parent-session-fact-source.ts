@@ -1,5 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
+import { freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type {
   EventRefV1,
@@ -52,14 +53,22 @@ function eventRef(event: SessionEventLike): EventRefV1 {
   })
 }
 
-function snapshotEvent(event: SessionEventLike, surfaceState?: 'visible' | 'superseded'): SessionFactEventV1 {
+function snapshotEvent(event: SessionEventLike, surfaceState?: 'visible' | 'superseded'): SessionFactEventV1 | undefined {
+  let surfaceOp: JsonValue | undefined
+  let data: JsonValue
+  try {
+    surfaceOp = event.surfaceOp === undefined ? undefined : freezeJson(snapshotJson(event.surfaceOp)) as JsonValue
+    data = freezeJson(snapshotJson(event.data)) as JsonValue
+  } catch {
+    return undefined
+  }
   const envelope = {
     seq: event.seq,
     time: event.time,
     type: event.type,
     ...event.ignorable === true ? { ignorable: true as const } : {},
     ...event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: Object.freeze([...event.sourceEventSeqs]) },
-    ...event.surfaceOp === undefined ? {} : { surfaceOp: event.surfaceOp },
+    ...surfaceOp === undefined ? {} : { surfaceOp },
     ...surfaceState === undefined ? {} : { surfaceState },
   }
   // Tool results can contain unbounded/private content. Their existence remains
@@ -67,11 +76,11 @@ function snapshotEvent(event: SessionEventLike, surfaceState?: 'visible' | 'supe
   if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
     return Object.freeze({ ...envelope, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const })
   }
-  return Object.freeze({ ...envelope, retention: 'included' as const, data: event.data as JsonValue })
+  return Object.freeze({ ...envelope, retention: 'included' as const, data })
 }
 
 /** Conservatively classify only surface events with explicit placement. */
-function snapshotEvents(events: readonly SessionEventLike[]): readonly SessionFactEventV1[] {
+function snapshotEvents(events: readonly SessionEventLike[]): readonly SessionFactEventV1[] | undefined {
   const superseded = new Set<number>()
   for (const event of events) {
     const op = event.surfaceOp as { readonly op?: unknown } | undefined
@@ -79,11 +88,14 @@ function snapshotEvents(events: readonly SessionEventLike[]): readonly SessionFa
       for (const sourceSeq of event.sourceEventSeqs ?? []) superseded.add(sourceSeq)
     }
   }
-  return Object.freeze(events.map(event => {
+  const snapshots = events.map(event => {
     const surface = event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result'
     const state = surface && event.surfaceOp !== undefined ? (superseded.has(event.seq) ? 'superseded' : 'visible') : undefined
     return snapshotEvent(event, state)
-  }))
+  })
+  return snapshots.some(snapshot => snapshot === undefined)
+    ? undefined
+    : Object.freeze(snapshots as SessionFactEventV1[])
 }
 
 function sessionIdentity(agent: Agent): { session: SessionLike; identity: PrincipalSessionIdentityV1 } | undefined {
@@ -175,13 +187,15 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && item.request.callId === input.callId
       && item.request.toolName === input.toolName)
     if (correlatedExecutions.length !== 1) return undefined
+    const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
+    if (eventSnapshots === undefined) return undefined
     return Object.freeze({
       version: 1,
       session: bound.identity,
       eventProjection: Object.freeze({ policyId: 'dsh-session-facts-v1', classificationCatalog: input.classificationCatalog }),
       approvalBinding: Object.freeze({ event: eventRef(asked), approvalRequestId: input.approvalRequestId, callId: input.callId, toolName: input.toolName }),
       throughSeq,
-      events: snapshotEvents(events.filter(event => event.seq <= throughSeq)),
+      events: eventSnapshots,
       delegationReceipts: Object.freeze(executions.flatMap(item => item.delegationReceipt === undefined ? [] : [item.delegationReceipt])),
       executionFacts: Object.freeze(executions),
       approvalSnapshots: Object.freeze(approvals),

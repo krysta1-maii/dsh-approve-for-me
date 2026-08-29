@@ -61,6 +61,11 @@ describe('DshParentSessionFactSource', () => {
     expect(facts?.approvalSnapshots).toEqual([approval])
     expect(facts?.events).toHaveLength(4)
     expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
+    ;((requester.session.events[1]!.data as { content: Array<{ text: string }> }).content[0]!).text = 'mutated after snapshot'
+    expect(facts?.events[1]).toMatchObject({ data: { content: [{ text: 'pwd' }] } })
+    const snapshotEvent = facts?.events[1]
+    expect(snapshotEvent?.retention).toBe('included')
+    if (snapshotEvent?.retention === 'included') expect(Object.isFrozen(snapshotEvent.data as object)).toBe(true)
   })
 
   it('preserves runtime delegation depth so a resumed child cannot appear root', () => {
