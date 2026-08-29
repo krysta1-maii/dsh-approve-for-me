@@ -11,6 +11,7 @@ import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
 import { DefaultActionCapture } from './ports/action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
+import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 import { SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
@@ -159,6 +160,12 @@ export function installApproveForMe(
       }
     },
   })
+  const executionProjection = new DshExecutionFactProjectionBridge(
+    createDefaultActionProjector(options.projectPermissions),
+    dossierCatalog,
+    executionFacts,
+    approvalSnapshots,
+  )
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns
   // unavailable, so no automatic grant can escape the durability boundary.
@@ -246,13 +253,20 @@ export function installApproveForMe(
   }
   const stopMachinePolicy = approvalService.approval.registerMachinePolicy(machinePolicy)
 
-  const stopPreExecute = ctx.on('tools/pre-execute', bridge.preExecute, { prepend: true })
+  const stopPreExecute = ctx.on('tools/pre-execute', (exec, next) =>
+    bridge.preExecute(exec, () => executionProjection.preExecute(exec, next)), { prepend: true })
   const stopResult = ctx.on('tools/result', bridge.observeResult)
+  const stopSessionEvent = ctx.on('session/event', (session, event) => {
+    const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
+    const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)
+    if (agent !== undefined) void executionProjection.observeSessionEvent(agent, event as never)
+  })
 
   return {
     config: normalized,
     async dispose(): Promise<void> {
       stopMachinePolicy()
+      stopSessionEvent()
       await lifecycle.dispose()
       stopResult()
       stopPreExecute()

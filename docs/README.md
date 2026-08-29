@@ -12,6 +12,7 @@
 | 按模块施工（抽象与接口蓝图） | [施工蓝图](construction-spec.md) | v2 实施蓝图 |
 | 实现 Guardian 卷宗与事实边界 | [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) | v1 候选权威契约 |
 | 查看当前代码已经做到什么 | [实现状态](implementation.md) | 当前事实 |
+| 查看阶段性功能与业务审查 | [2026-08-29 GPT 审查报告](reviews/2026-08-29-functional-business-review-gpt.md) | 非规范、按提交冻结的审查快照 |
 | 决定下一步施工顺序 | [施工计划](construction-plan.md) | 当前执行计划 |
 | 验收真实 DSH/Profile/Web 行为 | [集成验证清单](integration.md) | 目标验收清单 |
 | 建设完整 Reviewer 产品能力 | [Reviewer 独立实现路线](reviewer-roadmap.md) | 产品能力路线 |
