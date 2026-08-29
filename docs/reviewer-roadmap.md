@@ -30,7 +30,7 @@
 | per-parent 串行 | 已实现 | 保持不变 |
 | 污染隔离／rotate | 已实现 | 真实恢复与重载验收 |
 | Reviewer system prompt | 最小占位 | 独立设计完整策略 |
-| 父会话案件卷宗 | 规范草案及主／子代理归因已确立、代码未实现 | 实现 Session／sidecar facts source、delegation projector 与五段式 compiler |
+| 父会话案件卷宗 | Session／sidecar fact source、完整生命周期绑定与受限 v1 compiler 已接入；仅支持单一 pending native call、无历史工具／delegation | 扩展五段式历史工具与 delegation 投影，并完成真实 Storage Domain 恢复验收 |
 | 风险与授权判断 | 只有输出字段 | 在卷宗实现后独立建立 policy 分类和判定规则 |
 | token budget／截断 | v1 规定完整或失败关闭 | 先测量完整卷宗，再以新版本定义裁剪算法 |
 | full／delta transport | 未实现、非 v1 前置 | 根据完整卷宗实验决定 cursor 方案 |
