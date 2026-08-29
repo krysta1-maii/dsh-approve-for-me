@@ -53,6 +53,22 @@ function requestHeaderFrom(facts: ParentSessionFactSnapshotV1): JsonValue | unde
   return latest
 }
 
+function requestContextFrom(facts: ParentSessionFactSnapshotV1): JsonValue | undefined {
+  let latest: JsonValue | undefined
+  for (const event of facts.events) {
+    if (event.type !== 'request/context') continue
+    const context = event.retention === 'included' ? record(event.data) : undefined
+    const contextWindow = context?.contextWindow
+    if (context === undefined || typeof context.provider !== 'string' || context.provider.length === 0
+      || typeof context.model !== 'string' || context.model.length === 0
+      || (contextWindow !== undefined && (typeof contextWindow !== 'number' || !Number.isSafeInteger(contextWindow) || contextWindow < 0))) {
+      return undefined
+    }
+    latest = context
+  }
+  return latest
+}
+
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
   const byTurn = new Map<number, DirectUserMessageV1[]>()
   let activeTurn: number | undefined
@@ -131,7 +147,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || callData.name !== execution.request.toolName) {
       return { kind: 'incomplete', reason: 'missing-required-execution-event' }
     }
-    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'user/message', 'tool/call', 'approval/asked'])
+    const allowed = new Set(['turn/start', 'turn/end', 'step/start', 'step/end', 'request/header', 'request/context', 'user/message', 'tool/call', 'approval/asked'])
     if (facts.events.some(event => !allowed.has(event.type)) || facts.executionFacts.length !== 1 || facts.delegationReceipts.length !== 0) {
       return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
     }
@@ -140,6 +156,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     const requestHeader = requestHeaderFrom(facts)
     if (facts.events.some(event => event.type === 'request/header') && requestHeader === undefined) {
       return { kind: 'incomplete', reason: 'invalid-request-header' }
+    }
+    const requestContext = requestContextFrom(facts)
+    if (facts.events.some(event => event.type === 'request/context') && requestContext === undefined) {
+      return { kind: 'incomplete', reason: 'invalid-request-context' }
     }
 
     const turn = Number.isSafeInteger(callData?.turn) && (callData?.turn as number) >= 0
@@ -168,6 +188,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       environment: Object.freeze({
         approvalSnapshot: snapshot.environment,
         ...requestHeader === undefined ? {} : { requestHeader },
+        ...requestContext === undefined ? {} : { requestContext },
       }),
       instructions: Object.freeze({ messages: [] }),
       interaction: Object.freeze({

@@ -86,24 +86,28 @@ describe('DefaultDossierCompiler', () => {
     const base = facts()
     const complete = {
       ...base,
-      approvalBinding: { ...base.approvalBinding, event: { seq: 4, type: 'approval/asked', turn: 1, step: 0 } },
-      throughSeq: 4,
+      approvalBinding: { ...base.approvalBinding, event: { seq: 5, type: 'approval/asked', turn: 1, step: 0 } },
+      throughSeq: 5,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
         { seq: 1, time: 2, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [] }, reason: 'initial' } },
-        { seq: 2, time: 3, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
-        { seq: 3, time: 4, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
-        { seq: 4, time: 5, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+        { seq: 2, time: 3, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 3, time: 4, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 4, time: 5, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+        { seq: 5, time: 6, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
       ],
-      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 3 } }],
-      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 4 }],
+      executionFacts: [{ ...base.executionFacts[0]!, request: { ...base.executionFacts[0]!.request, eventSeq: 4 } }],
+      approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 5 }],
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
     if (result.kind === 'ready') {
-      expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 4 })
-      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 4, frozenAt: 5 })
-      expect(result.verified.dossier.environment).toMatchObject({ requestHeader: { config: { model: 'model-1' } } })
+      expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 5 })
+      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 5, frozenAt: 6 })
+      expect(result.verified.dossier.environment).toMatchObject({
+        requestHeader: { config: { model: 'model-1' } },
+        requestContext: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 },
+      })
       expect(result.metrics).toMatchObject({
         dossierVersion: 1,
         delegationClassificationCatalogFingerprint: hash('c'),
@@ -121,6 +125,12 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: malformedHeader }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-request-header' })
+    const malformedContext = {
+      ...complete,
+      events: complete.events.map(event => event.seq === 2 ? { ...event, data: { provider: 'deepseek' } } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: malformedContext }))
+      .toEqual({ kind: 'incomplete', reason: 'invalid-request-context' })
   })
 
   it('fails closed rather than omit unsupported historical events', () => {
