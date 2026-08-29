@@ -37,7 +37,7 @@ function text(value: unknown): string | undefined {
 }
 
 function nonNegative(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined
+  return Number.isSafeInteger(value) && (value as number) >= 0 && !Object.is(value, -0) ? value as number : undefined
 }
 
 function eventRef(event: SessionEventLike): EventRefV1 {

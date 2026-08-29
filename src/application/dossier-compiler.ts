@@ -38,11 +38,12 @@ function canonicalSize(value: unknown): { readonly bytes: number; readonly chara
 }
 
 function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']): boolean {
+  const nonNegative = (value: number) => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
   return typeof session.sessionId === 'string' && session.sessionId.length > 0
-    && Number.isSafeInteger(session.sessionFormatVersion) && session.sessionFormatVersion >= 0
-    && Number.isSafeInteger(session.createdAt) && session.createdAt >= 0
+    && nonNegative(session.sessionFormatVersion)
+    && nonNegative(session.createdAt)
     && (session.cwd === undefined || (typeof session.cwd === 'string' && session.cwd.length > 0))
-    && Number.isSafeInteger(session.effectiveDelegationDepth) && session.effectiveDelegationDepth >= 0
+    && nonNegative(session.effectiveDelegationDepth)
     && (session.parentSessionId === undefined || (typeof session.parentSessionId === 'string' && session.parentSessionId.length > 0))
 }
 

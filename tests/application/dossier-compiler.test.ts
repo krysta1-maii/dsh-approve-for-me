@@ -587,6 +587,9 @@ describe('DefaultDossierCompiler', () => {
       facts: facts({ session: { ...session, effectiveDelegationDepth: 1 } }),
     }).kind).toBe('incomplete')
     expect(compiler.compile({
+      facts: facts({ session: { ...session, effectiveDelegationDepth: -0 } }),
+    })).toEqual({ kind: 'incomplete', reason: 'invalid-parent-session-identity' })
+    expect(compiler.compile({
       facts: facts({ approvalBinding: { ...facts().approvalBinding, callId: '' } }),
     }).kind).toBe('incomplete')
     expect(compiler.compile({

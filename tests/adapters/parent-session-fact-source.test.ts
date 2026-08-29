@@ -72,6 +72,9 @@ describe('DshParentSessionFactSource', () => {
     })
     const invalid = agent({ options: { subagentDepth: -1 } })
     expect(new DshParentSessionFactSource({ get: () => invalid as never }).snapshot(input({ agent: invalid as never }))).toBeUndefined()
+    const invalidHeader = agent()
+    ;(invalidHeader.session.header as unknown as { delegationDepth?: unknown }).delegationDepth = -0
+    expect(new DshParentSessionFactSource({ get: () => invalidHeader as never }).snapshot(input({ agent: invalidHeader as never }))).toBeUndefined()
   })
 
   it('refuses an ambiguous call or a projection bound to a different durable event', () => {
