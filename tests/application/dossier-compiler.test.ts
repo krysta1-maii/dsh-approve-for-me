@@ -15,6 +15,7 @@ const session = {
   sessionId: 'parent-1',
   sessionFormatVersion: 0,
   createdAt: 1_000,
+  cwd: '/workspace',
   effectiveDelegationDepth: 0,
 }
 
@@ -107,7 +108,7 @@ describe('DefaultDossierCompiler', () => {
     expect(result.kind).toBe('ready')
     if (result.kind === 'ready') {
       expect(result.verified.dossier.completeness).toMatchObject({ complete: true, sourceThroughSeq: 8 })
-      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9 })
+      expect(result.verified.dossier.freeze).toMatchObject({ throughSeq: 8, frozenAt: 9, parent: { cwd: '/workspace' } })
       expect(result.verified.dossier.environment).toMatchObject({
         requestHeader: { config: { model: 'model-1' } },
         requestContext: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 },

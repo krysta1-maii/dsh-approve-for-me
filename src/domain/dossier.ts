@@ -76,8 +76,9 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
     throw new TypeError('dossier.freeze.parent must be an object')
   }
   const parent = freeze.parent as Record<string, unknown>
-  if (typeof parent.sessionId !== 'string' || typeof parent.sessionFormatVersion !== 'number' || typeof parent.createdAt !== 'number') {
-    throw new TypeError('dossier.freeze.parent must carry sessionId/sessionFormatVersion/createdAt')
+  if (typeof parent.sessionId !== 'string' || typeof parent.sessionFormatVersion !== 'number' || typeof parent.createdAt !== 'number'
+    || (parent.cwd !== undefined && (typeof parent.cwd !== 'string' || parent.cwd.length === 0))) {
+    throw new TypeError('dossier.freeze.parent must carry valid sessionId/sessionFormatVersion/createdAt/cwd')
   }
   for (const key of ['throughSeq', 'currentTurn', 'currentStep', 'frozenAt'] as const) {
     if (!Number.isSafeInteger(freeze[key]) || (freeze[key] as number) < 0) {
@@ -107,6 +108,7 @@ export function assertDossierShape(input: unknown): GuardianDossierV1 {
         sessionId: parent.sessionId as string,
         sessionFormatVersion: parent.sessionFormatVersion as number,
         createdAt: parent.createdAt as number,
+        ...(parent.cwd === undefined ? {} : { cwd: parent.cwd as string }),
       }),
       throughSeq: freeze.throughSeq as number,
       currentTurn: freeze.currentTurn as number,

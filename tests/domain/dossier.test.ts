@@ -10,7 +10,7 @@ function dossier(): GuardianDossierV1 {
     version: 1,
     kind: 'guardian-dossier',
     freeze: {
-      parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 1_000 },
+      parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 1_000, cwd: '/workspace' },
       throughSeq: 10,
       currentTurn: 2,
       currentStep: 1,
@@ -30,6 +30,7 @@ describe('Guardian dossier shape', () => {
     const parsed = assertDossierShape(dossier())
     expect(parsed.version).toBe(1)
     expect(parsed.freeze.parent.sessionId).toBe('parent-1')
+    expect(parsed.freeze.parent.cwd).toBe('/workspace')
     expect(Object.isFrozen(parsed)).toBe(true)
     expect(recomputeDossierHash(parsed)).toMatch(/^sha256:[0-9a-f]{64}$/)
   })
@@ -45,6 +46,10 @@ describe('Guardian dossier shape', () => {
       ...dossier(),
       completeness: { complete: true, sourceThroughSeq: 9, omissions: [] },
     })).toThrow(/completeness/)
+    expect(() => assertDossierShape({
+      ...dossier(),
+      freeze: { ...dossier().freeze, parent: { ...dossier().freeze.parent, cwd: '' } },
+    })).toThrow(/cwd/)
   })
 
   it('rejects sections that are not canonical JSON', () => {

@@ -330,6 +330,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           sessionId: facts.session.sessionId,
           sessionFormatVersion: facts.session.sessionFormatVersion,
           createdAt: facts.session.createdAt,
+          ...(facts.session.cwd === undefined ? {} : { cwd: facts.session.cwd }),
         },
         throughSeq: facts.throughSeq,
         currentTurn: turn,
