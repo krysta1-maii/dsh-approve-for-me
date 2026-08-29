@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   assertDossierShape,
   recomputeDossierHash,
+  sealSourceVerifiedDossier,
 } from '../../src/index.js'
 import type { GuardianDossierV1 } from '../../src/index.js'
 
@@ -65,5 +66,12 @@ describe('Guardian dossier shape', () => {
       ...dossier(),
       environment: { bad: () => 1 },
     } as never)).toThrow()
+  })
+
+  it('validates a dossier before sealing the source-verified wrapper', () => {
+    expect(() => sealSourceVerifiedDossier({
+      ...dossier(),
+      freeze: { ...dossier().freeze, parent: { ...dossier().freeze.parent, sessionId: '' } },
+    })).toThrow(/parent/)
   })
 })

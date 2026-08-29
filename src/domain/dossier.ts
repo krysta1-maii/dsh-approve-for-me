@@ -136,8 +136,9 @@ export function recomputeDossierHash(dossier: GuardianDossierV1): string {
  * application compiler can seal a fully validated dossier.
  */
 export function sealSourceVerifiedDossier(dossier: GuardianDossierV1): SourceVerifiedDossierV1 {
-  const dossierHash = hashGuardianDossier(dossier)
-  return Object.freeze({ dossier, dossierHash, [sourceVerifiedDossierV1Brand]: true }) as SourceVerifiedDossierV1
+  const validated = assertDossierShape(dossier)
+  const dossierHash = hashGuardianDossier(validated)
+  return Object.freeze({ dossier: validated, dossierHash, [sourceVerifiedDossierV1Brand]: true }) as SourceVerifiedDossierV1
 }
 
 export interface InstructionMessageV1 {
