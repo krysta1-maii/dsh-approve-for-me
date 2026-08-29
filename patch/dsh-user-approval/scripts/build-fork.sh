@@ -75,9 +75,13 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     (
       cd "${WORKTREE_DIR}"
       if [[ -f pnpm-lock.yaml ]]; then
-        pnpm install --frozen-lockfile
+        # The throwaway worktree cannot inherit the upstream worktree-local
+        # hooks configuration. Dependency lifecycle scripts are irrelevant to
+        # compiling this TypeScript package, so never let host hook install
+        # mutate/reject this isolated build.
+        pnpm install --frozen-lockfile --ignore-scripts
       else
-        pnpm install
+        pnpm install --ignore-scripts
       fi
     )
   fi
@@ -96,7 +100,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> testing patched source overlay"
   (
     cd "${WORKTREE_DIR}"
-    pnpm exec vitest run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
+    npm_config_ignore_scripts=true pnpm exec vitest run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
   )
 
   echo "==> rebuilding patched package lib/ from sources"
