@@ -47,7 +47,11 @@ const decisionRecordDomainSpec = Object.freeze({
           if (row?.version !== 1 || typeof row.canonical !== 'string' || row.record === undefined) {
             throw new TypeError('invalid approve-for-me decision record')
           }
-          return value as StoredGateDecisionRecordV1
+          const record = parseGateDecisionRecord(row.record)
+          if (row.canonical !== canonicalJson(record)) {
+            throw new TypeError('approve-for-me decision record canonical form does not match')
+          }
+          return Object.freeze({ version: 1, canonical: row.canonical, record })
         },
       }),
     }),

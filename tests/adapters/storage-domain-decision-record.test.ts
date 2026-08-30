@@ -47,6 +47,13 @@ describe('DshStorageDomainGateDecisionRecordStore', () => {
     expect(fake.put).toHaveBeenCalledTimes(2)
   })
 
+  it('fails closed before storage on malformed compact audit input', async () => {
+    const fake = facility()
+    const store = new DshStorageDomainGateDecisionRecordStore(fake.facility)
+    await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).resolves.toBe('unavailable')
+    expect(fake.put).not.toHaveBeenCalled()
+  })
+
   it('fails closed when the domain cannot open', async () => {
     const store = new DshStorageDomainGateDecisionRecordStore({ open: async () => { throw new Error('offline') } })
     await expect(store.createConfirmed(record())).resolves.toBe('unavailable')
