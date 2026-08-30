@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { JsonSnapshotError, canonicalJson, snapshotJson } from '../domain/json.js'
@@ -43,6 +44,13 @@ const DEFAULT_FILESYSTEM_TOOL_NAMES: Readonly<Required<FilesystemToolNames>> = O
   read: 'read', list: 'list', glob: 'glob', write: 'write', edit: 'edit', delete: 'delete', move: 'move', mkdir: 'mkdir',
 })
 const FILESYSTEM_OPERATIONS = new Set<FilesystemOperation>(['read', 'list', 'glob', 'write', 'edit', 'delete', 'move', 'mkdir'])
+const NETWORK_PROJECTOR_ID = 'dsh-approve-for-me/network-v1'
+const NETWORK_FAMILY = 'network-v1'
+const MAX_NETWORK_ARGUMENT_BYTES = 65_536
+const MAX_NETWORK_BODY_BYTES = 32_768
+
+/** No generic default: deployment must bind an adapter's exact HTTP tool name. */
+export interface NetworkToolNames { readonly httpRequest: string }
 
 function shellArguments(execution: ToolExecution): { readonly command: string; readonly argv?: readonly string[]; readonly environment?: Readonly<Record<string, string>> } {
   const raw = execution.arguments
@@ -174,6 +182,81 @@ export function createFilesystemActionProjector(
         arguments: execution.arguments,
         projectorId: FILESYSTEM_PROJECTOR_ID,
         semantics: { family: FILESYSTEM_FAMILY, value: filesystemArguments(execution, operation) },
+        ...(projectPermissions === undefined ? {} : { requestedPermissions: projectPermissions(execution) }),
+      }
+    },
+  })
+}
+
+function digest(value: string): string {
+  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`
+}
+
+function networkArguments(execution: ToolExecution): Record<string, unknown> {
+  const raw = execution.arguments
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new TypeError('network arguments must be an object')
+  if (Buffer.byteLength(canonicalJson(snapshotJson(raw)), 'utf8') > MAX_NETWORK_ARGUMENT_BYTES) {
+    throw new TypeError('network arguments exceed the semantic projection budget')
+  }
+  const value = raw as Record<string, unknown>
+  const allowed = new Set(['url', 'method', 'headers', 'body', 'redirect'])
+  if (Object.keys(value).some(key => !allowed.has(key))) throw new TypeError('network arguments contain an unrecognized field')
+  if (typeof value.url !== 'string' || value.url.length === 0 || value.url.length > 16_384) throw new TypeError('network projection requires a bounded url')
+  let url: URL
+  try { url = new URL(value.url) } catch { throw new TypeError('network projection requires a parseable absolute url') }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username.length > 0 || url.password.length > 0 || url.hash.length > 0 || url.hostname.length === 0) {
+    throw new TypeError('network projection only permits credential-free fragment-free http(s) urls')
+  }
+  if (typeof value.method !== 'string' || !/^[A-Za-z]{1,16}$/.test(value.method)) throw new TypeError('network projection requires a bounded HTTP method')
+  if (value.redirect !== 'error' && value.redirect !== 'manual') throw new TypeError('network projection requires redirect "error" or "manual"')
+  const headers: { name: string; valueHash: string }[] = []
+  if (value.headers !== undefined) {
+    if (value.headers === null || typeof value.headers !== 'object' || Array.isArray(value.headers)) throw new TypeError('network headers must be a string map')
+    for (const [rawName, headerValue] of Object.entries(value.headers as Record<string, unknown>)) {
+      const name = rawName.toLowerCase()
+      if (!/^[!#$%&'*+.^_`|~0-9a-z-]{1,128}$/.test(name) || typeof headerValue !== 'string' || headerValue.length > 8_192 || /[\r\n]/.test(headerValue) || headers.some(header => header.name === name)) {
+        throw new TypeError('network headers must have unique bounded valid names and values')
+      }
+      headers.push({ name, valueHash: digest(headerValue) })
+    }
+  }
+  let body: { kind: 'none' } | { kind: 'utf8'; byteLength: number; sha256: string } = { kind: 'none' }
+  if (value.body !== undefined) {
+    if (typeof value.body !== 'string') throw new TypeError('network body must be a string')
+    const byteLength = Buffer.byteLength(value.body, 'utf8')
+    if (byteLength > MAX_NETWORK_BODY_BYTES) throw new TypeError('network body exceeds the semantic projection budget')
+    body = { kind: 'utf8', byteLength, sha256: digest(value.body) }
+  }
+  return {
+    operation: 'http-request',
+    target: Object.freeze({ scheme: url.protocol.slice(0, -1), hostname: url.hostname.toLowerCase(), port: url.port === '' ? (url.protocol === 'https:' ? 443 : 80) : Number(url.port), pathAndQuery: `${url.pathname}${url.search}` }),
+    method: value.method.toUpperCase(),
+    headers: Object.freeze(headers.sort((left, right) => left.name.localeCompare(right.name)).map(header => Object.freeze(header))),
+    body: Object.freeze(body),
+    redirect: value.redirect,
+  }
+}
+
+/** Build a fail-closed semantic projector for a concrete HTTP tool adapter. */
+export function createNetworkActionProjector(
+  toolNames: NetworkToolNames,
+  projectPermissions?: (execution: ToolExecution) => readonly RequestedPermission[],
+): ToolFamilyActionProjector<ToolExecution> {
+  if (toolNames === null || typeof toolNames !== 'object' || typeof toolNames.httpRequest !== 'string' || toolNames.httpRequest.length === 0) {
+    throw new TypeError('network projector requires a non-empty explicit HTTP tool name')
+  }
+  if (Object.keys(toolNames).some(key => key !== 'httpRequest')) throw new TypeError('network projector has an unknown operation binding')
+  return Object.freeze({
+    family: NETWORK_FAMILY,
+    projectorId: NETWORK_PROJECTOR_ID,
+    toolNames: Object.freeze([toolNames.httpRequest]),
+    project(execution: ToolExecution) {
+      if (execution.name !== toolNames.httpRequest) throw new TypeError(`network projector has no operation for tool ${execution.name}`)
+      return {
+        toolName: execution.name,
+        arguments: execution.arguments,
+        projectorId: NETWORK_PROJECTOR_ID,
+        semantics: { family: NETWORK_FAMILY, value: networkArguments(execution) },
         ...(projectPermissions === undefined ? {} : { requestedPermissions: projectPermissions(execution) }),
       }
     },

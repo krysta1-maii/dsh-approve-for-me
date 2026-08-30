@@ -7,6 +7,7 @@ import {
   createCaptureBridge,
   createDefaultActionProjector,
   createFilesystemActionProjector,
+  createNetworkActionProjector,
   createShellProcessActionProjector,
   createActionSnapshot,
   ToolFamilyActionProjectorRegistry,
@@ -112,6 +113,38 @@ describe('filesystem semantic projection', () => {
     expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { name: 'write', arguments: { path: 'x', content: 'x'.repeat(65_536) } }))).toThrow(/budget/)
     expect(() => createFilesystemActionProjector({ read: 'same', write: 'same' })).toThrow(/unique/)
     expect(() => createFilesystemActionProjector({ unknown: 'mystery' } as never)).toThrow(/unknown operation/)
+  })
+})
+
+describe('network semantic projection', () => {
+  it('projects an exact HTTP target and content-free payload commitments', () => {
+    const projector = new ToolFamilyActionProjectorRegistry([createNetworkActionProjector({ httpRequest: 'fetch' })])
+    const action = createActionSnapshot(projector.project(fakeExecution(fakeAgent('parent-1'), {
+      name: 'fetch', arguments: { url: 'https://EXAMPLE.test:443/a?q=1', method: 'post', headers: { Authorization: 'secret', Accept: 'text/plain' }, body: 'hello', redirect: 'manual' },
+    })))
+    expect(action).toMatchObject({
+      projectorId: 'dsh-approve-for-me/network-v1',
+      semantics: { family: 'network-v1', value: { operation: 'http-request', target: { scheme: 'https', hostname: 'example.test', port: 443, pathAndQuery: '/a?q=1' }, method: 'POST', headers: [{ name: 'accept' }, { name: 'authorization' }], body: { kind: 'utf8', byteLength: 5, sha256: expect.stringMatching(/^sha256:/) }, redirect: 'manual' } },
+    })
+    expect(Object.isFrozen(action.semantics.value)).toBe(true)
+  })
+
+  it.each([
+    [{ url: 'file:///secret', method: 'GET', redirect: 'error' }, /http\(s\)/],
+    [{ url: 'https://user@example.test/a', method: 'GET', redirect: 'error' }, /credential-free/],
+    [{ url: 'https://example.test/a#fragment', method: 'GET', redirect: 'error' }, /fragment-free/],
+    [{ url: 'https://example.test/a', method: 'GET', redirect: 'follow' }, /redirect/],
+    [{ url: 'https://example.test/a', method: 'GET', redirect: 'manual', headers: { A: 'one', a: 'two' } }, /headers/],
+    [{ url: 'https://example.test/a', method: 'GET', redirect: 'manual', body: 'x'.repeat(32_769) }, /budget/],
+    [{ url: 'https://example.test/a', method: 'GET', redirect: 'manual', extra: true }, /unrecognized/],
+  ])('fails closed for incomplete or ambiguous HTTP arguments', (arguments_, _message) => {
+    const projector = createNetworkActionProjector({ httpRequest: 'fetch' })
+    expect(() => projector.project(fakeExecution(fakeAgent('parent-1'), { name: 'fetch', arguments: arguments_ }))).toThrow(TypeError)
+  })
+
+  it('requires one explicit known HTTP tool binding', () => {
+    expect(() => createNetworkActionProjector({ httpRequest: '' })).toThrow(/non-empty/)
+    expect(() => createNetworkActionProjector({ httpRequest: 'fetch', websocket: 'ws' } as never)).toThrow(/unknown operation/)
   })
 })
 
