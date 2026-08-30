@@ -263,7 +263,7 @@ export type {
   PreReviewCoordinator,
   PreReviewInput,
 } from './application/pre-review-coordinator.js'
-export { DefaultGatePipeline } from './application/gate-pipeline.js'
+export { DefaultGatePipeline, parseGateDecisionRecord } from './application/gate-pipeline.js'
 export type {
   GateActionFactResolver,
   GateActionFacts,

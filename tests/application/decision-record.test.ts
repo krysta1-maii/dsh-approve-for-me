@@ -17,7 +17,7 @@ function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord
     callId: 'call-1',
     actionHash: hash('a'),
     generation: 'generation-1',
-    configurationFingerprint: hash('cfg'),
+    configurationFingerprint: hash('c'),
     disposition: 'allow',
     ...overrides,
   }
@@ -28,6 +28,11 @@ describe('InMemoryGateDecisionRecordStore', () => {
     const store = new InMemoryGateDecisionRecordStore()
     await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
     await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
+  })
+
+  it('rejects unknown fields at the compact durable boundary', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).rejects.toThrow(/not supported/)
   })
 
   it('returns conflict when the same ask confirms a different disposition', async () => {

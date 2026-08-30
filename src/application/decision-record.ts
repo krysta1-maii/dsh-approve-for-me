@@ -1,3 +1,4 @@
+import { parseGateDecisionRecord } from './gate-pipeline.js'
 import type {
   GateDecisionRecord,
   GateDecisionRecordResult,
@@ -15,6 +16,7 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
   private readonly bestEffort = new Map<string, GateDecisionRecord>()
 
   async createConfirmed(record: GateDecisionRecord): Promise<GateDecisionRecordResult> {
+    record = parseGateDecisionRecord(record)
     const key = this.keyFor(record)
     const existing = this.confirmed.get(key)
     if (existing !== undefined) {
@@ -29,6 +31,7 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
   }
 
   async recordBestEffort(record: GateDecisionRecord): Promise<void> {
+    record = parseGateDecisionRecord(record)
     const key = this.keyFor(record)
     if (this.confirmed.has(key)) return
     const existing = this.bestEffort.get(key)

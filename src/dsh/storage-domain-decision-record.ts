@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from '../domain/json.js'
+import { parseGateDecisionRecord } from '../application/gate-pipeline.js'
 import type {
   GateDecisionRecord,
   GateDecisionRecordResult,
@@ -104,6 +105,7 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
 
   private async write(record: GateDecisionRecord): Promise<GateDecisionRecordResult> {
     if (!this.admissionOpen) return 'unavailable'
+    try { record = parseGateDecisionRecord(record) } catch { return 'unavailable' }
     const key = recordKey(record)
     const previous = this.tails.get(key) ?? Promise.resolve()
     const operation = previous.then(async (): Promise<GateDecisionRecordResult> => {

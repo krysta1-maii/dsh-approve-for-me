@@ -102,6 +102,37 @@ export interface GateDecisionRecord {
 
 export type GateDecisionRecordResult = 'confirmed' | 'conflict' | 'unavailable'
 
+const GATE_DECISION_ROUTES = ['trust-envelope', 'allow-cache', 'sealed-replay', 'guardian'] as const
+const GATE_PLUGIN_DISPOSITIONS = ['allow', 'deny', 'delegate-human', 'unavailable', 'cancelled'] as const
+const GATE_NORMALIZED_DECISIONS = ['allow', 'deny', 'human_review'] as const
+const GATE_SEALED_DISPOSITIONS = ['allow', 'deny', 'human'] as const
+const GATE_HASH = /^sha256:[0-9a-f]{64}$/
+
+/** Validates the closed, metadata-only production audit row before persistence. */
+export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('gate decision record must be an object')
+  const value = input as Record<string, unknown>
+  const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition']
+  const allowed = new Set([...required, 'reviewRunId'])
+  for (const key of required) if (!Object.hasOwn(value, key)) throw new TypeError(`gate decision record.${key} is required`)
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`gate decision record.${key} is not supported`)
+  if (value.version !== 1) throw new TypeError('gate decision record.version must be 1')
+  if (!GATE_DECISION_ROUTES.includes(value.route as GateDecisionRouteV1)) throw new TypeError('gate decision record.route is invalid')
+  if (!GATE_NORMALIZED_DECISIONS.includes(value.normalizedDecision as GateDecisionRecord['normalizedDecision'])) throw new TypeError('gate decision record.normalizedDecision is invalid')
+  if (!GATE_PLUGIN_DISPOSITIONS.includes(value.pluginDisposition as GatePluginDispositionV1)) throw new TypeError('gate decision record.pluginDisposition is invalid')
+  if (!GATE_SEALED_DISPOSITIONS.includes(value.disposition as SealedDispositionKind)) throw new TypeError('gate decision record.disposition is invalid')
+  for (const key of ['requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'generation'] as const) {
+    if (typeof value[key] !== 'string' || value[key].length === 0) throw new TypeError(`gate decision record.${key} is invalid`)
+  }
+  for (const key of ['actionHash', 'configurationFingerprint'] as const) {
+    if (typeof value[key] !== 'string' || !GATE_HASH.test(value[key])) throw new TypeError(`gate decision record.${key} must be a sha256 digest`)
+  }
+  if (value.reviewRunId !== undefined && (typeof value.reviewRunId !== 'string' || value.reviewRunId.length === 0)) {
+    throw new TypeError('gate decision record.reviewRunId is invalid')
+  }
+  return Object.freeze({ ...value }) as unknown as GateDecisionRecord
+}
+
 export interface GateDecisionRecordStore {
   createConfirmed(record: GateDecisionRecord): Promise<GateDecisionRecordResult>
   recordBestEffort(record: GateDecisionRecord): Promise<void>
