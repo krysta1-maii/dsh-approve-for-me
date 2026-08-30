@@ -23,6 +23,7 @@ import { gateFailureOutcome } from './gate-failure.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import { permitsAutomaticFastPath } from '../domain/risk-assessment.js'
 import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
+import type { ReviewerTelemetrySink } from '../ports/reviewer-telemetry.js'
 
 /**
  * Resolved facts that the DSH adapter/application layer must supply before the
@@ -168,6 +169,8 @@ export interface GatePipelineDependencies {
   /** Production adapter enables this until a source-verified dossier is present. */
   readonly requireVerifiedDossier?: boolean
   readonly now?: () => number
+  /** Scalar-only best-effort observer; it never influences a gate branch. */
+  readonly reviewerTelemetry?: ReviewerTelemetrySink
 }
 
 export interface GatePipeline {
@@ -219,11 +222,18 @@ export class DefaultGatePipeline implements GatePipeline {
   async decide(request: GateMachineRequestV1): Promise<GateMachineDecisionV1> {
     if (request.signal?.aborted) return 'cancelled'
     if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
+    let outcome: GateMachineDecisionV1
     try {
-      return await this.decideVerified(request)
+      outcome = await this.decideVerified(request)
     } catch (error: unknown) {
-      return gateFailureOutcome(error, this.deps.mode)
+      outcome = gateFailureOutcome(error, this.deps.mode)
     }
+    // Only a concrete user fallback is observed, after the authoritative gate
+    // outcome is fixed. Telemetry has no async path or authority over it.
+    if (outcome === 'delegate') {
+      try { this.deps.reviewerTelemetry?.observe({ kind: 'fallback' }) } catch { /* non-authorizing */ }
+    }
+    return outcome
   }
 
   private async decideVerified(request: GateMachineRequestV1): Promise<GateMachineDecisionV1> {

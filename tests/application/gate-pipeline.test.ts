@@ -91,6 +91,7 @@ function makePipeline(overrides: {
   preReview?: GatePreReview
   records?: GateDecisionRecordStore
   now?: () => number
+  reviewerTelemetry?: GatePipelineDependencies['reviewerTelemetry']
 } = {}) {
   const seals = new InMemorySealedDispositionRegistry()
   const records = overrides.records ?? recordsStub()
@@ -125,6 +126,7 @@ function makePipeline(overrides: {
     records,
     mode: overrides.mode ?? 'auto',
     ...overrides.now === undefined ? {} : { now: overrides.now },
+    ...overrides.reviewerTelemetry === undefined ? {} : { reviewerTelemetry: overrides.reviewerTelemetry },
   }
   return { pipeline: new DefaultGatePipeline(deps), seals, records, preReview, factsResolver, deps }
 }
@@ -272,6 +274,27 @@ describe('DefaultGatePipeline', () => {
     })
     await expect(human.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
     expect(records.recordBestEffort).toHaveBeenCalledTimes(2)
+  })
+
+  it('observes only final user fallbacks and ignores telemetry failure', async () => {
+    const observe = vi.fn()
+    const telemetry = { observe }
+    const delegated = makePipeline({
+      mode: 'auto-then-user', reviewerTelemetry: telemetry,
+      preReview: { preReview: vi.fn(async () => sealed('human')) },
+    })
+    await expect(delegated.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+    expect(observe).toHaveBeenCalledWith({ kind: 'fallback' })
+
+    const throwing = makePipeline({
+      mode: 'auto-then-user', reviewerTelemetry: { observe: () => { throw new Error('telemetry down') } },
+      preReview: { preReview: vi.fn(async () => sealed('human')) },
+    })
+    await expect(throwing.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+
+    const rejected = makePipeline({ reviewerTelemetry: telemetry, preReview: { preReview: vi.fn(async () => sealed('deny')) } })
+    await expect(rejected.pipeline.decide(request())).resolves.toBe('rejected')
+    expect(observe).toHaveBeenCalledOnce()
   })
 
   it('does not replay an expired sealed disposition', async () => {
