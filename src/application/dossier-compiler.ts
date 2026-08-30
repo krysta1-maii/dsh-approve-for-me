@@ -13,6 +13,7 @@ import type {
 } from '../domain/dossier.js'
 import {
   effectiveToolBindingsFromRequestHeaderV1,
+  isApprovalEnvironmentEvidenceV1,
   sealSourceVerifiedDossier,
   validateDelegationToolCatalog,
 } from '../domain/dossier.js'
@@ -394,7 +395,8 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || snapshot.execution.toolName.length === 0 || snapshot.execution.toolName !== execution.request.toolName
       || snapshot.execution.actionHash !== execution.projection.actionHash
       || snapshot.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
-      || snapshot.execution.projectorId.length === 0 || snapshot.execution.projectorId !== execution.projection.projectorId) {
+      || snapshot.execution.projectorId.length === 0 || snapshot.execution.projectorId !== execution.projection.projectorId
+      || !isApprovalEnvironmentEvidenceV1(snapshot.environment)) {
       return { kind: 'incomplete', reason: 'missing-required-projection' }
     }
     // This v1 slice accepts only native ordinary calls still pending in the

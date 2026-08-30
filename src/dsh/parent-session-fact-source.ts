@@ -8,6 +8,7 @@ import type {
   PrincipalSessionIdentityV1,
   SessionFactEventV1,
 } from '../domain/dossier.js'
+import { isApprovalEnvironmentEvidenceV1 } from '../domain/dossier.js'
 import type { LiveAgentRegistry, ParentSessionFactSource } from '../ports/parent-session-facts.js'
 
 interface SessionEventLike {
@@ -199,7 +200,8 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     if (correlatedExecutions.length !== 1) return undefined
     const approval = approvals[0]!
     const execution = correlatedExecutions[0]!
-    if (approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
+    if (!isApprovalEnvironmentEvidenceV1(approval.environment)
+      || approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
       || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId
       || approval.execution.toolName !== input.toolName || approval.execution.toolName !== execution.request.toolName
       || approval.execution.actionHash !== execution.projection.actionHash

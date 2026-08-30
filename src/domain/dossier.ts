@@ -529,6 +529,15 @@ export type ApprovalEnvironmentEvidenceV1 = Readonly<{
   readonly kind: 'native-header-only'
 }>
 
+/** Rejects unrecognized or expanded evidence before it reaches a dossier. */
+export function isApprovalEnvironmentEvidenceV1(value: unknown): value is ApprovalEnvironmentEvidenceV1 {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const evidence = value as Record<string, unknown>
+  return Object.keys(evidence).length === 2
+    && evidence.version === 1
+    && evidence.kind === 'native-header-only'
+}
+
 export interface ApprovalSnapshotRecordV1 {
   readonly version: 1
   readonly session: SessionLifecycleIdentityV1

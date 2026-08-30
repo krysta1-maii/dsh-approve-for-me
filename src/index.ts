@@ -47,6 +47,7 @@ export {
   effectiveToolBindingFromSchemaV1,
   effectiveToolBindingsFromRequestHeaderV1,
   fingerprintDelegationToolCatalogV1,
+  isApprovalEnvironmentEvidenceV1,
   recomputeDossierHash,
   validateDelegationToolCatalog,
   validateToolTrajectorySection,

@@ -588,6 +588,18 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: unsupportedApprovalSnapshotVersion as ParentSessionFactSnapshotV1 }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
+    for (const environment of [
+      { kind: 'native-header-only' },
+      { version: 1, kind: 'host-backed' },
+      { version: 1, kind: 'native-header-only', sandbox: { enabled: true } },
+    ]) {
+      const forgedEnvironment = {
+        ...complete,
+        approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, environment }],
+      }
+      expect(new DefaultDossierCompiler(deps).compile({ facts: forgedEnvironment as ParentSessionFactSnapshotV1 }))
+        .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
+    }
     const corruptedActionHash = {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, projection: { ...complete.executionFacts[0]!.projection, actionHash: hash('f') } }],

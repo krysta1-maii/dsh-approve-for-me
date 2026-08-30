@@ -1,4 +1,5 @@
 import { canonicalJson, snapshotJson } from '../domain/json.js'
+import { isApprovalEnvironmentEvidenceV1 } from '../domain/dossier.js'
 import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -38,14 +39,6 @@ function validSession(value: unknown): value is SessionLifecycleIdentityV1 {
     && Number.isSafeInteger(session.sessionFormatVersion) && (session.sessionFormatVersion as number) >= 0
     && Number.isSafeInteger(session.createdAt) && (session.createdAt as number) >= 0
     && (session.cwd === undefined || (typeof session.cwd === 'string' && session.cwd.length > 0))
-}
-
-function validApprovalEnvironment(value: unknown): boolean {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-  const environment = value as Record<string, unknown>
-  return Object.keys(environment).length === 2
-    && environment.version === 1
-    && environment.kind === 'native-header-only'
 }
 
 function parseRow(value: unknown): StoredRow {
@@ -285,7 +278,7 @@ export class DshStorageDomainFactRepositories {
       || typeof record.execution.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.execution.actionHash)
       || typeof record.execution.classificationCatalogFingerprint !== 'string' || record.execution.classificationCatalogFingerprint.length === 0
       || typeof record.execution.projectorId !== 'string' || record.execution.projectorId.length === 0
-      || !validApprovalEnvironment(record.environment)) return false
+      || !isApprovalEnvironmentEvidenceV1(record.environment)) return false
     return true
   }
 }
