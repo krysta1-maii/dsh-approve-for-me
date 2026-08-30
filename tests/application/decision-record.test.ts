@@ -35,10 +35,16 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).rejects.toThrow(/not supported/)
   })
 
+  it('rejects inconsistent decision fields and run identity routes', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    await expect(store.createConfirmed(record({ normalizedDecision: 'deny' }))).rejects.toThrow(/inconsistent/)
+    await expect(store.createConfirmed(record({ route: 'trust-envelope' }))).rejects.toThrow(/reviewRunId/)
+  })
+
   it('returns conflict when the same ask confirms a different disposition', async () => {
     const store = new InMemoryGateDecisionRecordStore()
     await store.createConfirmed(record())
-    await expect(store.createConfirmed(record({ disposition: 'deny' }))).resolves.toBe('conflict')
+    await expect(store.createConfirmed(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))).resolves.toBe('conflict')
   })
 
   it('does not collide when a reused session id has another lifecycle', async () => {
@@ -55,13 +61,13 @@ describe('InMemoryGateDecisionRecordStore', () => {
 
   it('conflicts when a best-effort record contradicts a later confirmation', async () => {
     const store = new InMemoryGateDecisionRecordStore()
-    await store.recordBestEffort(record({ disposition: 'deny' }))
+    await store.recordBestEffort(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))
     await expect(store.createConfirmed(record())).resolves.toBe('conflict')
   })
 
   it('throws when a best-effort record would contradict an existing best effort', async () => {
     const store = new InMemoryGateDecisionRecordStore()
-    await store.recordBestEffort(record({ disposition: 'deny' }))
+    await store.recordBestEffort(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))
     await expect(store.recordBestEffort(record())).rejects.toThrow(/conflicts/)
   })
 })

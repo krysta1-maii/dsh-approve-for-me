@@ -130,6 +130,19 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   if (value.reviewRunId !== undefined && (typeof value.reviewRunId !== 'string' || value.reviewRunId.length === 0)) {
     throw new TypeError('gate decision record.reviewRunId is invalid')
   }
+  const normalized = value.normalizedDecision as GateDecisionRecord['normalizedDecision']
+  const disposition = value.disposition as SealedDispositionKind
+  const plugin = value.pluginDisposition as GatePluginDispositionV1
+  if ((normalized === 'allow' && (disposition !== 'allow' || plugin !== 'allow'))
+    || (normalized === 'deny' && (disposition !== 'deny' || plugin !== 'deny'))
+    || (normalized === 'human_review' && (disposition !== 'human' || plugin !== 'delegate-human'))) {
+    throw new TypeError('gate decision record decision fields are inconsistent')
+  }
+  const route = value.route as GateDecisionRouteV1
+  const reviewRoute = route === 'guardian' || route === 'sealed-replay'
+  if (reviewRoute !== (value.reviewRunId !== undefined)) {
+    throw new TypeError('gate decision record reviewRunId does not match its route')
+  }
   return Object.freeze({ ...value }) as unknown as GateDecisionRecord
 }
 

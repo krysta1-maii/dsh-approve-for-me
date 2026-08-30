@@ -35,7 +35,7 @@ describe('DshStorageDomainGateDecisionRecordStore', () => {
     const fake = facility()
     const store = new DshStorageDomainGateDecisionRecordStore(fake.facility)
     await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
-    await expect(store.createConfirmed(record({ disposition: 'deny' }))).resolves.toBe('conflict')
+    await expect(store.createConfirmed(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))).resolves.toBe('conflict')
     expect(fake.put).toHaveBeenCalledOnce()
   })
 
