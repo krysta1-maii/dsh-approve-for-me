@@ -24,7 +24,7 @@ function approval(): ApprovalSnapshotRecordV1 {
   return {
     version: 1, session, approvalRequestId: 'ask-1', approvalAskedSeq: 6,
     execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
-    environment: {},
+    environment: { version: 1, kind: 'native-header-only' },
   }
 }
 
@@ -73,6 +73,8 @@ describe('DshStorageDomainFactRepositories', () => {
     const fake = facility()
     const { shared, approvals } = repositories(fake.facility)
     await expect(approvals.create({ ...approval(), environment: null } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
+    await expect(approvals.create({ ...approval(), environment: { version: 1, kind: 'native-header-only', unsupported: true } } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
+    await expect(approvals.create({ ...approval(), environment: { version: 2, kind: 'native-header-only' } } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
     await expect(approvals.create({ ...approval(), execution: { ...approval().execution, projectorId: '' } })).resolves.toBe('conflict')
     await expect(approvals.list(session)).resolves.toEqual([])
     await shared.drain()
@@ -94,7 +96,7 @@ describe('DshStorageDomainFactRepositories', () => {
     await executions.create(execution())
     await approvals.create(approval())
     await expect(executions.create({ ...execution(), projection: { ...execution().projection, observedAt: 2 } })).resolves.toBe('conflict')
-    await expect(approvals.create({ ...approval(), environment: { changed: true } })).resolves.toBe('conflict')
+    await expect(approvals.create({ ...approval(), execution: { ...approval().execution, projectorId: 'changed-v1' } })).resolves.toBe('conflict')
     const reused = { ...session, cwd: '/other' }
     await expect(executions.list(reused)).resolves.toEqual([])
     await expect(approvals.list(reused)).resolves.toEqual([])
@@ -124,7 +126,7 @@ describe('DshStorageDomainFactRepositories', () => {
     executionRows.set(executionKey, { version: 1, canonical: canonicalJson(poisonedExecution), record: poisonedExecution })
     const approvalRows = fake.tables.get('approval_snapshots')!
     const approvalKey = [...approvalRows.keys()].find(key => key.startsWith('a1_'))!
-    const poisonedApproval = { ...approval(), execution: null }
+    const poisonedApproval = { ...approval(), environment: { version: 1, kind: 'native-header-only', unsupported: true } }
     approvalRows.set(approvalKey, { version: 1, canonical: canonicalJson(poisonedApproval), record: poisonedApproval })
     await expect(executions.list(session)).resolves.toEqual([])
     await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()

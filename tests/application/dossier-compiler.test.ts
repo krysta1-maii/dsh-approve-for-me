@@ -73,7 +73,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
       approvalRequestId: 'ask-1',
       approvalAskedSeq: 5,
       execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hashAction(action), classificationCatalogFingerprint: catalog().fingerprint, projectorId: 'dsh-approve-for-me/generic-raw-v1' },
-      environment: { version: 1, sessionId: 'parent-1' },
+      environment: { version: 1, kind: 'native-header-only' },
     }],
     ...overrides,
   }
@@ -288,16 +288,16 @@ describe('DefaultDossierCompiler', () => {
       events: complete.events.map(event => event.seq === 3
         ? { ...event, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' as const } }
         : event),
-      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, environment: { version: 1, sessionId: 'parent-1', metadata: { value: 'original' } } }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, environment: { version: 1 as const, kind: 'native-header-only' as const } }],
     }
     const detached = new DefaultDossierCompiler(deps).compile({ facts: mutableInput })
     const mutableHeader = mutableInput.events.find(event => event.seq === 3) as { data: { header: { config: { model: string } } } }
     mutableHeader.data.header.config.model = 'mutated-after-compilation'
-    ;(mutableInput.approvalSnapshots[0]!.environment as { metadata: { value: string } }).metadata.value = 'mutated-after-compilation'
+    ;(mutableInput.approvalSnapshots[0]!.environment as { kind: string }).kind = 'mutated-after-compilation'
     expect(detached.kind).toBe('ready')
     if (detached.kind === 'ready') {
       expect(detached.verified.dossier).toMatchObject({
-        environment: { requestHeader: { config: { model: 'model-1' } }, approvalSnapshot: { metadata: { value: 'original' } } },
+        environment: { requestHeader: { config: { model: 'model-1' } }, approvalSnapshot: { version: 1, kind: 'native-header-only' } },
       })
       expect(recomputeDossierHash(detached.verified.dossier)).toBe(detached.verified.dossierHash)
     }

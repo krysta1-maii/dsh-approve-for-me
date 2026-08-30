@@ -519,6 +519,16 @@ export interface ToolExecutionFactRecordV1 {
   readonly delegationReceipt?: DelegationReceiptFactRecordV1
 }
 
+/**
+ * The only durable ask-environment evidence admitted in D1.1. Its label
+ * records that this snapshot carries no inferred host, sandbox, or Code Mode
+ * facts; later versions may add separately validated evidence variants.
+ */
+export type ApprovalEnvironmentEvidenceV1 = Readonly<{
+  readonly version: 1
+  readonly kind: 'native-header-only'
+}>
+
 export interface ApprovalSnapshotRecordV1 {
   readonly version: 1
   readonly session: SessionLifecycleIdentityV1
@@ -533,7 +543,7 @@ export interface ApprovalSnapshotRecordV1 {
     readonly classificationCatalogFingerprint: string
     readonly projectorId: string
   }
-  readonly environment: JsonValue
+  readonly environment: ApprovalEnvironmentEvidenceV1
 }
 
 export interface ParentSessionFactSnapshotV1 {

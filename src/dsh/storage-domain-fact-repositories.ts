@@ -40,6 +40,14 @@ function validSession(value: unknown): value is SessionLifecycleIdentityV1 {
     && (session.cwd === undefined || (typeof session.cwd === 'string' && session.cwd.length > 0))
 }
 
+function validApprovalEnvironment(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const environment = value as Record<string, unknown>
+  return Object.keys(environment).length === 2
+    && environment.version === 1
+    && environment.kind === 'native-header-only'
+}
+
 function parseRow(value: unknown): StoredRow {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('invalid dossier fact row')
   const row = value as Partial<StoredRow>
@@ -277,13 +285,8 @@ export class DshStorageDomainFactRepositories {
       || typeof record.execution.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.execution.actionHash)
       || typeof record.execution.classificationCatalogFingerprint !== 'string' || record.execution.classificationCatalogFingerprint.length === 0
       || typeof record.execution.projectorId !== 'string' || record.execution.projectorId.length === 0
-      || record.environment === null || typeof record.environment !== 'object' || Array.isArray(record.environment)) return false
-    try {
-      snapshotJson(record.environment)
-      return true
-    } catch {
-      return false
-    }
+      || !validApprovalEnvironment(record.environment)) return false
+    return true
   }
 }
 

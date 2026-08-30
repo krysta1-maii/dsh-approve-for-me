@@ -242,8 +242,8 @@ export class DshExecutionFactProjectionBridge {
         classificationCatalogFingerprint: execution.toolClassification.classificationCatalogFingerprint,
         projectorId: execution.projection.projectorId,
       }),
-      // Environment evidence remains deliberately bounded until a host-backed projector exists.
-      environment: Object.freeze({}),
+      // No host-backed environment projector is wired in D1.1.
+      environment: Object.freeze({ version: 1, kind: 'native-header-only' }),
     })
     await this.approvals.create(snapshot)
   }

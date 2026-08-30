@@ -26,7 +26,7 @@ const execution: ToolExecutionFactRecordV1 = {
 const approval: ApprovalSnapshotRecordV1 = {
   version: 1, session: lifecycle, approvalRequestId: 'ask-1', approvalAskedSeq: 3,
   execution: { requestEventSeq: 2, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
-  environment: { version: 1, sessionId: 'parent-1' },
+  environment: { version: 1, kind: 'native-header-only' },
 }
 
 function agent(overrides: object = {}) {
@@ -93,13 +93,13 @@ describe('DshParentSessionFactSource', () => {
 
   it('detaches non-session facts from mutable repository and catalog inputs', () => {
     const requester = agent()
-    const snapshotApproval = { ...approval, environment: { nested: { value: 'before' } } }
+    const snapshotApproval = { ...approval, environment: { version: 1 as const, kind: 'native-header-only' as const } }
     const snapshotCatalog = { ...catalog, descriptors: [{ ...catalog.descriptors[0]! }] }
     const source = new DshParentSessionFactSource({ get: () => requester as never })
     const facts = source.snapshot(input({ agent: requester as never, approvalSnapshots: [snapshotApproval], classificationCatalog: snapshotCatalog }))
-    ;((snapshotApproval.environment as { nested: { value: string } }).nested).value = 'after'
+    ;(snapshotApproval.environment as { kind: string }).kind = 'after'
     ;(snapshotCatalog.descriptors[0] as { classificationId: string }).classificationId = 'after'
-    expect(facts?.approvalSnapshots[0]).toMatchObject({ environment: { nested: { value: 'before' } } })
+    expect(facts?.approvalSnapshots[0]).toMatchObject({ environment: { version: 1, kind: 'native-header-only' } })
     expect(facts?.eventProjection.classificationCatalog.descriptors[0]).toMatchObject({ classificationId: 'class-1' })
     expect(Object.isFrozen(facts?.approvalSnapshots[0]?.environment as object)).toBe(true)
   })

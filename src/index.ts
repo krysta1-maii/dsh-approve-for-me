@@ -53,6 +53,7 @@ export {
 } from './domain/dossier.js'
 export type {
   AgentDeliveryV1,
+  ApprovalEnvironmentEvidenceV1,
   ApprovalReviewPacketCodecV1,
   ApprovalSnapshotRecordV1,
   CodeDispatchRequestRefV1,

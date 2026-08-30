@@ -38,7 +38,7 @@ function approvalSnapshot(): ApprovalSnapshotRecordV1 {
     approvalRequestId: 'ask-1',
     approvalAskedSeq: 5,
     execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
-    environment: { version: 1, sessionId: 'parent-1' },
+    environment: { version: 1, kind: 'native-header-only' },
   }
 }
 
@@ -85,7 +85,7 @@ describe('in-memory fact repositories', () => {
     await repo.create(approvalSnapshot())
     await expect(repo.create({
       ...approvalSnapshot(),
-      environment: { version: 1, sessionId: 'parent-other' },
+      execution: { ...approvalSnapshot().execution, projectorId: 'other-v1' },
     })).resolves.toBe('conflict')
     // Original row is not overwritten.
     await expect(repo.get({ session, approvalRequestId: 'ask-1', approvalAskedSeq: 5 })).resolves.toEqual(approvalSnapshot())

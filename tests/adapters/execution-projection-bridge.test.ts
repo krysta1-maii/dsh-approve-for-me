@@ -87,7 +87,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(snapshot).toMatchObject({
       approvalAskedSeq: 1,
       execution: { requestEventSeq: 0, callId: 'call-1', toolName: 'bash', classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'dsh-approve-for-me/generic-raw-v1' },
-      environment: {},
+      environment: { version: 1, kind: 'native-header-only' },
     })
     expect(Object.isFrozen(snapshot)).toBe(true)
   })
