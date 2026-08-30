@@ -250,6 +250,20 @@ describe('DefaultGatePipeline', () => {
     expect(preReview.preReview).toHaveBeenCalledOnce()
   })
 
+  it('preserves non-allow outcomes when best-effort audit storage fails', async () => {
+    const records = recordsStub({ recordBestEffort: vi.fn(async () => { throw new Error('storage down') }) })
+    const deny = makePipeline({ records, preReview: { preReview: vi.fn(async () => sealed('deny')) } })
+    await expect(deny.pipeline.decide(request())).resolves.toBe('rejected')
+
+    const human = makePipeline({
+      records,
+      mode: 'auto-then-user',
+      preReview: { preReview: vi.fn(async () => sealed('human')) },
+    })
+    await expect(human.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+    expect(records.recordBestEffort).toHaveBeenCalledTimes(2)
+  })
+
   it('does not replay an expired sealed disposition', async () => {
     const { pipeline, preReview, seals } = makePipeline({ now: () => 300 })
     seals.seal({ ...sealed('allow'), deadlineAt: 200 })
@@ -284,6 +298,9 @@ describe('DefaultGatePipeline', () => {
     const allow = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('allow')) } })
     await expect(allow.pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(allow.records.createConfirmed).toHaveBeenCalledOnce()
+    expect(allow.records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
+      version: 1, route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow', reviewRunId: 'run-1',
+    }))
 
     const deny = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('deny')) } })
     await expect(deny.pipeline.decide(request())).resolves.toBe('rejected')

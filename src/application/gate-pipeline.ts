@@ -75,8 +75,20 @@ export interface GatePreReviewInput {
  * security-critical distinction between "cannot confirm right now" and
  * "the record conflicts with an existing decision".
  */
+export type GateDecisionRouteV1 = 'trust-envelope' | 'allow-cache' | 'sealed-replay' | 'guardian'
+export type GatePluginDispositionV1 = 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled'
+
+/**
+ * Default-minimal durable audit record. It intentionally carries only identity,
+ * route and normalized outcome metadata; no packet, rationale or tool arguments.
+ */
 export interface GateDecisionRecord {
-  readonly reviewRunId: string
+  readonly version: 1
+  /** Present only for a real Guardian/sealed review, never synthesized for fast paths. */
+  readonly reviewRunId?: string
+  readonly route: GateDecisionRouteV1
+  readonly normalizedDecision: 'allow' | 'deny' | 'human_review'
+  readonly pluginDisposition: GatePluginDispositionV1
   readonly requestId: string
   readonly parentSessionId: string
   /** Canonical full lifecycle identity; bare session IDs are reusable. */
@@ -121,11 +133,17 @@ export interface GatePipeline {
 function recordFor(
   request: GateMachineRequestV1,
   facts: GateActionFacts,
-  disposition: SealedDispositionKind,
-  reviewRunId: string,
+  normalizedDecision: GateDecisionRecord['normalizedDecision'],
+  route: GateDecisionRouteV1,
+  pluginDisposition: GatePluginDispositionV1,
+  reviewRunId?: string,
 ): GateDecisionRecord {
   return {
-    reviewRunId,
+    version: 1,
+    route,
+    normalizedDecision,
+    pluginDisposition,
+    ...reviewRunId === undefined ? {} : { reviewRunId },
     requestId: request.requestId ?? '',
     parentSessionId: request.parentSessionId,
     parentLifecycleFingerprint: facts.breakerKey.parentLifecycleFingerprint,
@@ -133,7 +151,7 @@ function recordFor(
     actionHash: request.actionHash,
     generation: facts.generation,
     configurationFingerprint: facts.configurationFingerprint,
-    disposition,
+    disposition: normalizedDecision === 'human_review' ? 'human' : normalizedDecision,
   }
 }
 
@@ -188,7 +206,7 @@ export class DefaultGatePipeline implements GatePipeline {
 
     if (fastPathsAllowed && facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
       if (request.signal?.aborted) return 'cancelled'
-      const record = recordFor(request, facts, 'allow', requestId)
+      const record = recordFor(request, facts, 'allow', 'trust-envelope', 'allow')
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'confirmed') {
         if (request.signal?.aborted) return 'cancelled'
@@ -203,7 +221,7 @@ export class DefaultGatePipeline implements GatePipeline {
       // A cache entry is only an optimization over a prior Guardian decision;
       // each distinct approval ask still needs its own durable confirmation
       // before it can receive an automatic grant.
-      const result = await this.deps.records.createConfirmed(recordFor(request, facts, 'allow', requestId))
+      const result = await this.deps.records.createConfirmed(recordFor(request, facts, 'allow', 'allow-cache', 'allow'))
       if (result === 'confirmed') {
         if (request.signal?.aborted) return 'cancelled'
         return 'allowed-once'
@@ -224,7 +242,7 @@ export class DefaultGatePipeline implements GatePipeline {
         const mapped = this.mapDisposition(replay.disposition.disposition)
         if (mapped !== 'allowed-once') return mapped
         const result = await this.deps.records.createConfirmed(
-          recordFor(request, facts, 'allow', replay.disposition.reviewRunId),
+          recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId),
         )
         if (result !== 'confirmed') return result === 'conflict' ? 'unavailable' : this.delegateOrUnavailable()
         if (request.signal?.aborted) return 'cancelled'
@@ -250,7 +268,10 @@ export class DefaultGatePipeline implements GatePipeline {
     if (request.signal?.aborted) return 'cancelled'
     if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
     const mapped = this.mapDisposition(sealed.disposition)
-    const record = recordFor(request, facts, sealed.disposition, sealed.reviewRunId)
+    const pluginDisposition: GatePluginDispositionV1 = sealed.disposition === 'allow'
+      ? 'allow'
+      : sealed.disposition === 'deny' ? 'deny' : 'delegate-human'
+    const record = recordFor(request, facts, sealed.disposition === 'human' ? 'human_review' : sealed.disposition, 'guardian', pluginDisposition, sealed.reviewRunId)
 
     if (mapped === 'allowed-once') {
       const result = await this.deps.records.createConfirmed(record)
@@ -261,14 +282,22 @@ export class DefaultGatePipeline implements GatePipeline {
       if (request.signal?.aborted) return 'cancelled'
       if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
       this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
-    } else if (mapped === 'rejected') {
-      await this.deps.records.recordBestEffort(record)
+    } else {
+      // Audit failure cannot convert a deny/human result into authorization or
+      // erase its safety outcome. Allows use createConfirmed above instead.
+      await this.recordBestEffortSafely(record)
       // Only an explicit Guardian deny can establish an exact rejection
       // circuit. Human fallback maps to rejected in `auto` mode but is not a
       // denial fact and must never suppress a future independent review.
-      if (sealed.disposition === 'deny') this.deps.breaker.recordGuardianDeny(facts.breakerKey)
+      if (mapped === 'rejected' && sealed.disposition === 'deny') {
+        this.deps.breaker.recordGuardianDeny(facts.breakerKey)
+      }
     }
     return mapped
+  }
+
+  private async recordBestEffortSafely(record: GateDecisionRecord): Promise<void> {
+    try { await this.deps.records.recordBestEffort(record) } catch { /* audit must not authorize */ }
   }
 
   private delegateOrUnavailable(): GateMachineDecisionV1 {

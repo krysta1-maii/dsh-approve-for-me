@@ -6,7 +6,11 @@ const hash = (char: string) => `sha256:${char.repeat(64)}`
 
 function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord {
   return {
+    version: 1,
     reviewRunId: 'run-1',
+    route: 'guardian',
+    normalizedDecision: 'allow',
+    pluginDisposition: 'allow',
     requestId: 'ask-1',
     parentSessionId: 'parent-1',
     parentLifecycleFingerprint: 'lifecycle-1',

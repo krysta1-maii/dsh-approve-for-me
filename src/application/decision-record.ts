@@ -52,7 +52,12 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
   }
 
   private sameDecision(a: GateDecisionRecord, b: GateDecisionRecord): boolean {
-    return a.parentSessionId === b.parentSessionId
+    return a.version === b.version
+      && a.route === b.route
+      && a.normalizedDecision === b.normalizedDecision
+      && a.pluginDisposition === b.pluginDisposition
+      && a.reviewRunId === b.reviewRunId
+      && a.parentSessionId === b.parentSessionId
       && a.parentLifecycleFingerprint === b.parentLifecycleFingerprint
       && a.callId === b.callId
       && a.actionHash === b.actionHash
