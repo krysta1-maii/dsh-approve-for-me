@@ -111,6 +111,13 @@ export function installApproveForMe(
   options: ApproveForMeInstallOptions = {},
 ): ApproveForMePlugin {
   const normalized = normalizeConfig(config)
+  // Full case capture requires a host-private durable store with lifecycle-bound
+  // TTL, quota reconciliation, deletion, and redacted-export controls. This
+  // composition has no such adapter yet, so accepting it would falsely imply
+  // operational retention. Keep the default-off capability explicit.
+  if (normalized.caseCapture.mode === 'full') {
+    throw new Error('caseCapture.mode "full" requires a host-private durable case-capture adapter, which is not available')
+  }
   const channel = new DefaultDecisionChannel()
   const lifecycle = new ApprovalRunLifecycle()
   const captures = new DefaultActionCapture<Agent, string>()

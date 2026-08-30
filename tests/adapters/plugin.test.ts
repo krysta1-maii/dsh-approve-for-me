@@ -235,6 +235,15 @@ describe('installApproveForMe composition root', () => {
     expect(h.disposeRegistration).toHaveBeenCalledOnce()
   })
 
+  it('rejects full case capture until a durable host-private adapter exists', () => {
+    const h = harness()
+    expect(() => installApproveForMe(h.ctx as unknown as Context, {
+      ...config,
+      caseCapture: { mode: 'full', maxCases: 1, maxArtifactBytes: 1, maxTotalBytes: 1, retentionDays: 1 },
+    })).toThrow(/host-private durable case-capture adapter/)
+    expect(h.registered).toBeUndefined()
+  })
+
   it('fails closed without a source-verified dossier despite a matching catalog', async () => {
     const h = harness()
     const catalogConfig: Config = {
