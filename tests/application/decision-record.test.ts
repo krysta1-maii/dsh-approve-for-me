@@ -52,6 +52,18 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await expect(store.createConfirmed({ ...failure, failureStage: 'unknown' as never })).rejects.toThrow(/no-decision/)
   })
 
+  it('accepts only a zero-summary exact denial-breaker audit row', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const breaker: GateDecisionRecord = {
+      ...base, route: 'exact-denial-breaker', normalizedDecision: 'deny', pluginDisposition: 'deny', disposition: 'deny',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }
+    await expect(store.createConfirmed(breaker)).resolves.toBe('confirmed')
+    await expect(store.createConfirmed({ ...breaker, reviewAttempts: 1 })).rejects.toThrow(/execution summary/)
+    await expect(store.createConfirmed({ ...breaker, reviewRunId: 'forbidden' })).rejects.toThrow(/reviewRunId/)
+  })
+
   it('rejects unknown fields at the compact durable boundary', async () => {
     const store = new InMemoryGateDecisionRecordStore()
     await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).rejects.toThrow(/not supported/)

@@ -176,10 +176,20 @@ describe('DefaultGatePipeline', () => {
     await expect(failedAudit.pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
   })
 
-  it('rejects immediately on a breaker hit', async () => {
-    const { pipeline, preReview } = makePipeline({ breakerHit: true })
+  it('best-effort audits an exact breaker hit without changing rejection', async () => {
+    const records = recordsStub()
+    const { pipeline, preReview } = makePipeline({ breakerHit: true, records })
     await expect(pipeline.decide(request())).resolves.toBe('rejected')
     expect(preReview.preReview).not.toHaveBeenCalled()
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'exact-denial-breaker', normalizedDecision: 'deny', pluginDisposition: 'deny', disposition: 'deny',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
+    const failing = makePipeline({
+      breakerHit: true,
+      records: recordsStub({ recordBestEffort: vi.fn(async () => { throw new Error('audit unavailable') }) }),
+    })
+    await expect(failing.pipeline.decide(request())).resolves.toBe('rejected')
   })
 
   it('allows through the trust envelope only after a confirmed record', async () => {

@@ -76,7 +76,7 @@ export interface GatePreReviewInput {
  * security-critical distinction between "cannot confirm right now" and
  * "the record conflicts with an existing decision".
  */
-export type GateDecisionRouteV1 = 'trust-envelope' | 'allow-cache' | 'sealed-replay' | 'guardian' | 'post-facts-failure'
+export type GateDecisionRouteV1 = 'trust-envelope' | 'allow-cache' | 'sealed-replay' | 'guardian' | 'exact-denial-breaker' | 'post-facts-failure'
 export type GatePluginDispositionV1 = 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled' | 'delegate'
 export type GateRecordDispositionV1 = SealedDispositionKind | 'no-decision'
 export type GateFailureStageV1 =
@@ -122,7 +122,7 @@ export interface GateDecisionRecord {
 
 export type GateDecisionRecordResult = 'confirmed' | 'conflict' | 'unavailable'
 
-const GATE_DECISION_ROUTES = ['trust-envelope', 'allow-cache', 'sealed-replay', 'guardian', 'post-facts-failure'] as const
+const GATE_DECISION_ROUTES = ['trust-envelope', 'allow-cache', 'sealed-replay', 'guardian', 'exact-denial-breaker', 'post-facts-failure'] as const
 const GATE_PLUGIN_DISPOSITIONS = ['allow', 'deny', 'delegate-human', 'unavailable', 'cancelled', 'delegate'] as const
 const GATE_NORMALIZED_DECISIONS = ['allow', 'deny', 'human_review', 'no-decision'] as const
 const GATE_RECORD_DISPOSITIONS = ['allow', 'deny', 'human', 'no-decision'] as const
@@ -337,7 +337,10 @@ export class DefaultGatePipeline implements GatePipeline {
     }
     const fastPathsAllowed = facts.assessment === undefined || permitsAutomaticFastPath(facts.assessment)
 
-    if (this.deps.breaker.lookup(facts.breakerKey)) return 'rejected'
+    if (this.deps.breaker.lookup(facts.breakerKey)) {
+      await this.recordBestEffortSafely(recordFor(request, facts, 'deny', 'exact-denial-breaker', 'deny'))
+      return 'rejected'
+    }
 
     if (fastPathsAllowed && facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
       if (request.signal?.aborted) return 'cancelled'
