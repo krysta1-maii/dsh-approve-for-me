@@ -129,12 +129,12 @@ Exact breaker 的 key 限定 parent lifecycle、turn、direct-user frontier 与�
 
 生产 Gate 的 Storage Domain 决策行现在是闭集、版本化的最小审计记录：完整 parent lifecycle／ask／call／action hash、configuration 和 generation 之外，还保存实际 route（trust envelope、allow cache、sealed replay 或 Guardian）、规范化 Guardian decision、最终插件 disposition，以及仅在真实 Guardian/重放路径可得的 `reviewRunId`。该行明确拒绝 rationale、decision payload、packet、dossier、tool arguments 和任何未定义字段。
 
-自动 allow 仍必须在其 compact row durable-confirmed 后才返回；Guardian deny 与 human 的记录是 best-effort，记录失败不能改变拒绝或人工下沉。完整 ReviewDecisionRecord、attempt/recovery 历史、full case capture durable backend 和 Reviewer telemetry 尚未接线，不能由此最小行推断。
+自动 allow 仍必须在其 compact row durable-confirmed 后才返回；Guardian deny 与 human 的记录是 best-effort，记录失败不能改变拒绝或人工下沉。Reviewer telemetry 已接入 coordinator 与最终 Gate fallback：仅聚合结果、时长、attempt、污染轮换和固定失败类别，不保存身份或内容，观察器异常也不影响裁决。完整 ReviewDecisionRecord、attempt/recovery 的 durable audit，以及 full case capture durable backend 仍未接线，不能由此最小行推断。
 
 ### 验证
 
 ```bash
-npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 270 项测试 + build
+npm run check   # 本机 0.1.1-rc.2 安装基线：typecheck + 275 项测试 + build
 bash -n patch/dsh-user-approval/scripts/build-fork.sh
 node --check patch/dsh-user-approval/scripts/*.mjs
 ```
