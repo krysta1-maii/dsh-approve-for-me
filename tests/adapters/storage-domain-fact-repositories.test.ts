@@ -76,6 +76,7 @@ describe('DshStorageDomainFactRepositories', () => {
     await expect(approvals.create({ ...approval(), environment: { version: 1, kind: 'native-header-only', unsupported: true } } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
     await expect(approvals.create({ ...approval(), environment: { version: 2, kind: 'native-header-only' } } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
     await expect(approvals.create({ ...approval(), execution: { ...approval().execution, projectorId: '' } })).resolves.toBe('conflict')
+    await expect(approvals.create({ ...approval(), approvalAskedSeq: 5 })).resolves.toBe('conflict')
     await expect(approvals.list(session)).resolves.toEqual([])
     await shared.drain()
   })

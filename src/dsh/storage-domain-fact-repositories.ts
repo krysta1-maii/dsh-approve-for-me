@@ -275,6 +275,7 @@ export class DshStorageDomainFactRepositories {
       || typeof record.execution.callId !== 'string' || record.execution.callId.length === 0
       || typeof record.execution.toolName !== 'string' || record.execution.toolName.length === 0
       || !Number.isSafeInteger(record.execution.requestEventSeq) || (record.execution.requestEventSeq as number) < 0
+      || (record.approvalAskedSeq as number) <= record.execution.requestEventSeq
       || typeof record.execution.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.execution.actionHash)
       || typeof record.execution.classificationCatalogFingerprint !== 'string' || record.execution.classificationCatalogFingerprint.length === 0
       || typeof record.execution.projectorId !== 'string' || record.execution.projectorId.length === 0
