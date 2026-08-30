@@ -299,8 +299,16 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     if (execution.version !== 1
       || !sameLifecycle(execution.session, facts.session)
       || execution.projection.action.toolName !== execution.request.toolName
+      || execution.projection.projectorId !== execution.projection.action.projectorId
       || execution.projection.actionHash !== hashAction(execution.projection.action)) {
       return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
+    }
+    if (this.deps.semanticActionBindings !== undefined) {
+      const semantic = this.deps.semanticActionBindings.filter(binding => binding.toolName === execution.request.toolName)
+      if (semantic.length !== 1 || semantic[0]!.family !== execution.projection.action.semantics.family
+        || semantic[0]!.projectorId !== execution.projection.action.projectorId) {
+        return { kind: 'incomplete', reason: 'semantic-projection-mismatch' }
+      }
     }
     const catalogDescriptors = facts.eventProjection.classificationCatalog.descriptors.filter(descriptor =>
       descriptor.toolName === execution.request.toolName)

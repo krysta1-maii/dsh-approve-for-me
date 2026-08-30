@@ -65,14 +65,14 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
         classificationCatalogFingerprint: catalog().fingerprint,
         descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
       },
-      projection: { projectorId: 'default-v1', action, actionHash: hashAction(action), observedAt: 1 },
+      projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action, actionHash: hashAction(action), observedAt: 1 },
     }],
     approvalSnapshots: [{
       version: 1,
       session,
       approvalRequestId: 'ask-1',
       approvalAskedSeq: 5,
-      execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hashAction(action), classificationCatalogFingerprint: catalog().fingerprint, projectorId: 'default-v1' },
+      execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hashAction(action), classificationCatalogFingerprint: catalog().fingerprint, projectorId: 'dsh-approve-for-me/generic-raw-v1' },
       environment: { version: 1, sessionId: 'parent-1' },
     }],
     ...overrides,
@@ -122,6 +122,11 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+    const semanticMismatch = new DefaultDossierCompiler({
+      ...deps,
+      semanticActionBindings: [{ toolName: 'bash', family: 'shell-process-v1', projectorId: 'dsh-approve-for-me/shell-process-v1' }],
+    }).compile({ facts: complete })
+    expect(semanticMismatch).toEqual({ kind: 'incomplete', reason: 'semantic-projection-mismatch' })
     const negativeZeroSequence = {
       ...complete,
       events: complete.events.map(event => event.seq === 0 ? { ...event, seq: -0 } : event),

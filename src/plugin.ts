@@ -177,6 +177,11 @@ export function installApproveForMe(
   const compiler = new InstrumentedDossierCompiler(
     new DefaultDossierCompiler({
       delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
+      semanticActionBindings: Object.freeze(normalized.toolCatalog.descriptors.map(descriptor => Object.freeze({
+        toolName: descriptor.toolName,
+        family: descriptor.actionSemanticsFamily,
+        projectorId: descriptor.actionProjectorId,
+      }))),
       maxDossierBytes: normalized.maxDossierBytes,
     }),
     {

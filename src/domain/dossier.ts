@@ -596,8 +596,16 @@ export type DossierCompilationResultV1 =
   | { readonly kind: 'incomplete'; readonly reason: 'budget-overflow'; readonly metrics: DossierMetricsV1 }
   | { readonly kind: 'incomplete'; readonly reason: Exclude<string, 'budget-overflow'> }
 
+export interface SemanticActionBindingV1 {
+  readonly toolName: string
+  readonly family: string
+  readonly projectorId: string
+}
+
 export interface GuardianDossierCompilerDependencies {
   readonly delegationProjector: PrincipalDelegationProjector
+  /** Optional closed semantic bindings for the automatic-approval profile. */
+  readonly semanticActionBindings?: readonly SemanticActionBindingV1[]
   /** Complete v1 dossiers exceeding this UTF-8 byte limit fail closed. */
   readonly maxDossierBytes: number
 }

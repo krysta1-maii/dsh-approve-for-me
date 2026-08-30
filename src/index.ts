@@ -86,6 +86,7 @@ export type {
   ProcessTailV1,
   SessionFactEventEnvelopeV1,
   SessionFactEventV1,
+  SemanticActionBindingV1,
   SourceVerifiedDossierV1,
   ToolAttemptOutcomeV1,
   ToolAttemptV1,
