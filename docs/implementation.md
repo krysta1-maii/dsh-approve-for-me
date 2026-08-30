@@ -103,6 +103,12 @@
 
 未实现的 patch/MCP/permission adapter 不得以名称猜测或通用 raw arguments projector 替代；它们在得到 exact adapter schema 与独立正常/缺字段/混淆/超大/不可序列化测试前，均不能进入自动审批 catalog。该阶段尚未完成 R3，不应视为完整风险评估或自动审批能力。
 
+### R4 风险与授权 assessment（保守基线）
+
+`src/domain/risk-assessment.ts` 只从 branded、source-verified dossier 的 action 与 direct-user event refs 生成可审计 assessment；不解析用户文本、不信任模型声明，也不从命令名或 workspace 路径推断授权。现有 structural trigger 覆盖 network/data-exfiltration、filesystem destructive change、`danger-full-access` permission expansion 和 unknown semantics。缺少已证明的 target/side-effect 覆盖时授权保持 `unknown`。
+
+`DossierGateFactProjector` 将该 assessment 加入 source-backed facts。生产 verified-dossier 模式中缺失 assessment 会失败关闭；未知或不完整 assessment 只会跳过 trust/cache/sealed replay 的自动 allow，仍进入 Guardian pre-review。详见 [R4 风险 assessment](risk-assessment.md)。R4 的完整规则、攻击/良性评测与 target-matching verifier 尚未完成。
+
 ### 验证
 
 ```bash
