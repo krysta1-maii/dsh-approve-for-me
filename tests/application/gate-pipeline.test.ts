@@ -4,6 +4,7 @@ import {
   GateFailure,
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
+  assessVerifiedActionV1,
 } from '../../src/index.js'
 import type {
   GateActionFacts,
@@ -150,6 +151,19 @@ describe('DefaultGatePipeline', () => {
     const { pipeline, records } = makePipeline({ trustInside: true })
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(records.createConfirmed).toHaveBeenCalledOnce()
+  })
+
+  it('routes an unknown R4 assessment to Guardian instead of a fast-path grant', async () => {
+    const assessed = action()
+    const preReview = { preReview: vi.fn(async () => sealed('human')) }
+    const { pipeline, records } = makePipeline({
+      trustInside: true,
+      preReview,
+      factsResult: facts({ action: assessed, assessment: assessVerifiedActionV1(assessed, [2]) }),
+    })
+    await expect(pipeline.decide(request())).resolves.toBe('rejected')
+    expect(preReview.preReview).toHaveBeenCalledOnce()
+    expect(records.createConfirmed).not.toHaveBeenCalled()
   })
 
   it('maps an unconfirmed trust-envelope allow to delegate in auto-then-user', async () => {

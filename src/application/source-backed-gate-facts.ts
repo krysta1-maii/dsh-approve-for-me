@@ -7,6 +7,7 @@ import type { GateActionFactResolver, GateActionFacts } from './gate-pipeline.js
 import type { ToolApprovalClassifier } from '../approval-gate/catalog.js'
 import { canonicalJson } from '../domain/json.js'
 import { hashAction } from '../domain/protocol.js'
+import { assessVerifiedActionV1 } from '../domain/risk-assessment.js'
 
 /**
  * A pending approval handle is correlation metadata only. It intentionally
@@ -74,6 +75,7 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       turn.directUserMessages.map(message => message.event.seq))
     const directUserFrontierSeq = frontiers.length === 0 ? undefined : Math.max(...frontiers)
     if (directUserFrontierSeq === undefined) return undefined
+    const assessment = assessVerifiedActionV1(pending.action, frontiers)
     const parentLifecycleFingerprint = canonicalJson(input.facts.session)
     const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq, actionHash: input.pending.actionHash })
     return Object.freeze({
@@ -87,6 +89,7 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       generation: this.generation,
       configurationFingerprint: this.configurationFingerprint,
       verifiedDossier: input.verifiedDossier,
+      assessment,
     })
   }
 }

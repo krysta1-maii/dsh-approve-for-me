@@ -21,6 +21,8 @@ import type {
 } from '../approval-gate/trust-envelope.js'
 import { gateFailureOutcome } from './gate-failure.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
+import { permitsAutomaticFastPath } from '../domain/risk-assessment.js'
+import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
 
 /**
  * Resolved facts that the DSH adapter/application layer must supply before the
@@ -41,6 +43,8 @@ export interface GateActionFacts {
   readonly configurationFingerprint: string
   /** Source-verified evidence required for production authorization. */
   readonly verifiedDossier?: SourceVerifiedDossierV1
+  /** R4 assessment derived only from the verified dossier. */
+  readonly assessment?: RiskAssessmentV1
 }
 
 export interface GateActionFactResolver {
@@ -169,10 +173,14 @@ export class DefaultGatePipeline implements GatePipeline {
     const classification = facts.classification
     if (classification.kind === 'catalog-mismatch') return 'unavailable'
     if (classification.kind === 'unclassified') return 'unavailable'
+    // R4 never upgrades unverified/unknown authorization into an automatic
+    // grant. It deliberately still permits Guardian pre-review below.
+    if (this.deps.requireVerifiedDossier && facts.assessment === undefined) return 'unavailable'
+    const fastPathsAllowed = facts.assessment === undefined || permitsAutomaticFastPath(facts.assessment)
 
     if (this.deps.breaker.lookup(facts.breakerKey)) return 'rejected'
 
-    if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
+    if (fastPathsAllowed && facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
       if (request.signal?.aborted) return 'cancelled'
       const record = recordFor(request, facts, 'allow', requestId)
       const result = await this.deps.records.createConfirmed(record)
@@ -185,7 +193,7 @@ export class DefaultGatePipeline implements GatePipeline {
       return this.delegateOrUnavailable()
     }
 
-    if (this.deps.allowCache.lookup(facts.allowCacheKey)) {
+    if (fastPathsAllowed && this.deps.allowCache.lookup(facts.allowCacheKey)) {
       // A cache entry is only an optimization over a prior Guardian decision;
       // each distinct approval ask still needs its own durable confirmation
       // before it can receive an automatic grant.
@@ -198,7 +206,7 @@ export class DefaultGatePipeline implements GatePipeline {
       return this.delegateOrUnavailable()
     }
 
-    {
+    if (fastPathsAllowed) {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
         const now = this.deps.now?.() ?? Date.now()
