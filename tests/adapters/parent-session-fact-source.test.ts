@@ -69,6 +69,28 @@ describe('DshParentSessionFactSource', () => {
     if (snapshotEvent?.retention === 'included') expect(Object.isFrozen(snapshotEvent.data as object)).toBe(true)
   })
 
+  it('marks a replaced direct user event superseded in the frozen source snapshot', () => {
+    const requester = agent()
+    ;(requester.session.events as unknown as object[]).splice(2, 0, {
+      seq: 2, time: 102, type: 'user/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [1],
+      data: { id: 'user-2', source: { kind: 'user' }, content: [{ type: 'text', text: 'use ls instead' }] },
+    })
+    ;(requester.session.events as unknown as Array<{ seq: number }>).forEach((event, sequence) => { event.seq = sequence })
+    const shiftedExecution = { ...execution, request: { ...execution.request, eventSeq: 3 } }
+    const shiftedApproval = {
+      ...approval,
+      approvalAskedSeq: 4,
+      execution: { ...approval.execution, requestEventSeq: 3 },
+    }
+    const facts = new DshParentSessionFactSource({ get: () => requester as never }).snapshot(input({
+      agent: requester as never,
+      executionFacts: [shiftedExecution],
+      approvalSnapshots: [shiftedApproval],
+    }))
+    expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'superseded' })
+    expect(facts?.events[2]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
+  })
+
   it('detaches non-session facts from mutable repository and catalog inputs', () => {
     const requester = agent()
     const snapshotApproval = { ...approval, environment: { nested: { value: 'before' } } }
