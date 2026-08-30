@@ -254,7 +254,7 @@ export class DshStorageDomainFactRepositories {
       || typeof record.projection.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
       || !Number.isSafeInteger(record.projection.observedAt) || (record.projection.observedAt as number) < 0
       || (record.result !== undefined && (record.result === null || typeof record.result !== 'object' || Array.isArray(record.result)
-        || !Number.isSafeInteger(record.result.eventSeq) || (record.result.eventSeq as number) < 0
+        || !Number.isSafeInteger(record.result.eventSeq) || (record.result.eventSeq as number) <= record.request.eventSeq
         || record.result.eventType !== 'tool/result'
         || record.result.outcome === null || typeof record.result.outcome !== 'object' || Array.isArray(record.result.outcome)
         || record.result.outcome.kind !== 'completed'))) return false
