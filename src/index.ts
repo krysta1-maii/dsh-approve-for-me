@@ -276,6 +276,13 @@ export type {
   GatePreReviewInput,
 } from './application/gate-pipeline.js'
 export { InMemoryGateDecisionRecordStore } from './application/decision-record.js'
+export { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
+export type {
+  ReviewerTelemetryFailureV1,
+  ReviewerTelemetryObservationV1,
+  ReviewerTelemetrySink,
+  ReviewerTelemetrySnapshotV1,
+} from './ports/reviewer-telemetry.js'
 export { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
 export type { GateFactRegistration } from './application/capture-gate-facts.js'
 export { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
