@@ -138,9 +138,19 @@ describe('DefaultDossierCompiler', () => {
     }
     const delivered = new DefaultDossierCompiler(deps).compile({ facts: withCompletedDelivery })
     expect(delivered).toMatchObject({ kind: 'ready', verified: { dossier: { interaction: { turns: [
-      { turn: 0, delivery: { messageId: 'assistant-0', textBlocks: ['done'] }, end: { kind: 'completed' } },
+      { turn: 0, delivery: { messageId: 'assistant-0', textBlocks: ['done'], surfaceState: 'visible' }, end: { kind: 'completed' } },
+
       { turn: 1 },
     ] } } } })
+    const supersededDelivery = {
+      ...withCompletedDelivery,
+      events: withCompletedDelivery.events.map(event => event.seq === 2 ? { ...event, surfaceState: 'superseded' as const } : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: supersededDelivery })).toMatchObject({
+      kind: 'ready', verified: { dossier: { interaction: { turns: [
+        { turn: 0, delivery: { messageId: 'assistant-0', surfaceState: 'superseded' } }, { turn: 1 },
+      ] } } },
+    })
     const unsafeDelivery = {
       ...withCompletedDelivery,
       events: withCompletedDelivery.events.map(event => event.seq === 2

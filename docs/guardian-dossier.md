@@ -489,6 +489,8 @@ interface AgentDeliveryV1 {
   readonly event: EventRefV1
   readonly messageId: string
   readonly textBlocks: readonly string[]
+  /** Freeze-time source surface, never a claim of current visibility. */
+  readonly surfaceState: 'visible' | 'superseded'
 }
 
 type TurnEndSummaryV1 =
@@ -538,7 +540,8 @@ message.source.kind == user
 - `aborted`、`blocked`、`error`、`max-tokens`、crash `interrupted` 及未知 extension reason 的 turn 不生成虚假的 Agent 交付，只保留完整 turn 状态；
 - 当前尚未结束的 turn 不生成交付；
 - 因 concludes-turn 工具结束、最后 assistant 消息仍包含 tool-call 的 completed turn 不生成交付；
-- 自动 continuation turn 即使没有直接用户消息，只要存在合格最终交付，也按原 turn 位置保留。
+- 自动 continuation turn 即使没有直接用户消息，只要存在合格最终交付，也按原 turn 位置保留；
+- 合格交付可带 freeze-time `visible` 或 `superseded` surface state；后者是历史事实，不得伪装为当前界面内容。
 
 Agent 交付只用于恢复对话指代和 Agent 已向用户陈述的方案或结果；它仍明确标记为 assistant 内容，是否足以支持授权由 Guardian 判断。
 

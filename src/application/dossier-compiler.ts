@@ -308,10 +308,10 @@ function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[
           textBlocks.push(text.text)
         }
       }
-      if (event.surfaceState !== 'visible' || data?.interrupted === true || message?.role !== 'assistant'
+      if ((event.surfaceState !== 'visible' && event.surfaceState !== 'superseded') || data?.interrupted === true || message?.role !== 'assistant'
         || source?.kind !== 'model' || typeof message.id !== 'string' || message.id.length === 0
         || !Array.isArray(content) || textBlocks.length !== content.length || textBlocks.length === 0 || !textBlocks.every(text => text.length > 0)) return undefined
-      delivery = Object.freeze({ event: Object.freeze({ seq: event.seq, type: event.type, turn }), messageId: message.id, textBlocks: Object.freeze(textBlocks) })
+      delivery = Object.freeze({ event: Object.freeze({ seq: event.seq, type: event.type, turn }), messageId: message.id, textBlocks: Object.freeze(textBlocks), surfaceState: event.surfaceState })
     }
     result.push(Object.freeze({ turn, directUserMessages: Object.freeze(users.get(turn) ?? []), ...(delivery === undefined ? {} : { delivery }), ...(end === undefined ? {} : { end }) }))
   }

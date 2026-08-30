@@ -628,6 +628,8 @@ export interface AgentDeliveryV1 {
   readonly event: EventRefV1
   readonly messageId: string
   readonly textBlocks: readonly string[]
+  /** Original principal message visibility at freeze; never infer currentness. */
+  readonly surfaceState: 'visible' | 'superseded'
 }
 
 export type TurnEndSummaryV1 =
