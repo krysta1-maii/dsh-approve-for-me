@@ -254,6 +254,8 @@ export function installApproveForMe(
         requestId: input.requestId,
         callId: input.callId,
         action: input.action,
+        ...input.verifiedDossier === undefined ? {} : { verifiedDossier: input.verifiedDossier },
+        ...input.assessment === undefined ? {} : { assessment: input.assessment },
         ...input.reason === undefined ? {} : { reason: input.reason },
         ...input.signal === undefined ? {} : { signal: input.signal },
         generation: input.generation,
