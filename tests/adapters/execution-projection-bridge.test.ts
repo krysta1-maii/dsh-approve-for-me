@@ -57,6 +57,17 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(records[0]!.projection.action).toBe(captured)
   })
 
+  it('does not re-project or persist when an authoritative capture is missing', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } }])
+    const captures = new DefaultActionCapture<Agent, string>()
+    let calls = 0
+    const bridge = new DshExecutionFactProjectionBridge({ project: () => { calls += 1; return { toolName: 'bash', arguments: {} } } }, catalog, repository, undefined, captures)
+    await bridge.project(execution(owner))
+    expect(calls).toBe(0)
+    await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
+  })
+
   it('captures an immutable snapshot only for one prior canonical call', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const approvals = new InMemoryApprovalSnapshotRepository()
@@ -75,7 +86,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     })
     expect(snapshot).toMatchObject({
       approvalAskedSeq: 1,
-      execution: { requestEventSeq: 0, callId: 'call-1', toolName: 'bash', classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'dsh-execution-fact-projection-v1' },
+      execution: { requestEventSeq: 0, callId: 'call-1', toolName: 'bash', classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'dsh-approve-for-me/generic-raw-v1' },
       environment: {},
     })
     expect(Object.isFrozen(snapshot)).toBe(true)

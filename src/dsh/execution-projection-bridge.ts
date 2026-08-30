@@ -74,7 +74,11 @@ export class DshExecutionFactProjectionBridge {
     const event = candidates[0]!
     const descriptor = this.catalog.descriptors.find(item => item.toolName === exec.name)
     if (descriptor === undefined) return
+    // When installed beside a capture bridge, only its frozen action is
+    // authoritative. Re-projecting on a miss can create a different semantic
+    // snapshot from mutable execution state after the approval ask began.
     let action = this.captures?.lookup(agent, callId, exec.name)
+    if (this.captures !== undefined && action === undefined) return
     if (action === undefined) {
       try {
         action = createActionSnapshot(this.projector.project(exec))
@@ -102,7 +106,7 @@ export class DshExecutionFactProjectionBridge {
         descriptor,
       }),
       projection: Object.freeze({
-        projectorId: 'dsh-execution-fact-projection-v1',
+        projectorId: action.projectorId,
         action,
         actionHash: hashAction(action),
         observedAt: event.time,
