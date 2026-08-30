@@ -76,6 +76,14 @@ describe('DefaultPreReviewCoordinator', () => {
       .resolves.toMatchObject({ disposition: 'human' })
   })
 
+  it('never weakens a Guardian deny because its risk explanation is incomplete', async () => {
+    const seals = new InMemorySealedDispositionRegistry()
+    const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision({ decision: 'deny' })), seals)
+    const assessedAction = action()
+    await expect(coordinator.preReview(input({ action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
+      .resolves.toMatchObject({ disposition: 'deny' })
+  })
+
   it('maps deny and human_review to sealed dispositions', async () => {
     const seals = new InMemorySealedDispositionRegistry()
     const coordinator = new DefaultPreReviewCoordinator(

@@ -96,9 +96,10 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     // The transport channel accepts an identity-valid model answer; this is the
     // first authority boundary that constrains its disposition using dossier
     // evidence. Under-evidence becomes human review; a prohibited allow denies.
-    const dispositionKind = assessmentValidity?.kind === 'under-evidenced' ? 'human'
-      : assessmentValidity?.kind === 'prohibited' && decision.decision === 'allow' ? 'deny'
-        : dispositionFor(decision)
+    const dispositionKind = decision.decision !== 'allow' ? dispositionFor(decision)
+      : assessmentValidity?.kind === 'under-evidenced' ? 'human'
+        : assessmentValidity?.kind === 'prohibited' ? 'deny'
+          : dispositionFor(decision)
     const disposition: SealedDispositionV1 = Object.freeze({
       version: 1,
       reviewRunId: decision.reviewId,
