@@ -91,6 +91,18 @@
 | `src/dsh/*` | managed-controller、action-capture、approval-answerer（待迁移为机器策略 adapter） |
 | `src/plugin.ts` | Cordis composition root |
 
+### R3 工具族语义投影（进行中）
+
+`ToolFamilyActionProjectorRegistry` 是唯一自动审批动作捕获入口：每一个 catalog descriptor 都承诺 `actionSemanticsFamily` 与 `actionProjectorId`，安装器在注册 provider 前验证 descriptor 与 registry 的双向精确覆盖。没有完整且身份匹配的语义快照时，capture 被跳过，自动裁决保持 unavailable。
+
+当前代码级 projector 仅接受明确绑定的工具名与固定参数契约：
+
+- `shell-process-v1`：命令、argv、环境与 Session cwd；
+- `filesystem-v1`：显式 read/list/glob/write/edit/delete/move/mkdir 绑定、workspace-relative 目标与递归范围；
+- `network-v1`：无默认工具名的 HTTP adapter，绑定规范化目标、方法、header/body 摘要与禁止 follow redirect 的策略。
+
+未实现的 patch/MCP/permission adapter 不得以名称猜测或通用 raw arguments projector 替代；它们在得到 exact adapter schema 与独立正常/缺字段/混淆/超大/不可序列化测试前，均不能进入自动审批 catalog。该阶段尚未完成 R3，不应视为完整风险评估或自动审批能力。
+
 ### 验证
 
 ```bash
