@@ -13,6 +13,8 @@ import type { ParentAuthority } from '../ports/managed-reviewer.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import type { ReviewCoordinator } from './review-coordinator.js'
 import { GateFailure } from './gate-failure.js'
+import { validateDecisionAssessmentV1 } from '../domain/risk-assessment.js'
+import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
 
 export interface PreReviewInput<Parent, SessionId extends string> {
   readonly authority: ParentAuthority<Parent, SessionId>
@@ -20,6 +22,8 @@ export interface PreReviewInput<Parent, SessionId extends string> {
   readonly callId: string
   readonly action: ActionSnapshot
   readonly verifiedDossier?: SourceVerifiedDossierV1
+  /** R4 assessment derived from the exact source-verified dossier. */
+  readonly assessment?: RiskAssessmentV1
   readonly reason?: string
   readonly signal?: AbortSignal
   readonly generation: string
@@ -88,6 +92,13 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     ) {
       throw new GateFailure('integrity', 'Guardian decision identity does not match the pre-review request')
     }
+    const assessmentValidity = input.assessment === undefined ? undefined : validateDecisionAssessmentV1(decision, input.assessment)
+    // The transport channel accepts an identity-valid model answer; this is the
+    // first authority boundary that constrains its disposition using dossier
+    // evidence. Under-evidence becomes human review; a prohibited allow denies.
+    const dispositionKind = assessmentValidity?.kind === 'under-evidenced' ? 'human'
+      : assessmentValidity?.kind === 'prohibited' && decision.decision === 'allow' ? 'deny'
+        : dispositionFor(decision)
     const disposition: SealedDispositionV1 = Object.freeze({
       version: 1,
       reviewRunId: decision.reviewId,
@@ -97,7 +108,7 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
       actionHash,
       generation: input.generation,
       configurationFingerprint: input.configurationFingerprint,
-      disposition: dispositionFor(decision),
+      disposition: dispositionKind,
       issuedAt: input.issuedAt,
       deadlineAt: input.deadlineAt,
       replayable: true,

@@ -4,6 +4,7 @@ import {
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
   hashAction,
+  assessVerifiedActionV1,
 } from '../../src/index.js'
 import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
 import type { ApprovalDecision, ReviewCoordinator } from '../../src/index.js'
@@ -65,6 +66,14 @@ describe('DefaultPreReviewCoordinator', () => {
       kind: 'sealed',
       disposition: sealed,
     })
+  })
+
+  it('constrains an identity-valid model allow with the source assessment before sealing', async () => {
+    const seals = new InMemorySealedDispositionRegistry()
+    const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision()), seals)
+    const assessedAction = action()
+    await expect(coordinator.preReview(input({ action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
+      .resolves.toMatchObject({ disposition: 'human' })
   })
 
   it('maps deny and human_review to sealed dispositions', async () => {

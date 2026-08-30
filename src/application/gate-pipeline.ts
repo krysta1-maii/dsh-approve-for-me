@@ -57,6 +57,8 @@ export interface GatePreReviewInput {
   readonly callId: string
   readonly action: ActionSnapshot
   readonly verifiedDossier?: SourceVerifiedDossierV1
+  /** Source-derived R4 facts that must constrain the sealed disposition. */
+  readonly assessment?: RiskAssessmentV1
   readonly reason?: string
   readonly signal?: AbortSignal
   readonly generation: string
@@ -234,6 +236,7 @@ export class DefaultGatePipeline implements GatePipeline {
       callId,
       action: facts.action,
       ...facts.verifiedDossier === undefined ? {} : { verifiedDossier: facts.verifiedDossier },
+      ...facts.assessment === undefined ? {} : { assessment: facts.assessment },
       ...request.reason === undefined ? {} : { reason: request.reason },
       ...request.signal === undefined ? {} : { signal: request.signal },
       generation: facts.generation,
