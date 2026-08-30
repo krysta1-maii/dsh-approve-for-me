@@ -74,6 +74,7 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
       authority: input.authority,
       action: input.action,
       verifiedDossier: input.verifiedDossier,
+      ...input.assessment === undefined ? {} : { assessment: input.assessment },
       callId: input.callId,
       ...input.reason === undefined ? {} : { reason: input.reason },
       ...input.signal === undefined ? {} : { signal: input.signal },

@@ -397,7 +397,7 @@ export function approvalReviewRequestContent(request: ApprovalReviewRequest): re
 }
 
 /** Serialize the verified dossier packet, never an action-only review request. */
-export function approvalReviewPacketContent(packet: import('./records.js').ApprovalReviewPacketV1): readonly ReviewerTextBlock[] {
+export function approvalReviewPacketContent(packet: import('./records.js').ApprovalReviewPacketV1 | import('./records.js').ApprovalReviewPacketV2): readonly ReviewerTextBlock[] {
   return Object.freeze([Object.freeze({
     type: 'text' as const,
     text: [

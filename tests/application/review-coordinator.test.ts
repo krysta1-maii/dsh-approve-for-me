@@ -8,7 +8,9 @@ import {
   createActionSnapshot,
   createReviewerProviderData,
   hashAction,
+  assessVerifiedActionV1,
   parseApprovalReviewPacketV1,
+  parseApprovalReviewPacketV2,
   snapshotJson,
 } from '../../src/index.js'
 import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
@@ -23,7 +25,7 @@ import type {
 
 type Parent = { id: string }
 
-type Delivery = { authority: ParentAuthority<Parent, string>; childId: string; request: ApprovalReviewRequest }
+type Delivery = { authority: ParentAuthority<Parent, string>; childId: string; request: ApprovalReviewRequest; packetVersion: 1 | 2 }
 
 class FakePort implements ManagedReviewerPort<Parent, string> {
   children: ManagedOwnedReviewer<string>[] = []
@@ -62,8 +64,9 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
   ): Promise<string> {
     if (this.deliveryError !== undefined) throw this.deliveryError
     const encoded = content[0]!.text.split('\n').at(-1)!
-    const packet = parseApprovalReviewPacketV1(JSON.parse(encoded))
-    const delivery = { authority, childId, request: packet.request }
+    const raw = JSON.parse(encoded) as { version?: unknown }
+    const packet = raw.version === 2 ? parseApprovalReviewPacketV2(raw) : parseApprovalReviewPacketV1(raw)
+    const delivery = { authority, childId, request: packet.request, packetVersion: packet.version }
     this.deliveries.push(delivery)
     await this.onDeliver?.(delivery)
     return `message-${this.deliveries.length}`
@@ -173,6 +176,20 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.creates).toBe(1)
     expect(port.deliveries.map(item => item.childId)).toEqual(['parent-1-reviewer-1', 'parent-1-reviewer-1'])
     expect(port.deliveries[0]!.request.action).toEqual(action())
+  })
+
+  it('delivers an assessed v2 packet when source-derived evidence is supplied', async () => {
+    const port = new FakePort()
+    const { coordinator, submit } = makeCoordinator(port)
+    port.onDeliver = ({ childId, request }) => { expect(submit(decision(request), childId).status).toBe('accepted') }
+    const reviewedAction = action()
+    await expect(coordinator.review({
+      authority: authority({ id: 'parent-1' }),
+      action: reviewedAction,
+      verifiedDossier: verifiedDossier(reviewedAction),
+      assessment: assessVerifiedActionV1(reviewedAction, [1]),
+    })).resolves.toMatchObject({ decision: 'allow' })
+    expect(port.deliveries[0]!.packetVersion).toBe(2)
   })
 
   it('serializes the complete review interval for one parent', async () => {

@@ -8,11 +8,12 @@ import {
   hashAction,
   parseActionSnapshot,
 } from '../domain/protocol.js'
-import { createApprovalReviewPacketV1 } from '../domain/records.js'
+import { createApprovalReviewPacketV1, createApprovalReviewPacketV2 } from '../domain/records.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import { canonicalJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
-import type { ApprovalReviewPacketV1 } from '../domain/records.js'
+import type { ApprovalReviewPacketV1, ApprovalReviewPacketV2 } from '../domain/records.js'
+import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
 import type {
   ActionSnapshot,
   ApprovalDecision,
@@ -56,6 +57,8 @@ export interface ReviewCoordinator<Parent, SessionId extends string> {
     readonly authority: ParentAuthority<Parent, SessionId>
     readonly action: ActionSnapshot
     readonly verifiedDossier: SourceVerifiedDossierV1
+    /** Source-derived R4 evidence, which selects the assessed packet codec. */
+    readonly assessment?: RiskAssessmentV1
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -71,7 +74,7 @@ export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
   readonly preset: ReviewerProviderDataV1
   readonly now?: () => number
   readonly reviewId?: () => string
-  readonly buildContent?: (packet: ApprovalReviewPacketV1) => readonly ReviewerTextBlock[]
+  readonly buildContent?: (packet: ApprovalReviewPacketV1 | ApprovalReviewPacketV2) => readonly ReviewerTextBlock[]
 }
 
 /**
@@ -83,7 +86,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
   implements ReviewCoordinator<Parent, SessionId> {
   private readonly now: () => number
   private readonly reviewId: () => string
-  private readonly buildContent: (packet: ApprovalReviewPacketV1) => readonly ReviewerTextBlock[]
+  private readonly buildContent: (packet: ApprovalReviewPacketV1 | ApprovalReviewPacketV2) => readonly ReviewerTextBlock[]
 
   constructor(private readonly options: ReviewCoordinatorOptions<Parent, SessionId>) {
     if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) {
@@ -98,6 +101,8 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     readonly authority: ParentAuthority<Parent, SessionId>
     readonly action: ActionSnapshot
     readonly verifiedDossier: SourceVerifiedDossierV1
+    /** Source-derived R4 evidence, which selects the assessed packet codec. */
+    readonly assessment?: RiskAssessmentV1
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -137,6 +142,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       readonly authority: ParentAuthority<Parent, SessionId>
       readonly action: ActionSnapshot
       readonly verifiedDossier: SourceVerifiedDossierV1
+      readonly assessment?: RiskAssessmentV1
       readonly callId?: string
       readonly reason?: string
       readonly signal?: AbortSignal
@@ -162,11 +168,22 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     // `arm` throws synchronously when the request can never be pending
     // (disposed channel, duplicate id, abort racing past the early check,
     // expired deadline): such a review is never delivered to the child.
-    const packet = createApprovalReviewPacketV1({
-      request,
-      dossier: input.verifiedDossier.dossier as unknown as JsonValue,
-      dossierHash: input.verifiedDossier.dossierHash,
-    })
+    const packet = input.assessment === undefined
+      ? createApprovalReviewPacketV1({
+          request,
+          dossier: input.verifiedDossier.dossier as unknown as JsonValue,
+          dossierHash: input.verifiedDossier.dossierHash,
+        })
+      : createApprovalReviewPacketV2({
+          request,
+          dossier: input.verifiedDossier.dossier as unknown as JsonValue,
+          dossierHash: input.verifiedDossier.dossierHash,
+          policy: {
+            version: this.options.preset.policyVersion,
+            configurationFingerprint: this.options.preset.configurationFingerprint,
+          },
+          baseline: input.assessment,
+        })
     const result = this.options.channel.arm(request, input.signal)
     // A very fast scoped tool may settle before deliver()'s acceptance promise
     // resumes this task. Attach containment immediately while preserving the
