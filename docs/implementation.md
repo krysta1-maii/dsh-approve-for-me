@@ -111,7 +111,7 @@
 
 ### R5 policy artifact（起步）
 
-`policy-v2` 已作为可持久化、显式选择的 Reviewer policy artifact 注册，保留 `policy-v1` 以便历史 descriptor 恢复。它要求基于 source-verified dossier 的精确 action/semantics 审查、分离风险与授权，未知 target、side effect、authorization 或 semantics 均不得 allow。它尚未接收 R4 assessment 的独立 packet 字段，也未形成可替代人工判断的完整结构化 decision assessment；R5 仍在进行中。
+`policy-v2` 已作为可持久化、显式选择的 Reviewer policy artifact 注册，保留 `policy-v1` 以便历史 descriptor 恢复。它要求基于 source-verified dossier 的精确 action/semantics 审查、分离风险与授权，未知 target、side effect、authorization 或 semantics 均不得 allow。R4 assessment 现从 source-backed facts 穿过 Gate 到 pre-review；在 seal 前，模型不得降低已证实风险或遗漏类别，证据不足的 allow 会变为 human，禁止性 allow 会变为 deny，已有 deny/human 不会被弱化。它尚未接收 R4 assessment 的独立 packet 字段，也未形成可替代人工判断的完整结构化 decision assessment；R5 仍在进行中。
 
 ### 验证
 
