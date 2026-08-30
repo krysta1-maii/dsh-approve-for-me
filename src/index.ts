@@ -240,6 +240,11 @@ export type { CaptureBridge, FilesystemToolNames, NetworkToolNames } from './dsh
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
+export {
+  DshStorageDomainApprovalSnapshotRepository,
+  DshStorageDomainExecutionFactRepository,
+  DshStorageDomainFactRepositories,
+} from './dsh/storage-domain-fact-repositories.js'
 export type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './dsh/storage-domain-decision-record.js'
 export type {
   MachinePolicyAdapterOptions,

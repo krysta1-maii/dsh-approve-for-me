@@ -62,7 +62,7 @@
 | `src/application/case-capture.ts` | `InMemoryCaseCaptureSink`：full/off、单 artifact/总量限制、按过期/插入序淘汰、drain |
 | `src/application/file-record-storage.ts` | `FileDecisionRecordStorageBackend`：磁盘 create-once 后端（`wx` 独占写、canonical 比对、read/drain）；非 DSH Storage Domain 正式 adapter |
 
-当前已具备最小记录与完整案例的 schema/parser、create-once 写端口、in-memory case sink 配额/淘汰与磁盘本地后端；真实 DSH Storage Domain backend、durable read-back、持久化 GC 尚未实现。
+当前已具备最小记录与完整案例的 schema/parser、create-once 写端口、in-memory case sink 配额/淘汰与磁盘本地后端；Gate 的紧凑决策行已有真实 DSH Storage Domain backend，完整 review record/case artifact 的 durable backend、read-back 与持久化 GC 尚未实现。
 
 ### D1 卷宗基础（新增）
 
@@ -73,7 +73,7 @@
 | `src/application/delegation-projector.ts` | `DefaultPrincipalDelegationProjector`：把 delegation attempt + safe receipt 投影为 `PrincipalDelegationEntryV1`，校验 receipt policy / toolName / callId |
 | `src/application/fact-repositories.ts` | `InMemoryExecutionFactRepository` / `InMemoryApprovalSnapshotRepository`：以完整 canonical Session lifecycle identity 隔离 sidecar 事实与审批快照的 get/create |
 
-当前已有 D1 编译端口、校验、首个确定性编译器、delegation projector 与 in-memory fact repos。插件已从 canonical `tools/pre-execute`/`session/event` 投影 execution facts 与 immutable approval snapshots，并在事实源处以完整 lifecycle identity（含 cwd）筛除不一致 sidecar；机器决策会等待同一 durable `approval/asked` 事件的 snapshot write，消除 fire-and-forget observer 与 resolver 的竞速。已接入 `DossierGateFactProjector`，它仅从 branded dossier 重建 classification、parent lifecycle、turn、direct-user frontier 与 cache keys；缺少 direct-user evidence 时不产生 facts。历史 direct-user evidence 会保留 `visible` 与 `superseded` 状态；已完成 turn 的唯一可见或 superseded、未中断、纯文本 model assistant message 会连同精确 `turn/end` summary 与 freeze-time surface state 投影为 principal delivery，任何模糊、非完成或非纯文本证据均失败关闭。历史 turn lifecycle 必须严格顺序闭合：嵌套 start 或非 active turn 的 end 会拒绝而不重排。完整 instruction/tool 投影、Storage Domain sidecar 与双射验证尚未实现。
+当前已有 D1 编译端口、校验、首个确定性编译器、delegation projector 与 in-memory fact repos。插件已从 canonical `tools/pre-execute`/`session/event` 投影 execution facts 与 immutable approval snapshots，并在事实源处以完整 lifecycle identity（含 cwd）筛除不一致 sidecar；机器决策会等待同一 durable `approval/asked` 事件的 snapshot write，消除 fire-and-forget observer 与 resolver 的竞速。已接入 `DossierGateFactProjector`，它仅从 branded dossier 重建 classification、parent lifecycle、turn、direct-user frontier 与 cache keys；缺少 direct-user evidence 时不产生 facts。历史 direct-user evidence 会保留 `visible` 与 `superseded` 状态；已完成 turn 的唯一可见或 superseded、未中断、纯文本 model assistant message 会连同精确 `turn/end` summary 与 freeze-time surface state 投影为 principal delivery，任何模糊、非完成或非纯文本证据均失败关闭。历史 turn lifecycle 必须严格顺序闭合：嵌套 start 或非 active turn 的 end 会拒绝而不重排。execution fact 与 approval snapshot sidecar 现使用同一 host-private Storage Domain 的按完整 lifecycle 索引、canonical create-once 行，cold resume 可重新读取；域不可用、损坏、冲突或关闭时返回空事实并保持 non-authorizing。完整 instruction/tool 投影与双射验证尚未实现。
 
 ### 既有骨架（0.1.1-rc.2 基线）
 

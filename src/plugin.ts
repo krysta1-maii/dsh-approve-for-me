@@ -23,7 +23,6 @@ import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
 import type { ReviewerTelemetrySink, ReviewerTelemetrySnapshotV1 } from './ports/reviewer-telemetry.js'
 import { fingerprintDelegationToolCatalogV1 } from './domain/dossier.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
-import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from './application/fact-repositories.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
@@ -32,6 +31,11 @@ import type { GatePreReview } from './application/gate-pipeline.js'
 import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
 import { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
 import type { StorageDomainFacility } from './dsh/storage-domain-decision-record.js'
+import {
+  DshStorageDomainApprovalSnapshotRepository,
+  DshStorageDomainExecutionFactRepository,
+  DshStorageDomainFactRepositories,
+} from './dsh/storage-domain-fact-repositories.js'
 import { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
 import { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
 import { createToolApprovalClassifier } from './application/tool-classifier.js'
@@ -170,8 +174,14 @@ export function installApproveForMe(
   const breaker = new InMemoryExactDenialBreaker()
   const allowCache = new InMemoryAllowCache()
   const seals = new InMemorySealedDispositionRegistry()
-  const executionFacts = new InMemoryExecutionFactRepository()
-  const approvalSnapshots = new InMemoryApprovalSnapshotRepository()
+  // Parent-session facts must survive a cold resume. Failed Storage Domain
+  // access remains non-authorizing because the source-backed resolver cannot
+  // correlate an approval ask without both sidecars.
+  const durableFacts = new DshStorageDomainFactRepositories(
+    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+  )
+  const executionFacts = new DshStorageDomainExecutionFactRepository(durableFacts)
+  const approvalSnapshots = new DshStorageDomainApprovalSnapshotRepository(durableFacts)
   // The dossier catalog deliberately originates from the normalized descriptor
   // set, but the resolver does not authorize from it: the source adapter must
   // corroborate it against the historical Session request header.
@@ -372,6 +382,7 @@ export function installApproveForMe(
       stopResult()
       stopPreExecute()
       await lanes.drain()
+      await durableFacts.drain()
       await records.drain()
       channel.dispose()
       await registration.dispose()
