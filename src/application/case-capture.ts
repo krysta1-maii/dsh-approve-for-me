@@ -27,20 +27,28 @@ export class InMemoryCaseCaptureSink implements CaseCaptureSink {
   private skipped = 0
   private evicted = 0
 
-  constructor(private readonly config: GuardianCaseCaptureConfigV1) {}
+  constructor(
+    private readonly config: GuardianCaseCaptureConfigV1,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   enqueue(artifact: GuardianCaseArtifactV1): void {
+    const insertedAt = this.now()
+    this.evictExpired(insertedAt)
     if (this.config.mode !== 'full') {
       this.skipped += 1
       return
     }
     const key = caseArtifactKey(artifact.session, artifact.artifactId)
     const bytes = artifactBytes(key, artifact)
-    if (bytes > this.config.maxArtifactBytes || bytes > this.config.maxTotalBytes) {
+    if (
+      artifact.expiresAt <= insertedAt
+      || bytes > this.config.maxArtifactBytes
+      || bytes > this.config.maxTotalBytes
+    ) {
       this.skipped += 1
       return
     }
-    const insertedAt = Date.now()
     this.items.set(key, { artifact, bytes, expiresAt: artifact.expiresAt, insertedAt })
     this.evictOverQuota()
   }
@@ -50,12 +58,22 @@ export class InMemoryCaseCaptureSink implements CaseCaptureSink {
   }
 
   stats(): InMemoryCaseCaptureStats {
+    this.evictExpired(this.now())
     return {
       mode: this.config.mode,
       count: this.items.size,
       totalBytes: [...this.items.values()].reduce((sum, item) => sum + item.bytes, 0),
       skipped: this.skipped,
       evicted: this.evicted,
+    }
+  }
+
+  private evictExpired(now: number): void {
+    for (const [key, item] of this.items) {
+      if (item.expiresAt <= now) {
+        this.items.delete(key)
+        this.evicted += 1
+      }
     }
   }
 

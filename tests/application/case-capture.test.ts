@@ -52,8 +52,20 @@ describe('InMemoryCaseCaptureSink', () => {
     expect(constrained.stats()).toMatchObject({ count: 0, skipped: 1 })
   })
 
+  it('does not retain expired artifacts and evicts retained artifacts at expiry', () => {
+    let now = 1_500
+    const sink = new InMemoryCaseCaptureSink(config(), () => now)
+    sink.enqueue({ ...artifact('expired'), expiresAt: 1_500 })
+    expect(sink.stats()).toMatchObject({ count: 0, skipped: 1 })
+
+    sink.enqueue({ ...artifact('live'), expiresAt: 2_000 })
+    expect(sink.stats()).toMatchObject({ count: 1, evicted: 0 })
+    now = 2_000
+    expect(sink.stats()).toMatchObject({ count: 0, evicted: 1 })
+  })
+
   it('retains qualified artifacts and evicts the oldest over maxCases', () => {
-    const sink = new InMemoryCaseCaptureSink(config({ maxCases: 1, maxTotalBytes: 1_000_000 }))
+    const sink = new InMemoryCaseCaptureSink(config({ maxCases: 1, maxTotalBytes: 1_000_000 }), () => 1_000)
     sink.enqueue(artifact('a'))
     sink.enqueue(artifact('b'))
     const stats = sink.stats()
