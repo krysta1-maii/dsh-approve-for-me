@@ -3,6 +3,7 @@ import {
   DshStorageDomainApprovalSnapshotRepository,
   DshStorageDomainExecutionFactRepository,
   DshStorageDomainFactRepositories,
+  canonicalJson,
   createActionSnapshot,
 } from '../../src/index.js'
 import type { ApprovalSnapshotRecordV1, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV1 } from '../../src/index.js'
@@ -38,7 +39,7 @@ function facility() {
     },
     close,
   }))
-  return { facility: { open } as StorageDomainFacility, open, close }
+  return { facility: { open } as StorageDomainFacility, open, close, tables }
 }
 
 function repositories(storage: StorageDomainFacility) {
@@ -55,7 +56,7 @@ describe('DshStorageDomainFactRepositories', () => {
     await expect(first.approvals.create(approval())).resolves.toBe('created')
     await first.shared.drain()
     expect(fake.open).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'approve_for_me', version: 1,
+      name: 'approve_for_me', version: 1, layout: 'per-record',
       tables: expect.objectContaining({ executions: expect.anything(), approval_snapshots: expect.anything() }),
     }))
 
@@ -90,6 +91,28 @@ describe('DshStorageDomainFactRepositories', () => {
     await expect(executions.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result })).resolves.toBe('identical')
     await expect(executions.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result: { ...result, eventSeq: 8 } })).resolves.toBe('conflict')
     await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toMatchObject({ request: execution().request, result })
+    await shared.drain()
+  })
+
+  it('contains canonical poisoned nested records without rejecting callers', async () => {
+    const fake = facility()
+    const { shared, executions, approvals } = repositories(fake.facility)
+    await executions.create(execution())
+    await approvals.create(approval())
+    const executionRows = fake.tables.get('executions')!
+    const executionKey = [...executionRows.keys()].find(key => key.startsWith('e1_'))!
+    const poisonedExecution = { ...execution(), request: null }
+    executionRows.set(executionKey, { version: 1, canonical: canonicalJson(poisonedExecution), record: poisonedExecution })
+    const approvalRows = fake.tables.get('approval_snapshots')!
+    const approvalKey = [...approvalRows.keys()].find(key => key.startsWith('a1_'))!
+    const poisonedApproval = { ...approval(), execution: null }
+    approvalRows.set(approvalKey, { version: 1, canonical: canonicalJson(poisonedApproval), record: poisonedApproval })
+    await expect(executions.list(session)).resolves.toEqual([])
+    await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
+    await expect(executions.create(execution())).resolves.toBe('conflict')
+    await expect(approvals.list(session)).resolves.toEqual([])
+    await expect(approvals.get({ session, approvalRequestId: 'ask-1', approvalAskedSeq: 6 })).resolves.toBeUndefined()
+    await expect(approvals.create(approval())).resolves.toBe('conflict')
     await shared.drain()
   })
 

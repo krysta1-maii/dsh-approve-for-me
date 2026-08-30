@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { canonicalJson } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
@@ -18,8 +17,14 @@ const factDomainSpec = Object.freeze({
   }),
 })
 
-function hash(value: unknown): string {
-  return createHash('sha256').update(canonicalJson(value)).digest('hex')
+function storageKey(prefix: string, value: unknown): string {
+  // Canonical tuple encoding is collision-free without leaking separators into
+  // a backend key layout or relying on a hash collision assumption.
+  return `${prefix}${Buffer.from(canonicalJson(value), 'utf8').toString('base64url')}`
+}
+
+function lifecycleIdentity(session: SessionLifecycleIdentityV1): readonly [string, number, number, string | null] {
+  return [session.sessionId, session.sessionFormatVersion, session.createdAt, session.cwd ?? null]
 }
 
 function sameLifecycle(left: SessionLifecycleIdentityV1, right: SessionLifecycleIdentityV1): boolean {
@@ -225,14 +230,16 @@ export class DshStorageDomainFactRepositories {
     return result.finally(() => { if (this.tails.get(key) === tail) this.tails.delete(key) })
   }
 
-  private lifecycleKey(session: SessionLifecycleIdentityV1): string { return `l_${hash(session)}` }
-  private executionKey(session: SessionLifecycleIdentityV1, callId: string, seq: number): string { return `e_${hash([session, callId, seq])}` }
-  private approvalKey(session: SessionLifecycleIdentityV1, requestId: string, seq: number): string { return `a_${hash([session, requestId, seq])}` }
+  private lifecycleKey(session: SessionLifecycleIdentityV1): string { return storageKey('i1_', lifecycleIdentity(session)) }
+  private executionKey(session: SessionLifecycleIdentityV1, callId: string, seq: number): string { return storageKey('e1_', [...lifecycleIdentity(session), callId, seq]) }
+  private approvalKey(session: SessionLifecycleIdentityV1, requestId: string, seq: number): string { return storageKey('a1_', [...lifecycleIdentity(session), requestId, seq]) }
 
   private validExecution(value: unknown): value is ToolExecutionFactRecordV1 {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const record = value as Partial<ToolExecutionFactRecordV1>
-    return record.version === 1 && validSession(record.session) && record.request !== undefined && record.projection !== undefined
+    return record.version === 1 && validSession(record.session)
+      && record.request !== null && typeof record.request === 'object' && !Array.isArray(record.request)
+      && record.projection !== null && typeof record.projection === 'object' && !Array.isArray(record.projection)
       && typeof record.request.callId === 'string' && record.request.callId.length > 0
       && Number.isSafeInteger(record.request.eventSeq) && (record.request.eventSeq as number) >= 0
       && typeof record.projection.actionHash === 'string' && /^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
@@ -242,7 +249,8 @@ export class DshStorageDomainFactRepositories {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const record = value as Partial<ApprovalSnapshotRecordV1>
     return record.version === 1 && validSession(record.session) && typeof record.approvalRequestId === 'string' && record.approvalRequestId.length > 0
-      && Number.isSafeInteger(record.approvalAskedSeq) && (record.approvalAskedSeq as number) >= 0 && record.execution !== undefined
+      && Number.isSafeInteger(record.approvalAskedSeq) && (record.approvalAskedSeq as number) >= 0
+      && record.execution !== null && typeof record.execution === 'object' && !Array.isArray(record.execution)
       && typeof record.execution.callId === 'string' && record.execution.callId.length > 0
   }
 }
