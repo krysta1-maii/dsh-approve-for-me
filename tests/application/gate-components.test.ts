@@ -58,6 +58,10 @@ describe('InMemoryExactDenialBreaker', () => {
     expect(breaker.lookup(denyKey())).toBe(true)
     expect(breaker.lookup(denyKey({ actionHash: hash('b') }))).toBe(false)
     expect(breaker.lookup(denyKey({ turn: 2 }))).toBe(false)
+    // A later direct-user message changes the frontier, so an old denial can
+    // never suppress a fresh review or become implicit authorization.
+    expect(breaker.lookup(denyKey({ directUserFrontierSeq: 3 }))).toBe(false)
+    expect(breaker.lookup(denyKey({ parentLifecycleFingerprint: 'parent-next-life' }))).toBe(false)
     breaker.clearParent('parent-a')
     expect(breaker.lookup(denyKey())).toBe(false)
   })

@@ -263,7 +263,10 @@ export class DefaultGatePipeline implements GatePipeline {
       this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
     } else if (mapped === 'rejected') {
       await this.deps.records.recordBestEffort(record)
-      this.deps.breaker.recordGuardianDeny(facts.breakerKey)
+      // Only an explicit Guardian deny can establish an exact rejection
+      // circuit. Human fallback maps to rejected in `auto` mode but is not a
+      // denial fact and must never suppress a future independent review.
+      if (sealed.disposition === 'deny') this.deps.breaker.recordGuardianDeny(facts.breakerKey)
     }
     return mapped
   }

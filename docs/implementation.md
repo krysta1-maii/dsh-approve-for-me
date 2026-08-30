@@ -121,6 +121,10 @@ R5 仍不构成成熟自动审批能力：R4 尚未具备已证明的 target/sid
 
 Pre-review 现生成 host-owned `reviewRunId` 并将单一绝对 deadline 交给 Reviewer coordinator；sealed disposition 保存 run ID 而非某个 protocol attempt ID。污染 child 的一次 rotate recovery 不消耗业务 attempt，也不能延长 deadline。Coordinator 当前只会对经 owning child 路由的 `invalid-result` 进行一次业务重试；未知 delivery/provider 错误、身份不匹配、abort 与 timeout 均保持 fail-closed。
 
+### R7 exact denial breaker（进行中）
+
+Exact breaker 的 key 限定 parent lifecycle、turn、direct-user frontier 与完整 `actionHash`；它只在 Guardian 明确 `deny` 后写入。`human_review` 即使在 `auto` mode 映射为 rejected 也不建立熔断，避免把人工下沉误变成跨 ask 的拒绝事实。不同 hash、turn、frontier 或 lifecycle 只能重新审查，绝不命中 allow。
+
 ### 验证
 
 ```bash

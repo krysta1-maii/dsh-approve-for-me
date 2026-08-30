@@ -278,6 +278,7 @@ describe('DefaultGatePipeline', () => {
 
     const human = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('human')) } })
     await expect(human.pipeline.decide(request())).resolves.toBe('rejected')
+    expect(human.deps.breaker.recordGuardianDeny).not.toHaveBeenCalled()
 
     const humanUser = makePipeline({
       mode: 'auto-then-user',
