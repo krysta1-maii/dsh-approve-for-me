@@ -322,7 +322,8 @@ describe('DefaultReviewCoordinator', () => {
   it('fails closed after two malformed-result attempts without a third delivery', async () => {
     const port = new FakePort()
     const ids = ['review-1', 'review-2', 'review-3']
-    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    const observe = vi.fn()
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()!, telemetry: { observe } })
     port.onDeliver = ({ childId, request }) => {
       expect(submit({ reviewId: request.reviewId }, childId).status).toBe('invalid')
     }
@@ -330,6 +331,10 @@ describe('DefaultReviewCoordinator', () => {
       .rejects.toMatchObject({ code: 'invalid-result' })
     expect(port.deliveries.map(delivery => delivery.request.reviewId)).toEqual(['review-1', 'review-2'])
     expect(port.interrupts).toHaveLength(2)
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'review', outcome: 'error', failure: 'invalid-result', attempts: 2,
+      contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
   })
 
   it('closes the pending result when deliver fails', async () => {
@@ -458,7 +463,8 @@ describe('DefaultReviewCoordinator', () => {
   it('retries once when a newly contaminated child is discovered during delivery', async () => {
     const port = new FakePort()
     const ids = ['review-1', 'review-2']
-    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    const observe = vi.fn()
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()!, telemetry: { observe } })
     const parent = { id: 'parent-1' }
     let first = true
     port.onDeliver = async ({ childId, request }) => {
@@ -478,6 +484,10 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.deliveries).toHaveLength(2)
     expect(port.rotates).toHaveLength(1)
     expect(port.children.filter(child => child.contaminated)).toHaveLength(1)
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'review', outcome: 'allow', attempts: 1,
+      contaminatedRotationAttempts: 1, contaminatedRotations: 1,
+    }))
   })
 
   it('shares one absolute deadline across contaminated-child recovery attempts', async () => {
