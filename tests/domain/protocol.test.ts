@@ -149,6 +149,16 @@ describe('approval decisions', () => {
     expect(Object.isFrozen(parsed.categories)).toBe(true)
   })
 
+  it('strictly snapshots a structured v2 authorization claim', () => {
+    const parsed = parseApprovalDecision({
+      ...decision(),
+      assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'The cited message covers this action.' },
+    })
+    expect(parsed.assessment).toEqual({ version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'The cited message covers this action.' })
+    expect(Object.isFrozen(parsed.assessment)).toBe(true)
+    expect(() => parseApprovalDecision({ ...decision(), assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1', 'event:1'], rationale: 'duplicate' } })).toThrow(/unique/)
+  })
+
   it('rejects free text, extra fields, bad hashes, and unknown enums', () => {
     expect(() => parseApprovalDecision('allow')).toThrow(/object/)
     expect(() => parseApprovalDecision({ ...decision(), extra: true })).toThrow(/not supported/)

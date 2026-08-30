@@ -5,6 +5,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ManagedAgentMaterializeInfo, ManagedAgentProvider } from 'dsh-managed-agent'
 import {
   REVIEWER_DECISION_PARAMETERS,
+  REVIEWER_DECISION_PARAMETERS_V2,
   REVIEWER_POLICY_VERSION,
   REVIEWER_POLICY_VERSION_V2,
   REVIEWER_SECTION,
@@ -126,6 +127,8 @@ describe('createReviewerProvider', () => {
     const section = stub.systemPrompt.section.mock.calls[0]![0] as { text: string }
     expect(section.text).toContain('source-verified dossier')
     expect(section.text).toContain('Critical risk')
+    const registered = (stub.tools.register.mock.calls[0]![0] as { parameters: { required: readonly string[] } })
+    expect(registered.parameters.required).toContain('assessment')
   })
 
   it('rejects unknown policy versions and forged descriptor data', () => {
@@ -153,5 +156,6 @@ describe('createReviewerProvider', () => {
 
   it('uses the decision parameters with the enforced DSH JSON Schema subset', () => {
     expect(() => assertObjectJsonSchema(REVIEWER_DECISION_PARAMETERS)).not.toThrow()
+    expect(() => assertObjectJsonSchema(REVIEWER_DECISION_PARAMETERS_V2)).not.toThrow()
   })
 })

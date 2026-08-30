@@ -84,7 +84,7 @@ function createReviewerSetup(
     }
     agentCtx.systemPrompt.section(section)
     agentCtx.tools.restrict({ allow: [] })
-    const scoped = createDecisionTool(childSessionId, submitDecision)
+    const scoped = createDecisionTool(childSessionId, submitDecision, policy.decisionParameters)
     agentCtx.tools.register(scoped.definition)
     agentCtx.on('tools/result', (exec, result) => scoped.observeResult(exec, result))
     setApprovalPolicy(agent.session, 'never')

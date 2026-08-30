@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { REVIEWER_DECISION_PARAMETERS } from './policy.js'
+import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { SubmitDecisionResult } from '../application/decision-channel.js'
 
 /** Stable native tool name exposed only in a Reviewer child scope. */
@@ -31,11 +32,12 @@ export interface ScopedDecisionTool {
 export function createDecisionTool(
   expectedChildSessionId: string,
   submitter: DecisionSubmitter,
+  decisionParameters: ObjectJsonSchema = REVIEWER_DECISION_PARAMETERS,
 ): ScopedDecisionTool {
   const staged = new Map<string, unknown>()
   // Fresh object literal: gives the loosely-typed ToolSchema.parameters field
   // its implicit index signature without any cast at the DSH seam.
-  const parameters: Record<string, unknown> = { ...REVIEWER_DECISION_PARAMETERS }
+  const parameters: Record<string, unknown> = { ...decisionParameters }
 
   const definition: ToolDefinition = {
     name: SUBMIT_DECISION_TOOL,

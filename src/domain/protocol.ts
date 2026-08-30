@@ -101,6 +101,15 @@ export type ApprovalDecisionKind = typeof DECISIONS[number]
 export type ApprovalRisk = typeof RISKS[number]
 export type UserAuthorization = typeof AUTHORIZATIONS[number]
 
+/** Model claim carried only by the R5 policy-v2 decision schema. */
+export interface DecisionAuthorizationAssessmentV1 {
+  readonly version: 1
+  readonly targetCovered: boolean
+  readonly sideEffectsCovered: boolean
+  readonly sourceRefs: readonly string[]
+  readonly rationale: string
+}
+
 export interface ApprovalDecision {
   readonly protocolVersion: 1
   readonly reviewId: string
@@ -112,6 +121,8 @@ export interface ApprovalDecision {
   readonly risk: ApprovalRisk
   readonly categories: readonly string[]
   readonly userAuthorization: UserAuthorization
+  /** Optional for protocol-v1 compatibility; policy-v2 requires it at its tool schema. */
+  readonly assessment?: DecisionAuthorizationAssessmentV1
   readonly rationale: string
 }
 
@@ -352,13 +363,26 @@ export function parseApprovalReviewRequest(input: unknown): ApprovalReviewReques
   return request
 }
 
+function parseDecisionAuthorizationAssessment(input: unknown): DecisionAuthorizationAssessmentV1 {
+  const value = record(input, 'decision.assessment')
+  exactKeys(value, ['version', 'targetCovered', 'sideEffectsCovered', 'sourceRefs', 'rationale'], [], 'decision.assessment')
+  if (value.version !== 1) throw new TypeError('decision.assessment.version must be 1')
+  if (typeof value.targetCovered !== 'boolean' || typeof value.sideEffectsCovered !== 'boolean') {
+    throw new TypeError('decision.assessment coverage must be boolean')
+  }
+  if (!Array.isArray(value.sourceRefs) || value.sourceRefs.length > 32) throw new TypeError('decision.assessment.sourceRefs must be an array with at most 32 entries')
+  const sourceRefs = Object.freeze(value.sourceRefs.map((ref, index) => identifier(ref, `decision.assessment.sourceRefs[${index}]`)))
+  if (new Set(sourceRefs).size !== sourceRefs.length) throw new TypeError('decision.assessment.sourceRefs must be unique')
+  return Object.freeze({ version: 1, targetCovered: value.targetCovered, sideEffectsCovered: value.sideEffectsCovered, sourceRefs, rationale: boundedString(value.rationale, 'decision.assessment.rationale', 4096) })
+}
+
 /** Parse the only model-owned terminal payload accepted by the plugin. */
 export function parseApprovalDecision(input: unknown): ApprovalDecision {
   const value = record(input, 'decision')
   exactKeys(
     value,
     ['protocolVersion', 'reviewId', 'parentSessionId', 'reviewerSessionId', 'generation', 'actionHash', 'decision', 'risk', 'categories', 'userAuthorization', 'rationale'],
-    [],
+    ['assessment'],
     'decision',
   )
   if (value.protocolVersion !== APPROVAL_PROTOCOL_VERSION) {
@@ -380,6 +404,7 @@ export function parseApprovalDecision(input: unknown): ApprovalDecision {
     risk: member(value.risk, RISKS, 'decision.risk'),
     categories,
     userAuthorization: member(value.userAuthorization, AUTHORIZATIONS, 'decision.userAuthorization'),
+    ...value.assessment === undefined ? {} : { assessment: parseDecisionAuthorizationAssessment(value.assessment) },
     rationale: boundedString(value.rationale, 'decision.rationale', 4096),
   })
 }

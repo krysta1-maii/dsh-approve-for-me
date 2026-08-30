@@ -121,6 +121,7 @@ export type {
   ActionSnapshotInput,
   ApprovalDecision,
   ApprovalDecisionKind,
+  DecisionAuthorizationAssessmentV1,
   ApprovalOutcome,
   ApprovalResolution,
   ApprovalReviewRequest,
@@ -212,6 +213,7 @@ export {
 export type { ReviewerProviderOptions } from './reviewer/provider.js'
 export {
   REVIEWER_DECISION_PARAMETERS,
+  REVIEWER_DECISION_PARAMETERS_V2,
   REVIEWER_POLICY_VERSION,
   REVIEWER_POLICY_VERSION_V2,
   createPolicyRegistry,
