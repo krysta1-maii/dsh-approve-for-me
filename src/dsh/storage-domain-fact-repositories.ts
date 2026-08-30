@@ -237,12 +237,27 @@ export class DshStorageDomainFactRepositories {
   private validExecution(value: unknown): value is ToolExecutionFactRecordV1 {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const record = value as Partial<ToolExecutionFactRecordV1>
-    return record.version === 1 && validSession(record.session)
-      && record.request !== null && typeof record.request === 'object' && !Array.isArray(record.request)
-      && record.projection !== null && typeof record.projection === 'object' && !Array.isArray(record.projection)
-      && typeof record.request.callId === 'string' && record.request.callId.length > 0
-      && Number.isSafeInteger(record.request.eventSeq) && (record.request.eventSeq as number) >= 0
-      && typeof record.projection.actionHash === 'string' && /^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
+    if (record.version !== 1 || !validSession(record.session)
+      || record.request === null || typeof record.request !== 'object' || Array.isArray(record.request)
+      || record.toolClassification === null || typeof record.toolClassification !== 'object' || Array.isArray(record.toolClassification)
+      || record.toolClassification.descriptor === null || typeof record.toolClassification.descriptor !== 'object' || Array.isArray(record.toolClassification.descriptor)
+      || record.projection === null || typeof record.projection !== 'object' || Array.isArray(record.projection)
+      || record.projection.action === null || typeof record.projection.action !== 'object' || Array.isArray(record.projection.action)
+      || !['model-tool-call', 'code-dispatch'].includes(record.request.kind)
+      || !['tool/call', 'tool/code-dispatch-start'].includes(record.request.eventType)
+      || typeof record.request.callId !== 'string' || record.request.callId.length === 0
+      || typeof record.request.toolName !== 'string' || record.request.toolName.length === 0
+      || !Number.isSafeInteger(record.request.eventSeq) || (record.request.eventSeq as number) < 0
+      || typeof record.toolClassification.classificationCatalogFingerprint !== 'string' || record.toolClassification.classificationCatalogFingerprint.length === 0
+      || typeof record.projection.projectorId !== 'string' || record.projection.projectorId.length === 0
+      || typeof record.projection.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
+      || !Number.isSafeInteger(record.projection.observedAt) || (record.projection.observedAt as number) < 0) return false
+    try {
+      snapshotJson(record.projection.action)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private validApproval(value: unknown): value is ApprovalSnapshotRecordV1 {

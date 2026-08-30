@@ -78,6 +78,15 @@ describe('DshStorageDomainFactRepositories', () => {
     await shared.drain()
   })
 
+  it('rejects incomplete execution snapshots before durable admission', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    await expect(executions.create({ ...execution(), projection: { ...execution().projection, action: null } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), toolClassification: null } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    await expect(executions.list(session)).resolves.toEqual([])
+    await shared.drain()
+  })
+
   it('isolates lifecycle identities and never overwrites contradictory rows', async () => {
     const fake = facility()
     const { shared, executions, approvals } = repositories(fake.facility)
