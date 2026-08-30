@@ -210,8 +210,10 @@ export type { ReviewerProviderOptions } from './reviewer/provider.js'
 export {
   REVIEWER_DECISION_PARAMETERS,
   REVIEWER_POLICY_VERSION,
+  REVIEWER_POLICY_VERSION_V2,
   createPolicyRegistry,
   createReviewerPolicyV1,
+  createReviewerPolicyV2,
 } from './reviewer/policy.js'
 export type { PolicyRegistry, ReviewerPolicy } from './reviewer/policy.js'
 export {

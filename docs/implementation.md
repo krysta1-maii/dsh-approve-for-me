@@ -109,6 +109,10 @@
 
 `DossierGateFactProjector` 将该 assessment 加入 source-backed facts。生产 verified-dossier 模式中缺失 assessment 会失败关闭；未知或不完整 assessment 只会跳过 trust/cache/sealed replay 的自动 allow，仍进入 Guardian pre-review。详见 [R4 风险 assessment](risk-assessment.md)。R4 的完整规则、攻击/良性评测与 target-matching verifier 尚未完成。
 
+### R5 policy artifact（起步）
+
+`policy-v2` 已作为可持久化、显式选择的 Reviewer policy artifact 注册，保留 `policy-v1` 以便历史 descriptor 恢复。它要求基于 source-verified dossier 的精确 action/semantics 审查、分离风险与授权，未知 target、side effect、authorization 或 semantics 均不得 allow。它尚未接收 R4 assessment 的独立 packet 字段，也未形成可替代人工判断的完整结构化 decision assessment；R5 仍在进行中。
+
 ### 验证
 
 ```bash

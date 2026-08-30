@@ -6,6 +6,7 @@ import type { ManagedAgentMaterializeInfo, ManagedAgentProvider } from 'dsh-mana
 import {
   REVIEWER_DECISION_PARAMETERS,
   REVIEWER_POLICY_VERSION,
+  REVIEWER_POLICY_VERSION_V2,
   REVIEWER_SECTION,
   SUBMIT_DECISION_TOOL,
   createReviewerProvider,
@@ -109,6 +110,22 @@ describe('createReviewerProvider', () => {
       { type: 'approval/policy', data: { policy: 'never' } },
       { type: 'sandbox/mode', data: { mode: 'read-only' } },
     ])
+  })
+
+  it('materializes the explicit R5 policy version with the locked-down composition', async () => {
+    const provider = createReviewerProvider({ submitDecision: { submit: vi.fn() } })
+    const data = createReviewerProviderData({
+      generation: 'generation-1',
+      modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      policyVersion: REVIEWER_POLICY_VERSION_V2,
+      toolsetVersion: 1,
+    })
+    const { stub, stubContext } = agentCtxStub()
+    const composition = await provider.materialize(materializeInfo({ providerData: data }))
+    await composition.setup?.(stubContext)
+    const section = stub.systemPrompt.section.mock.calls[0]![0] as { text: string }
+    expect(section.text).toContain('source-verified dossier')
+    expect(section.text).toContain('Critical risk')
   })
 
   it('rejects unknown policy versions and forged descriptor data', () => {
