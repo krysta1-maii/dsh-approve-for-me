@@ -95,7 +95,13 @@ function makePipeline(overrides: {
   const seals = new InMemorySealedDispositionRegistry()
   const records = overrides.records ?? recordsStub()
   const preReview = overrides.preReview ?? { preReview: vi.fn(async () => sealed('allow')) }
-  const factsResolver = { resolve: vi.fn(async () => overrides.factsResult === undefined ? facts() : overrides.factsResult) }
+  const factsResolver = { resolve: vi.fn(async () => overrides.factsResult === undefined ? facts(
+    overrides.trustInside === undefined ? {} : {
+      trustEnvelope: {
+        toolFamily: 'bash', effectiveMode: 'read-only', workspaceRoot: '/workspace', targets: [],
+      },
+    },
+  ) : overrides.factsResult) }
   const evaluate = vi.fn((_input: TrustEnvelopeInputV1): TrustEnvelopeEvaluationV1 =>
     overrides.trustInside === true
       ? { kind: 'inside' }
@@ -153,6 +159,9 @@ describe('DefaultGatePipeline', () => {
     const { pipeline, records } = makePipeline({ trustInside: true })
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(records.createConfirmed).toHaveBeenCalledOnce()
+    expect(records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
+      version: 1, route: 'trust-envelope', normalizedDecision: 'allow', pluginDisposition: 'allow',
+    }))
   })
 
   it('routes an unknown R4 assessment to Guardian instead of a fast-path grant', async () => {
@@ -197,6 +206,7 @@ describe('DefaultGatePipeline', () => {
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(preReview.preReview).not.toHaveBeenCalled()
     expect(records.createConfirmed).toHaveBeenCalledOnce()
+    expect(records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({ route: 'allow-cache' }))
   })
 
   it('does not allow a cached decision without durable confirmation', async () => {
