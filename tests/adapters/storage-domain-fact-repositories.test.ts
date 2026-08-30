@@ -54,6 +54,10 @@ describe('DshStorageDomainFactRepositories', () => {
     await expect(first.executions.create(execution())).resolves.toBe('identical')
     await expect(first.approvals.create(approval())).resolves.toBe('created')
     await first.shared.drain()
+    expect(fake.open).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'approve_for_me', version: 1,
+      tables: expect.objectContaining({ executions: expect.anything(), approval_snapshots: expect.anything() }),
+    }))
 
     const reopened = repositories(fake.facility)
     await expect(reopened.executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toEqual(execution())

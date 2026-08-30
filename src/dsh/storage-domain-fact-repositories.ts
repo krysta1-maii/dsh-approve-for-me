@@ -9,12 +9,12 @@ type StoredRow = { readonly version: 1; readonly canonical: string; readonly rec
 type StoredIndex = { readonly version: 1; readonly canonical: string; readonly session: SessionLifecycleIdentityV1; readonly keys: readonly string[] }
 
 const factDomainSpec = Object.freeze({
-  name: 'afm_dossier_facts', version: 1, layout: 'per-lifecycle',
+  // The single host-private domain is the contract boundary. Per-lifecycle
+  // index rows share their fact table because the host only offers get/put.
+  name: 'approve_for_me', version: 1, layout: 'per-record',
   tables: Object.freeze({
-    executions: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseRow(value) }) }),
-    approval_snapshots: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseRow(value) }) }),
-    execution_index: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseIndex(value) }) }),
-    approval_index: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseIndex(value) }) }),
+    executions: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseFactValue(value) }) }),
+    approval_snapshots: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseFactValue(value) }) }),
   }),
 })
 
@@ -42,6 +42,10 @@ function parseRow(value: unknown): StoredRow {
     throw new TypeError('invalid dossier fact row')
   }
   return Object.freeze({ version: 1, canonical: row.canonical, record: row.record })
+}
+
+function parseFactValue(value: unknown): StoredRow | StoredIndex {
+  try { return parseRow(value) } catch { return parseIndex(value) }
 }
 
 function parseIndex(value: unknown): StoredIndex {
@@ -78,11 +82,11 @@ export class DshStorageDomainFactRepositories {
 
   async create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'> {
     if (!this.validExecution(record)) return 'conflict'
-    return this.createOnce('executions', 'execution_index', record.session, this.executionKey(record.session, record.request.callId, record.request.eventSeq), record)
+    return this.createOnce('executions', 'executions', record.session, this.executionKey(record.session, record.request.callId, record.request.eventSeq), record)
   }
 
   async list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]> {
-    const rows = await this.listRows('executions', 'execution_index', session)
+    const rows = await this.listRows('executions', 'executions', session)
     if (rows === undefined || rows.some(row => !this.validExecution(row) || !sameLifecycle((row as ToolExecutionFactRecordV1).session, session))) return Object.freeze([])
     return Object.freeze(rows as ToolExecutionFactRecordV1[])
   }
@@ -108,11 +112,11 @@ export class DshStorageDomainFactRepositories {
 
   async createApproval(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'> {
     if (!this.validApproval(record)) return 'conflict'
-    return this.createOnce('approval_snapshots', 'approval_index', record.session, this.approvalKey(record.session, record.approvalRequestId, record.approvalAskedSeq), record)
+    return this.createOnce('approval_snapshots', 'approval_snapshots', record.session, this.approvalKey(record.session, record.approvalRequestId, record.approvalAskedSeq), record)
   }
 
   async listApprovals(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]> {
-    const rows = await this.listRows('approval_snapshots', 'approval_index', session)
+    const rows = await this.listRows('approval_snapshots', 'approval_snapshots', session)
     if (rows === undefined || rows.some(row => !this.validApproval(row) || !sameLifecycle((row as ApprovalSnapshotRecordV1).session, session))) return Object.freeze([])
     return Object.freeze(rows as ApprovalSnapshotRecordV1[])
   }
