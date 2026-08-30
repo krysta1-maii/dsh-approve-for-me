@@ -7,6 +7,7 @@ import {
   createApprovalReviewRequest,
   hashApprovalReviewPacket,
   hashGuardianDossier,
+  parseApprovalReviewPacketV2,
   parseApprovalReviewPacketV1,
 } from '../../src/index.js'
 
@@ -51,6 +52,9 @@ describe('approval review packet codec', () => {
     })
     expect(packet).toMatchObject({ version: 2, policy: { version: 'policy-v2' }, baseline: { authorization: { sourceRefs: ['event:7'] } } })
     expect(Object.isFrozen(packet.policy)).toBe(true)
+    expect(parseApprovalReviewPacketV2(packet)).toEqual(packet)
+    expect(() => parseApprovalReviewPacketV2({ ...packet, extra: true })).toThrow(/not supported/)
+    expect(parseApprovalReviewPacketV2({ ...packet, policy: { ...packet.policy, configurationFingerprint: `sha256:${'0'.repeat(64)}` } }).policy.configurationFingerprint).toBe(`sha256:${'0'.repeat(64)}`)
   })
 
   it('accepts an explicit matching dossierHash and rejects a tampered hash', () => {

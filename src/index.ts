@@ -22,6 +22,7 @@ export {
   hashGuardianDossier,
   hashGuardianPolicyArtifact,
   parseApprovalReviewPacketV1,
+  parseApprovalReviewPacketV2,
   parseGuardianCaseArtifactV1,
   parseGuardianPolicyArtifactV1,
   parseReviewDecisionRecord,

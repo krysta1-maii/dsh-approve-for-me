@@ -440,6 +440,26 @@ export function createApprovalReviewPacketV2(input: {
   return Object.freeze({ version: 2, kind: 'approval-review-packet', request, dossier: input.dossier, dossierHash, policy: Object.freeze({ ...input.policy }), baseline: input.baseline })
 }
 
+export function parseApprovalReviewPacketV2(input: unknown): ApprovalReviewPacketV2 {
+  const value = recordObject(input, 'packet')
+  exactKeys(value, ['version', 'kind', 'request', 'dossier', 'dossierHash', 'policy', 'baseline'], [], 'packet')
+  if (value.version !== 2) throw new TypeError('packet.version must be 2')
+  if (value.kind !== 'approval-review-packet') throw new TypeError('packet.kind must be approval-review-packet')
+  const request = parseApprovalReviewRequest(value.request)
+  canonicalJson(value.dossier)
+  const dossierHash = hash(value.dossierHash, 'packet.dossierHash')
+  if (dossierHash !== hashGuardianDossier(value.dossier)) throw new TypeError('packet.dossierHash does not match packet.dossier')
+  const policy = recordObject(value.policy, 'packet.policy')
+  exactKeys(policy, ['version', 'configurationFingerprint'], [], 'packet.policy')
+  const policyVersion = nonEmptyString(policy.version, 'packet.policy.version')
+  const configurationFingerprint = hash(policy.configurationFingerprint, 'packet.policy.configurationFingerprint')
+  const baseline = recordObject(value.baseline, 'packet.baseline')
+  exactKeys(baseline, ['version', 'risk', 'categories', 'evidence', 'authorization'], [], 'packet.baseline')
+  if (baseline.version !== 1) throw new TypeError('packet.baseline.version must be 1')
+  canonicalJson(baseline)
+  return Object.freeze({ version: 2, kind: 'approval-review-packet', request, dossier: value.dossier as JsonValue, dossierHash, policy: Object.freeze({ version: policyVersion, configurationFingerprint }), baseline: baseline as unknown as RiskAssessmentV1 })
+}
+
 export interface GuardianPolicyArtifactV1 {
   readonly version: 1
   readonly policyVersion: string
