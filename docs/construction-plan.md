@@ -88,7 +88,7 @@ stock DSH 0.1.2-alpha.1（不修改）
 
 退出条件：卷宗规范第 16 节测试成立；缺失、漂移或损坏事实不能产生 ready dossier。
 
-> 施工状态（2026-08-29）：已建立 exact-Agent/Session 的 `ParentSessionFactSource`、按 `approval/asked.data.id` 绑定的快照和 create-once execution/result 事实仓储；Session 身份、事件连续性、ask/call 对应关系和投影冲突均 fail-closed。机器审批运行现由 plugin-owned lifecycle registry 管理：卸载先撤销未来 policy，再 abort/drain 已运行的回调，防止迟到 seal/cache/write。当前 compiler 仅对严格的最小完整前缀（直接用户消息、可见且格式合法的 `agent-instructions` 消息、一个 canonical pending call、一个 exact approval ask，且没有未投影历史）产生 ready dossier；历史 direct-user 的 visible/superseded 证据均保留；完整 turn 的唯一 visible 或 superseded、未中断、纯文本 model assistant delivery 与严格 `turn/end` summary 及 freeze-time surface state 也已投影。既有工具、delegation、含 tool-call/reasoning/raw 的 assistant evidence 或未知事件仍返回 `incomplete`。因此复杂历史尚不存在 Reviewer 或自动 allow 入口。
+> 施工状态（2026-08-29）：已建立 exact-Agent/Session 的 `ParentSessionFactSource`、按 `approval/asked.data.id` 绑定的快照和 create-once execution/result 事实仓储；Session 身份、事件连续性、ask/call 对应关系和投影冲突均 fail-closed。机器审批运行现由 plugin-owned lifecycle registry 管理：卸载先撤销未来 policy，再 abort/drain 已运行的回调，防止迟到 seal/cache/write。当前 compiler 仅对严格的最小完整前缀（直接用户消息、可见且格式合法的 `agent-instructions` 消息、一个 canonical pending call、一个 exact approval ask，且没有未投影历史）产生 ready dossier；历史 direct-user 的 visible/superseded 证据均保留；完整 turn 的唯一 visible 或 superseded、未中断、纯文本 model assistant delivery 与严格 `turn/end` summary 及 freeze-time surface state 也已投影，历史 turn lifecycle 也必须无嵌套且以 active turn 精确闭合。既有工具、delegation、含 tool-call/reasoning/raw 的 assistant evidence 或未知事件仍返回 `incomplete`。因此复杂历史尚不存在 Reviewer 或自动 allow 入口。
 
 ### H4：决策事实与案例留存
 

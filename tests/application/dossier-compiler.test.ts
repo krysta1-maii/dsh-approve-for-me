@@ -151,6 +151,27 @@ describe('DefaultDossierCompiler', () => {
         { turn: 0, delivery: { messageId: 'assistant-0', surfaceState: 'superseded' } }, { turn: 1 },
       ] } } },
     })
+    const nestedTurn = {
+      ...withCompletedDelivery,
+      approvalBinding: { ...withCompletedDelivery.approvalBinding, event: { seq: 13, type: 'approval/asked' as const, turn: 1, step: 0 } },
+      throughSeq: 13,
+      events: withCompletedDelivery.events.flatMap(event => event.seq === 3
+        ? [
+            { seq: 3, time: 4, type: 'turn/start' as const, retention: 'included' as const, data: { turn: 2 } },
+            { ...event, seq: 4, time: 5 },
+          ]
+        : [{ ...event, ...(event.seq > 3 ? { seq: event.seq + 1, time: event.time + 1 } : {}) }]),
+      executionFacts: [{ ...withCompletedDelivery.executionFacts[0]!, request: { ...withCompletedDelivery.executionFacts[0]!.request, eventSeq: 12 }, projection: { ...withCompletedDelivery.executionFacts[0]!.projection, observedAt: 13 } }],
+      approvalSnapshots: [{ ...withCompletedDelivery.approvalSnapshots[0]!, approvalAskedSeq: 13, execution: { ...withCompletedDelivery.approvalSnapshots[0]!.execution, requestEventSeq: 12 } }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: nestedTurn }).kind).toBe('incomplete')
+    const outOfOrderTurnEnd = {
+      ...withCompletedDelivery,
+      events: withCompletedDelivery.events.map(event => event.seq === 3
+        ? { ...event, data: { ...event.data, turn: 2 } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: outOfOrderTurnEnd }).kind).toBe('incomplete')
     const unsafeDelivery = {
       ...withCompletedDelivery,
       events: withCompletedDelivery.events.map(event => event.seq === 2

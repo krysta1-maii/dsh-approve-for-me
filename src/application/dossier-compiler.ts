@@ -238,14 +238,14 @@ function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[
   for (const event of facts.events) {
     if (event.type === 'turn/start') {
       const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
-      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || starts.has(turn as number)) return undefined
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || activeTurn !== undefined || starts.has(turn as number)) return undefined
       starts.set(turn as number, event)
       activeTurn = turn as number
       continue
     }
     if (event.type === 'turn/end') {
       const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
-      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || ends.has(turn as number)
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || activeTurn !== turn || ends.has(turn as number)
         || starts.get(turn as number) === undefined || starts.get(turn as number)!.seq >= event.seq) return undefined
       ends.set(turn as number, event)
       activeTurn = undefined
