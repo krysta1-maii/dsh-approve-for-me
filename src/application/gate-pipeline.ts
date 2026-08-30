@@ -41,6 +41,8 @@ export interface GateActionFacts {
   readonly directChildOrigin: boolean
   readonly generation: string
   readonly configurationFingerprint: string
+  /** Immutable Reviewer policy selected for this composition generation. */
+  readonly policyVersion?: string
   /** Source-verified evidence required for production authorization. */
   readonly verifiedDossier?: SourceVerifiedDossierV1
   /** R4 assessment derived only from the verified dossier. */
@@ -63,6 +65,8 @@ export interface GatePreReviewInput {
   readonly signal?: AbortSignal
   readonly generation: string
   readonly configurationFingerprint: string
+  /** Whether this review must use the cited assessment schema. */
+  readonly policyVersion?: string
 }
 
 /**
@@ -241,6 +245,7 @@ export class DefaultGatePipeline implements GatePipeline {
       ...request.signal === undefined ? {} : { signal: request.signal },
       generation: facts.generation,
       configurationFingerprint: facts.configurationFingerprint,
+      ...facts.policyVersion === undefined ? {} : { policyVersion: facts.policyVersion },
     })
     if (request.signal?.aborted) return 'cancelled'
     if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'

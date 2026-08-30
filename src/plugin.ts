@@ -198,6 +198,7 @@ export function installApproveForMe(
       classifier,
       'dsh-approve-for-me/v1',
       normalized.toolCatalog.fingerprint,
+      normalized.preset.policyVersion,
     ),
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
@@ -260,6 +261,7 @@ export function installApproveForMe(
         ...input.signal === undefined ? {} : { signal: input.signal },
         generation: input.generation,
         configurationFingerprint: input.configurationFingerprint,
+        ...input.policyVersion === undefined ? {} : { policyVersion: input.policyVersion },
         issuedAt: Date.now(),
         deadlineAt: Date.now() + normalized.timeoutMs,
       })

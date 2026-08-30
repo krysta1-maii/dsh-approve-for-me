@@ -28,6 +28,8 @@ export interface PreReviewInput<Parent, SessionId extends string> {
   readonly signal?: AbortSignal
   readonly generation: string
   readonly configurationFingerprint: string
+  /** policy-v2 refuses uncited model authorization claims. */
+  readonly policyVersion?: string
   readonly issuedAt: number
   readonly deadlineAt: number
 }
@@ -93,7 +95,10 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     ) {
       throw new GateFailure('integrity', 'Guardian decision identity does not match the pre-review request')
     }
-    const assessmentValidity = input.assessment === undefined ? undefined : validateDecisionAssessmentV1(decision, input.assessment)
+    const assessmentValidity = input.assessment === undefined ? undefined
+      : input.policyVersion === 'policy-v2' && decision.assessment === undefined
+        ? { kind: 'under-evidenced' as const, reason: 'policy-v2 requires a cited decision assessment' }
+        : validateDecisionAssessmentV1(decision, input.assessment)
     // The transport channel accepts an identity-valid model answer; this is the
     // first authority boundary that constrains its disposition using dossier
     // evidence. Under-evidence becomes human review; a prohibited allow denies.

@@ -50,6 +50,7 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
     private readonly classifier: ToolApprovalClassifier,
     private readonly generation: string,
     private readonly configurationFingerprint: string,
+    private readonly policyVersion: string = 'policy-v1',
   ) {}
 
   project(input: Parameters<SourceBackedFactProjector['project']>[0]): GateActionFacts | undefined {
@@ -88,6 +89,7 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       directChildOrigin: false,
       generation: this.generation,
       configurationFingerprint: this.configurationFingerprint,
+      policyVersion: this.policyVersion,
       verifiedDossier: input.verifiedDossier,
       assessment,
     })
