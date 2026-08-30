@@ -122,6 +122,25 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+    const withCompletedDelivery = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 12, type: 'approval/asked' as const, turn: 1, step: 0 } },
+      throughSeq: 12,
+      events: [
+        { seq: 0, time: 1, type: 'turn/start' as const, retention: 'included' as const, data: { turn: 0 } },
+        { seq: 1, time: 2, type: 'user/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-0', source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] } },
+        { seq: 2, time: 3, type: 'assistant/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { turn: 0, step: 0, message: { id: 'assistant-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: 'done' }] } } },
+        { seq: 3, time: 4, type: 'turn/end' as const, retention: 'included' as const, data: { turn: 0, reason: 'completed' } },
+        ...complete.events.map(event => ({ ...event, seq: event.seq + 4, time: event.time + 4 })),
+      ],
+      executionFacts: [{ ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 11 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 12 } }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 12, execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 11 } }],
+    }
+    const delivered = new DefaultDossierCompiler(deps).compile({ facts: withCompletedDelivery })
+    expect(delivered).toMatchObject({ kind: 'ready', verified: { dossier: { interaction: { turns: [
+      { turn: 0, delivery: { messageId: 'assistant-0', textBlocks: ['done'] }, end: { kind: 'completed' } },
+      { turn: 1 },
+    ] } } } })
     const semanticMismatch = new DefaultDossierCompiler({
       ...deps,
       semanticActionBindings: [{ toolName: 'bash', family: 'shell-process-v1', projectorId: 'dsh-approve-for-me/shell-process-v1' }],

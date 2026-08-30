@@ -170,7 +170,8 @@ function assistantMessagesForCalls(
     byStep.set(key, [...(byStep.get(key) ?? []), call])
   }
   const bindings = new Map<number, { readonly issuedIn: EventRefV1; readonly blockIndex: number }>()
-  const messages = events.filter(event => event.type === 'assistant/message')
+  const messages = events.filter(event => event.type === 'assistant/message'
+    && (event.retention === 'included' ? record(event.data)?.turn === currentTurn : false))
   if (messages.length !== byStep.size) return undefined
   for (const event of messages) {
     const data = event.retention === 'included' ? record(event.data) : undefined
@@ -229,13 +230,31 @@ function pendingTurnIsOpen(events: readonly SessionFactEventV1[], turn: number, 
 }
 
 function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[] | undefined {
-  const byTurn = new Map<number, DirectUserMessageV1[]>()
+  const users = new Map<number, DirectUserMessageV1[]>()
+  const starts = new Map<number, SessionFactEventV1>()
+  const ends = new Map<number, SessionFactEventV1>()
+  const assistants = new Map<number, SessionFactEventV1[]>()
   let activeTurn: number | undefined
   for (const event of facts.events) {
     if (event.type === 'turn/start') {
       const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
-      if (!Number.isSafeInteger(turn) || (turn as number) < 0) return undefined
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || starts.has(turn as number)) return undefined
+      starts.set(turn as number, event)
       activeTurn = turn as number
+      continue
+    }
+    if (event.type === 'turn/end') {
+      const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || ends.has(turn as number)
+        || starts.get(turn as number) === undefined || starts.get(turn as number)!.seq >= event.seq) return undefined
+      ends.set(turn as number, event)
+      activeTurn = undefined
+      continue
+    }
+    if (event.type === 'assistant/message') {
+      const turn = event.retention === 'included' ? record(event.data)?.turn : undefined
+      if (!Number.isSafeInteger(turn) || (turn as number) < 0 || starts.get(turn as number) === undefined) return undefined
+      assistants.set(turn as number, [...(assistants.get(turn as number) ?? []), event])
       continue
     }
     if (event.type !== 'user/message') continue
@@ -244,13 +263,59 @@ function interactionFrom(facts: ParentSessionFactSnapshotV1): InteractionTurnV1[
     if (source?.form === 'instructions') continue
     const message = directUserMessage(event, activeTurn)
     if (message === undefined || message.event.turn === undefined) return undefined
-    const messages = byTurn.get(message.event.turn) ?? []
-    messages.push(message)
-    byTurn.set(message.event.turn, messages)
+    users.set(message.event.turn, [...(users.get(message.event.turn) ?? []), message])
   }
-  return [...byTurn.entries()].sort(([a], [b]) => a - b).map(([turn, directUserMessages]) => Object.freeze({
-    turn, directUserMessages: Object.freeze(directUserMessages),
-  }))
+  for (const [turn, messages] of assistants) {
+    if (ends.has(turn)) continue
+    for (const event of messages) {
+      const data = event.retention === 'included' ? record(event.data) : undefined
+      const message = data === undefined ? undefined : record(data.message as JsonValue)
+      if (!Array.isArray(message?.content) || !message.content.every(block => record(block as JsonValue)?.type === 'tool-call')) return undefined
+    }
+  }
+  const turns = new Set([...users.keys(), ...ends.keys()])
+  const result: InteractionTurnV1[] = []
+  for (const turn of [...turns].sort((a, b) => a - b)) {
+    const endEvent = ends.get(turn)
+    const endData = endEvent === undefined || endEvent.retention !== 'included' ? undefined : record(endEvent.data)
+    const reason = endData?.reason
+    const end = reason === undefined ? undefined : reason === 'completed' ? Object.freeze({ kind: 'completed' as const })
+      : reason === 'aborted' ? Object.freeze({ kind: 'aborted' as const })
+        : reason === 'blocked' ? Object.freeze({ kind: 'blocked' as const })
+          : reason === 'max-tokens' ? Object.freeze({ kind: 'max-tokens' as const })
+            : reason === 'interrupted' ? Object.freeze({ kind: 'interrupted' as const })
+              : reason === 'error' ? Object.freeze({ kind: 'error' as const })
+                : Object.freeze({ kind: 'extension' as const, reason: reason as JsonValue })
+    if (endEvent !== undefined && end === undefined) return undefined
+    let delivery: InteractionTurnV1['delivery']
+    const messages = assistants.get(turn) ?? []
+    if (endEvent !== undefined && messages.some(message => message.seq >= endEvent.seq)) return undefined
+    if (end?.kind === 'completed' && messages.length > 0) {
+      if (messages.length !== 1) return undefined
+      const event = messages[0]!
+      const data = event.retention === 'included' ? record(event.data) : undefined
+      const message = data === undefined ? undefined : record(data.message as JsonValue)
+      const source = message === undefined ? undefined : record(message.source as JsonValue)
+      const content = message?.content
+      const textBlocks: string[] = []
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          const text = record(block as JsonValue)
+          if (text?.type !== 'text' || typeof text.text !== 'string') {
+            textBlocks.length = 0
+            break
+          }
+          textBlocks.push(text.text)
+        }
+      }
+      if (event.surfaceState !== 'visible' || data?.interrupted === true || message?.role !== 'assistant'
+        || source?.kind !== 'model' || typeof message.id !== 'string' || message.id.length === 0
+        || !Array.isArray(content) || textBlocks.length !== content.length || textBlocks.length === 0 || !textBlocks.every(text => text.length > 0)) return undefined
+      delivery = Object.freeze({ event: Object.freeze({ seq: event.seq, type: event.type, turn }), messageId: message.id, textBlocks: Object.freeze(textBlocks) })
+    }
+    result.push(Object.freeze({ turn, directUserMessages: Object.freeze(users.get(turn) ?? []), ...(delivery === undefined ? {} : { delivery }), ...(end === undefined ? {} : { end }) }))
+  }
+  return result
 }
 
 /**
