@@ -69,6 +69,15 @@ describe('DshStorageDomainFactRepositories', () => {
     expect(fake.open).toHaveBeenCalledTimes(2)
   })
 
+  it('rejects incomplete approval snapshots before durable admission', async () => {
+    const fake = facility()
+    const { shared, approvals } = repositories(fake.facility)
+    await expect(approvals.create({ ...approval(), environment: null } as unknown as ApprovalSnapshotRecordV1)).resolves.toBe('conflict')
+    await expect(approvals.create({ ...approval(), execution: { ...approval().execution, projectorId: '' } })).resolves.toBe('conflict')
+    await expect(approvals.list(session)).resolves.toEqual([])
+    await shared.drain()
+  })
+
   it('isolates lifecycle identities and never overwrites contradictory rows', async () => {
     const fake = facility()
     const { shared, executions, approvals } = repositories(fake.facility)

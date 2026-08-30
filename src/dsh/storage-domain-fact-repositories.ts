@@ -1,4 +1,4 @@
-import { canonicalJson } from '../domain/json.js'
+import { canonicalJson, snapshotJson } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -248,10 +248,22 @@ export class DshStorageDomainFactRepositories {
   private validApproval(value: unknown): value is ApprovalSnapshotRecordV1 {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const record = value as Partial<ApprovalSnapshotRecordV1>
-    return record.version === 1 && validSession(record.session) && typeof record.approvalRequestId === 'string' && record.approvalRequestId.length > 0
-      && Number.isSafeInteger(record.approvalAskedSeq) && (record.approvalAskedSeq as number) >= 0
-      && record.execution !== null && typeof record.execution === 'object' && !Array.isArray(record.execution)
-      && typeof record.execution.callId === 'string' && record.execution.callId.length > 0
+    if (record.version !== 1 || !validSession(record.session) || typeof record.approvalRequestId !== 'string' || record.approvalRequestId.length === 0
+      || !Number.isSafeInteger(record.approvalAskedSeq) || (record.approvalAskedSeq as number) < 0
+      || record.execution === null || typeof record.execution !== 'object' || Array.isArray(record.execution)
+      || typeof record.execution.callId !== 'string' || record.execution.callId.length === 0
+      || typeof record.execution.toolName !== 'string' || record.execution.toolName.length === 0
+      || !Number.isSafeInteger(record.execution.requestEventSeq) || (record.execution.requestEventSeq as number) < 0
+      || typeof record.execution.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.execution.actionHash)
+      || typeof record.execution.classificationCatalogFingerprint !== 'string' || record.execution.classificationCatalogFingerprint.length === 0
+      || typeof record.execution.projectorId !== 'string' || record.execution.projectorId.length === 0
+      || record.environment === null || typeof record.environment !== 'object' || Array.isArray(record.environment)) return false
+    try {
+      snapshotJson(record.environment)
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
