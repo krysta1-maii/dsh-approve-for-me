@@ -39,6 +39,15 @@ describe('assessVerifiedActionV1', () => {
     expect(validateDecisionAssessmentV1(decision({ decision: 'human_review', risk: 'high', categories: ['data-exfiltration', 'network-exposure'] }), assessment)).toEqual({ kind: 'valid' })
   })
 
+  it('rejects cited authorization claims that exceed source-derived evidence', () => {
+    const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'shell-v1', semantics: { family: 'shell-process-v1', value: { command: 'pwd' } } })
+    const assessment = assessVerifiedActionV1(action, [7])
+    expect(validateDecisionAssessmentV1(decision({ assessment: { version: 1, targetCovered: false, sideEffectsCovered: false, sourceRefs: ['event:8'], rationale: 'wrong source' } }), assessment))
+      .toMatchObject({ kind: 'under-evidenced', reason: 'decision cites a source outside the source-derived authorization evidence' })
+    expect(validateDecisionAssessmentV1(decision({ assessment: { version: 1, targetCovered: true, sideEffectsCovered: false, sourceRefs: ['event:7'], rationale: 'overclaims target' } }), assessment))
+      .toMatchObject({ kind: 'under-evidenced', reason: 'decision claims target coverage beyond source-derived authorization evidence' })
+  })
+
   it('keeps a benign complete shell snapshot low risk without inventing authorization', () => {
     const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'shell-v1', semantics: { family: 'shell-process-v1', value: { command: 'pwd' } } })
     const assessment = assessVerifiedActionV1(action, [9, 3])

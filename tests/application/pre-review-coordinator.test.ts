@@ -76,6 +76,14 @@ describe('DefaultPreReviewCoordinator', () => {
       .resolves.toMatchObject({ disposition: 'human' })
   })
 
+  it('downgrades a cited allow that overclaims source-derived coverage', async () => {
+    const assessedAction = action()
+    const reviewer = reviewReturning(decision({ assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'overclaimed' } }))
+    const coordinator = new DefaultPreReviewCoordinator(reviewer, new InMemorySealedDispositionRegistry())
+    await expect(coordinator.preReview(input({ action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
+      .resolves.toMatchObject({ disposition: 'human' })
+  })
+
   it('never weakens a Guardian deny because its risk explanation is incomplete', async () => {
     const seals = new InMemorySealedDispositionRegistry()
     const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision({ decision: 'deny' })), seals)

@@ -98,6 +98,13 @@ export function validateDecisionAssessmentV1(decision: ApprovalDecision, assessm
   if (ranks[decision.risk] < ranks[assessment.risk]) return { kind: 'under-evidenced', reason: 'decision lowers source-derived risk' }
   if (assessment.categories.some(category => !decision.categories.includes(category))) return { kind: 'under-evidenced', reason: 'decision omits source-derived risk category' }
   if (assessment.categories.includes('approval-evasion')) return { kind: 'prohibited', reason: 'approval-evasion is an absolute denial condition' }
+  const claim = decision.assessment
+  if (claim !== undefined) {
+    const sourceRefs = new Set(assessment.authorization.sourceRefs)
+    if (claim.sourceRefs.some(ref => !sourceRefs.has(ref))) return { kind: 'under-evidenced', reason: 'decision cites a source outside the source-derived authorization evidence' }
+    if (claim.targetCovered && !assessment.authorization.targetCovered) return { kind: 'under-evidenced', reason: 'decision claims target coverage beyond source-derived authorization evidence' }
+    if (claim.sideEffectsCovered && !assessment.authorization.sideEffectsCovered) return { kind: 'under-evidenced', reason: 'decision claims side-effect coverage beyond source-derived authorization evidence' }
+  }
   if (decision.decision !== 'allow') return { kind: 'valid' }
   if (assessment.risk === 'critical' || assessment.risk === 'unknown') return { kind: 'prohibited', reason: 'critical or unknown risk cannot be automatically allowed' }
   if (assessment.authorization.level !== 'explicit' || decision.userAuthorization !== 'explicit'
