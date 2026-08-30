@@ -397,7 +397,9 @@ export class DefaultGatePipeline implements GatePipeline {
         const result = await this.deps.records.createConfirmed(
           recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId, replay.disposition),
         )
-        if (result !== 'confirmed') return result === 'conflict' ? 'unavailable' : this.delegateOrUnavailable()
+        if (result !== 'confirmed') return result === 'conflict'
+          ? 'unavailable'
+          : this.finishPostFactsFailure(request, facts, this.delegateOrUnavailable(), 'sealed-replay')
         if (request.signal?.aborted) return 'cancelled'
         if (replay.disposition.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
         return 'allowed-once'
@@ -475,7 +477,7 @@ export class DefaultGatePipeline implements GatePipeline {
     return outcome
   }
 
-  private delegateOrUnavailable(): GateMachineDecisionV1 {
+  private delegateOrUnavailable(): 'delegate' | 'unavailable' {
     return this.deps.mode === 'auto-then-user' ? 'delegate' : 'unavailable'
   }
 

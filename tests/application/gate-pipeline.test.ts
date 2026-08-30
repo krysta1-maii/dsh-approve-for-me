@@ -278,6 +278,10 @@ describe('DefaultGatePipeline', () => {
     await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
     expect(preReview.preReview).not.toHaveBeenCalled()
     expect(records.createConfirmed).toHaveBeenCalledOnce()
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'delegate',
+      failureStage: 'sealed-replay', reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
     expect(seals.lookup('ask-1', 'call-1', hash('a')).kind).toBe('consumed')
   })
 
