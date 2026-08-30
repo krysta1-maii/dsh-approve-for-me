@@ -141,6 +141,13 @@ describe('DefaultDossierCompiler', () => {
       { turn: 0, delivery: { messageId: 'assistant-0', textBlocks: ['done'] }, end: { kind: 'completed' } },
       { turn: 1 },
     ] } } } })
+    const unsafeDelivery = {
+      ...withCompletedDelivery,
+      events: withCompletedDelivery.events.map(event => event.seq === 2
+        ? { ...event, data: { ...event.data, message: { ...event.data.message, content: [{ type: 'tool-call', id: 'not-a-delivery' }] } } }
+        : event),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: unsafeDelivery }).kind).toBe('incomplete')
     const semanticMismatch = new DefaultDossierCompiler({
       ...deps,
       semanticActionBindings: [{ toolName: 'bash', family: 'shell-process-v1', projectorId: 'dsh-approve-for-me/shell-process-v1' }],
