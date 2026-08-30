@@ -81,6 +81,16 @@ describe('ReviewDecisionRecordStore', () => {
     })).resolves.toBe('conflict')
   })
 
+  it('rejects malformed records before the durable backend sees them', async () => {
+    const backend = new InMemoryDecisionRecordStorageBackend()
+    const store = new ReviewDecisionRecordStore(backend)
+    await expect(store.createConfirmed({
+      ...record(),
+      review: { ...record().review, packetCodecId: 'not-a-codec' as never },
+    })).rejects.toThrow(/packetCodecId/)
+    await expect(backend.read(reviewRecordKey(record().session, record().review.reviewRunId))).resolves.toBeUndefined()
+  })
+
   it('surfaces backend unavailable without overwriting', async () => {
     const backend = new InMemoryDecisionRecordStorageBackend()
     backend.putIfAbsent = vi.fn(async (): Promise<StorageWriteResult> => 'unavailable')

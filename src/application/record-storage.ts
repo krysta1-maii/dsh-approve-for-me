@@ -1,5 +1,5 @@
 import { canonicalJson } from '../domain/json.js'
-import { reviewRecordKey } from '../domain/records.js'
+import { parseReviewDecisionRecord, reviewRecordKey } from '../domain/records.js'
 import type { ReviewDecisionRecordV1 } from '../domain/records.js'
 
 export type StorageWriteResult = 'stored' | 'identical' | 'conflict' | 'unavailable'
@@ -50,8 +50,11 @@ export class ReviewDecisionRecordStore implements DecisionRecordStore {
   constructor(private readonly backend: DecisionRecordStorageBackend) {}
 
   async createConfirmed(record: ReviewDecisionRecordV1): Promise<'confirmed' | 'conflict' | 'unavailable'> {
-    const key = reviewRecordKey(record.session, record.review.reviewRunId)
-    const result = await this.backend.putIfAbsent(key, record, canonicalJson(record))
+    // This port is the durable boundary: callers cannot persist an unchecked
+    // object through a typed cast or retain fields that the minimal schema bans.
+    const verified = parseReviewDecisionRecord(record)
+    const key = reviewRecordKey(verified.session, verified.review.reviewRunId)
+    const result = await this.backend.putIfAbsent(key, verified, canonicalJson(verified))
     if (result === 'stored' || result === 'identical') return 'confirmed'
     if (result === 'conflict') return 'conflict'
     return 'unavailable'
