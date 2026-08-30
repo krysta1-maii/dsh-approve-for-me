@@ -68,6 +68,16 @@ describe('DefaultPreReviewCoordinator', () => {
     })
   })
 
+  it('binds the sealed run to one host ID and forwards its exact deadline', async () => {
+    const seals = new InMemorySealedDispositionRegistry()
+    const reviewer = reviewReturning(decision({ reviewId: 'attempt-2' }))
+    const review = (reviewer as unknown as { review: ReturnType<typeof vi.fn> }).review
+    const coordinator = new DefaultPreReviewCoordinator(reviewer, seals, () => 150, () => 'run-1')
+    const sealed = await coordinator.preReview(input({ deadlineAt: 200 }))
+    expect(sealed.reviewRunId).toBe('run-1')
+    expect(review).toHaveBeenCalledWith(expect.objectContaining({ reviewRunId: 'run-1', deadlineAt: 200 }))
+  })
+
   it('constrains an identity-valid model allow with the source assessment before sealing', async () => {
     const seals = new InMemorySealedDispositionRegistry()
     const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision()), seals)

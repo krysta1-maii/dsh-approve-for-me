@@ -59,6 +59,10 @@ export interface ReviewCoordinator<Parent, SessionId extends string> {
     readonly verifiedDossier: SourceVerifiedDossierV1
     /** Source-derived R4 evidence, which selects the assessed packet codec. */
     readonly assessment?: RiskAssessmentV1
+    /** Host-owned business-run correlation, preserved outside the wire protocol. */
+    readonly reviewRunId?: string
+    /** One absolute deadline shared by all protocol attempts in this run. */
+    readonly deadlineAt?: number
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -103,6 +107,10 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     readonly verifiedDossier: SourceVerifiedDossierV1
     /** Source-derived R4 evidence, which selects the assessed packet codec. */
     readonly assessment?: RiskAssessmentV1
+    /** Host-owned business-run correlation, preserved outside the wire protocol. */
+    readonly reviewRunId?: string
+    /** One absolute deadline shared by all protocol attempts in this run. */
+    readonly deadlineAt?: number
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
@@ -116,6 +124,16 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     if (!dossierBindsReviewAction(input.verifiedDossier, action, input.authority.sessionId, input.callId)) {
       return Promise.reject(new ReviewProtocolError('invalid-result', 'review action is not bound to the verified dossier'))
     }
+    // The business review owns one absolute deadline across every recovery
+    // attempt. A contaminated-child rotation is infrastructure recovery, not a
+    // new review window, so it must never extend the authority granted to the
+    // Reviewer. Pre-review owns the production deadline; standalone callers
+    // retain the bounded legacy fallback.
+    const startedAt = this.now()
+    const deadlineAt = input.deadlineAt ?? startedAt + this.options.timeoutMs
+    if (!Number.isSafeInteger(deadlineAt) || deadlineAt <= startedAt) {
+      return Promise.reject(new ReviewProtocolError('timed-out', 'review deadline is absent or already expired'))
+    }
     return this.options.lane.run(input.authority.sessionId, async () => {
       // A contaminated child may only be discovered between `list()` and
       // `deliver()` (the Guard sets the flag during admission checks). Retry
@@ -124,7 +142,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       let lastError: unknown
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          return await this.reviewOnce(input, action)
+          return await this.reviewOnce(input, action, deadlineAt)
         } catch (error: unknown) {
           if (attempt === 0 && isContaminationError(error)) {
             lastError = error
@@ -148,13 +166,23 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       readonly signal?: AbortSignal
     },
     action: ActionSnapshot,
+    deadlineAt: number,
   ): Promise<ApprovalDecision> {
+    if (input.signal?.aborted) {
+      throw new ReviewProtocolError('aborted', 'review was aborted before an attempt started')
+    }
+    if (this.now() >= deadlineAt) {
+      throw new ReviewProtocolError('timed-out', 'review reached its business deadline before an attempt started')
+    }
     const childId = await this.options.directory.ensure(
       input.authority,
       this.options.preset,
       input.signal,
     )
     const issuedAt = this.now()
+    if (issuedAt >= deadlineAt) {
+      throw new ReviewProtocolError('timed-out', 'review reached its business deadline before delivery')
+    }
     const request = createApprovalReviewRequest(action, {
       reviewId: this.reviewId(),
       parentSessionId: input.authority.sessionId,
@@ -163,7 +191,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       ...input.callId === undefined ? {} : { callId: input.callId },
       ...input.reason === undefined ? {} : { reason: input.reason },
       issuedAt,
-      deadlineAt: issuedAt + this.options.timeoutMs,
+      deadlineAt,
     })
     // `arm` throws synchronously when the request can never be pending
     // (disposed channel, duplicate id, abort racing past the early check,

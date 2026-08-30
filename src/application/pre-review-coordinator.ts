@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { hashAction } from '../domain/protocol.js'
 import type {
   ActionSnapshot,
@@ -59,6 +60,7 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     private readonly review: ReviewCoordinator<Parent, SessionId>,
     private readonly seals: SealedDispositionRegistryV1,
     private readonly now: () => number = Date.now,
+    private readonly reviewRunId: () => string = randomUUID,
   ) {}
 
   async preReview(input: PreReviewInput<Parent, SessionId>): Promise<SealedDispositionV1> {
@@ -72,11 +74,17 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     if (input.verifiedDossier === undefined) {
       throw new GateFailure('integrity', 'a source-verified dossier is required before Guardian review')
     }
+    const reviewRunId = this.reviewRunId()
+    if (typeof reviewRunId !== 'string' || reviewRunId.length === 0) {
+      throw new GateFailure('integrity', 'pre-review requires a non-empty host review run id')
+    }
     const decision = await this.review.review({
       authority: input.authority,
       action: input.action,
       verifiedDossier: input.verifiedDossier,
       ...input.assessment === undefined ? {} : { assessment: input.assessment },
+      reviewRunId,
+      deadlineAt: input.deadlineAt,
       callId: input.callId,
       ...input.reason === undefined ? {} : { reason: input.reason },
       ...input.signal === undefined ? {} : { signal: input.signal },
@@ -108,7 +116,7 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
           : dispositionFor(decision)
     const disposition: SealedDispositionV1 = Object.freeze({
       version: 1,
-      reviewRunId: decision.reviewId,
+      reviewRunId,
       requestId: input.requestId,
       parentSessionId: input.authority.sessionId,
       callId: input.callId,

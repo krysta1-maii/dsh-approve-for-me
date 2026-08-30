@@ -250,6 +250,7 @@ export function installApproveForMe(
       const authority = factStore.authorityFor(input.parentSessionId) as ParentAuthority<Agent, string> | undefined
       if (authority === undefined) throw new GateFailure('integrity', 'no live parent authority for pre-review')
       const pre = new DefaultPreReviewCoordinator<Agent, string>(coordinator, seals)
+      const issuedAt = Date.now()
       return pre.preReview({
         authority,
         requestId: input.requestId,
@@ -262,8 +263,8 @@ export function installApproveForMe(
         generation: input.generation,
         configurationFingerprint: input.configurationFingerprint,
         ...input.policyVersion === undefined ? {} : { policyVersion: input.policyVersion },
-        issuedAt: Date.now(),
-        deadlineAt: Date.now() + normalized.timeoutMs,
+        issuedAt,
+        deadlineAt: issuedAt + normalized.timeoutMs,
       })
     },
   }

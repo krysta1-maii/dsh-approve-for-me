@@ -21,6 +21,7 @@ import type {
   ParentAuthority,
   ReviewerProviderDataV1,
   ReviewerTextBlock,
+  ReviewClock,
 } from '../../src/index.js'
 
 type Parent = { id: string }
@@ -132,10 +133,12 @@ function authority(parent: Parent): ParentAuthority<Parent, string> {
 
 function makeCoordinator(port: FakePort, overrides: {
   timeoutMs?: number
+  now?: () => number
+  clock?: ReviewClock
   reviewId?: () => string
   submit?: (payload: unknown, actualId: string) => ReturnType<DefaultDecisionChannel['submit']>
 } = {}) {
-  const channel = new DefaultDecisionChannel()
+  const channel = new DefaultDecisionChannel(overrides.clock)
   const submit = overrides.submit ?? ((payload: unknown, actualId: string) => channel.submit(payload, { actualReviewerSessionId: actualId }))
   return {
     channel,
@@ -146,6 +149,7 @@ function makeCoordinator(port: FakePort, overrides: {
       lane: new SerialLanes(),
       timeoutMs: overrides.timeoutMs ?? 1_000,
       preset: providerData(),
+      ...overrides.now === undefined ? {} : { now: overrides.now },
       ...overrides.reviewId === undefined ? {} : { reviewId: overrides.reviewId },
     }),
     submit,
@@ -408,5 +412,34 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.deliveries).toHaveLength(2)
     expect(port.rotates).toHaveLength(1)
     expect(port.children.filter(child => child.contaminated)).toHaveLength(1)
+  })
+
+  it('shares one absolute deadline across contaminated-child recovery attempts', async () => {
+    let now = 1_000
+    const clock: ReviewClock = {
+      now: () => now,
+      setTimeout: () => Symbol('timer'),
+      clearTimeout: () => undefined,
+    }
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2']
+    const { coordinator, submit } = makeCoordinator(port, {
+      timeoutMs: 50, now: () => now, clock, reviewId: () => ids.shift()!,
+    })
+    let first = true
+    port.onDeliver = ({ childId, request }) => {
+      if (first) {
+        first = false
+        const index = port.children.findIndex(child => child.id === childId)
+        port.children[index] = { ...port.children[index]!, contaminated: true }
+        now = 1_010
+        throw new Error(`managed child "${childId}" is contaminated and must be rotated`)
+      }
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({
+      authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier(),
+    })).resolves.toMatchObject({ reviewId: 'review-2' })
+    expect(port.deliveries.map(delivery => delivery.request.deadlineAt)).toEqual([1_050, 1_050])
   })
 })
