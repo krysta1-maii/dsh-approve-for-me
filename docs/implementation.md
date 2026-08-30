@@ -117,6 +117,10 @@
 
 R5 仍不构成成熟自动审批能力：R4 尚未具备已证明的 target/side-effect matcher，故其 baseline 默认不授权；未实现工具族也不能进入自动 catalog。
 
+### R6 review runs（进行中）
+
+Pre-review 现生成 host-owned `reviewRunId` 并将单一绝对 deadline 交给 Reviewer coordinator；sealed disposition 保存 run ID 而非某个 protocol attempt ID。污染 child 的一次 rotate recovery 不消耗业务 attempt，也不能延长 deadline。Coordinator 当前只会对经 owning child 路由的 `invalid-result` 进行一次业务重试；未知 delivery/provider 错误、身份不匹配、abort 与 timeout 均保持 fail-closed。
+
 ### 验证
 
 ```bash

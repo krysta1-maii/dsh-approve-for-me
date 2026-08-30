@@ -29,6 +29,16 @@ function isContaminationError(error: unknown): boolean {
   return error instanceof Error && /contaminated|unauthorized transcript/i.test(error.message)
 }
 
+/**
+ * R6 deliberately keeps the business-attempt retry vocabulary closed. Raw
+ * delivery/provider errors have no typed host contract yet, so retrying them
+ * could repeat an unknown side effect. A routed malformed result is the only
+ * repairable protocol failure currently proven to belong to this review.
+ */
+function isRetryableAttemptFailure(error: unknown): boolean {
+  return error instanceof ReviewProtocolError && error.code === 'invalid-result'
+}
+
 function dossierBindsReviewAction(
   verified: SourceVerifiedDossierV1,
   action: ActionSnapshot,
@@ -135,24 +145,50 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       return Promise.reject(new ReviewProtocolError('timed-out', 'review deadline is absent or already expired'))
     }
     return this.options.lane.run(input.authority.sessionId, async () => {
-      // A contaminated child may only be discovered between `list()` and
-      // `deliver()` (the Guard sets the flag during admission checks). Retry
-      // once against a freshly reserved child; every failure after that stays
-      // fail-closed and is never silently allowed.
+      // At most two business attempts may share the immutable evidence and
+      // deadline. Child contamination is separate infrastructure recovery and
+      // never consumes one of those attempts.
       let lastError: unknown
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          return await this.reviewOnce(input, action, deadlineAt)
+          return await this.reviewAttempt(input, action, deadlineAt)
         } catch (error: unknown) {
-          if (attempt === 0 && isContaminationError(error)) {
-            lastError = error
-            continue
-          }
+          lastError = error
+          if (attempt === 0 && isRetryableAttemptFailure(error)) continue
           throw error
         }
       }
       throw lastError
     })
+  }
+
+  /** Recover a freshly discovered contaminated child at most once. */
+  private async reviewAttempt(
+    input: {
+      readonly authority: ParentAuthority<Parent, SessionId>
+      readonly action: ActionSnapshot
+      readonly verifiedDossier: SourceVerifiedDossierV1
+      readonly assessment?: RiskAssessmentV1
+      readonly reviewRunId?: string
+      readonly deadlineAt?: number
+      readonly callId?: string
+      readonly reason?: string
+      readonly signal?: AbortSignal
+    },
+    action: ActionSnapshot,
+    deadlineAt: number,
+  ): Promise<ApprovalDecision> {
+    let lastError: unknown
+    for (let recovery = 0; recovery < 2; recovery += 1) {
+      try {
+        return await this.reviewOnce(input, action, deadlineAt)
+      } catch (error: unknown) {
+        lastError = error
+        if (recovery === 0 && isContaminationError(error)) continue
+        throw error
+      }
+    }
+    throw lastError
   }
 
   private async reviewOnce(

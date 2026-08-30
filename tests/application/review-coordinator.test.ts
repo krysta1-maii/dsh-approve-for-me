@@ -264,6 +264,57 @@ describe('DefaultReviewCoordinator', () => {
     await expect(coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() }))
       .rejects.toMatchObject({ code: 'identity-mismatch' })
     expect(port.interrupts).toEqual([{ authority: authority(parent), childId: 'parent-1-reviewer-1' }])
+    expect(port.deliveries).toHaveLength(1)
+  })
+
+  it('retries one routed malformed result with a new protocol review ID', async () => {
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2']
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    let first = true
+    port.onDeliver = ({ childId, request }) => {
+      if (first) {
+        first = false
+        expect(submit({ reviewId: request.reviewId }, childId).status).toBe('invalid')
+        return
+      }
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
+      .resolves.toMatchObject({ reviewId: 'review-2', decision: 'allow' })
+    expect(port.deliveries.map(delivery => delivery.request.reviewId)).toEqual(['review-1', 'review-2'])
+    expect(port.interrupts).toHaveLength(1)
+  })
+
+  it('keeps a late first-attempt result isolated from the second attempt', async () => {
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2']
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    let firstRequest: ApprovalReviewRequest | undefined
+    port.onDeliver = ({ childId, request }) => {
+      if (firstRequest === undefined) {
+        firstRequest = request
+        expect(submit({ reviewId: request.reviewId }, childId).status).toBe('invalid')
+        return
+      }
+      expect(submit(decision(firstRequest!), childId).status).toBe('late')
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
+      .resolves.toMatchObject({ reviewId: 'review-2' })
+  })
+
+  it('fails closed after two malformed-result attempts without a third delivery', async () => {
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2', 'review-3']
+    const { coordinator, submit } = makeCoordinator(port, { reviewId: () => ids.shift()! })
+    port.onDeliver = ({ childId, request }) => {
+      expect(submit({ reviewId: request.reviewId }, childId).status).toBe('invalid')
+    }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
+      .rejects.toMatchObject({ code: 'invalid-result' })
+    expect(port.deliveries.map(delivery => delivery.request.reviewId)).toEqual(['review-1', 'review-2'])
+    expect(port.interrupts).toHaveLength(2)
   })
 
   it('closes the pending result when deliver fails', async () => {
