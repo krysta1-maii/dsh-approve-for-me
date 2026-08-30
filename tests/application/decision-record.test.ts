@@ -46,10 +46,11 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await expect(store.createConfirmed(record({ reviewAttempts: 0 }))).rejects.toThrow(/execution summary/)
   })
 
-  it('returns conflict when the same ask confirms a different disposition', async () => {
+  it('returns conflict when the same ask confirms a different disposition or execution summary', async () => {
     const store = new InMemoryGateDecisionRecordStore()
     await store.createConfirmed(record())
     await expect(store.createConfirmed(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))).resolves.toBe('conflict')
+    await expect(store.createConfirmed(record({ reviewAttempts: 2 }))).resolves.toBe('conflict')
   })
 
   it('does not collide when a reused session id has another lifecycle', async () => {
