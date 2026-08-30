@@ -104,7 +104,7 @@ describe('DefaultDossierCompiler', () => {
       throughSeq: 8,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
-        { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'superseded' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
         { seq: 2, time: 3, type: 'step/start', retention: 'included' as const, data: { turn: 1, step: 0 } },
         { seq: 3, time: 4, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' } },
         { seq: 4, time: 5, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
@@ -250,6 +250,16 @@ describe('DefaultDossierCompiler', () => {
       expect(result.verified.dossier.environment).toMatchObject({
         requestHeader: { config: { model: 'model-1' } },
         requestContext: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 },
+      })
+      expect(result.verified.dossier.interaction).toMatchObject({
+        turns: [{
+          directUserMessages: [{
+            event: { seq: 1, type: 'user/message', turn: 1 },
+            messageId: 'user-1',
+            content: [{ type: 'text', text: 'show cwd' }],
+            surfaceState: 'superseded',
+          }],
+        }],
       })
       expect(result.verified.dossier.currentTurnTools).toMatchObject({
         excludedPendingRequest: { callId: 'call-1', requestEventSeq: 7 },

@@ -61,7 +61,8 @@ function actionArgumentsMatchCall(actionArguments: JsonValue, rawArguments: unkn
 }
 
 function directUserMessage(event: SessionFactEventV1, turn: number | undefined): DirectUserMessageV1 | undefined {
-  if (event.retention !== 'included' || event.type !== 'user/message' || event.surfaceState !== 'visible') return undefined
+  if (event.retention !== 'included' || event.type !== 'user/message'
+    || (event.surfaceState !== undefined && event.surfaceState !== 'visible' && event.surfaceState !== 'superseded')) return undefined
   const data = record(event.data)
   const source = data === undefined ? undefined : record(data.source as JsonValue)
   const messageId = data?.id
