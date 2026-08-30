@@ -133,6 +133,9 @@ export type {
   UserAuthorization,
 } from './domain/protocol.js'
 
+export { assessVerifiedActionV1, permitsAutomaticFastPath } from './domain/risk-assessment.js'
+export type { AuthorizationAssessmentV1, RiskAssessmentV1, RiskCategoryV1 } from './domain/risk-assessment.js'
+
 // Application services (no DSH imports).
 export {
   DefaultDecisionChannel,
