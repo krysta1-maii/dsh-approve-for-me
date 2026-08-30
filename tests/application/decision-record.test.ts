@@ -19,6 +19,9 @@ function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord
     generation: 'generation-1',
     configurationFingerprint: hash('c'),
     disposition: 'allow',
+    reviewAttempts: 1,
+    contaminatedRotationAttempts: 0,
+    contaminatedRotations: 0,
     ...overrides,
   }
 }
@@ -35,10 +38,12 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).rejects.toThrow(/not supported/)
   })
 
-  it('rejects inconsistent decision fields and run identity routes', async () => {
+  it('rejects inconsistent decision fields, execution summaries, and run identity routes', async () => {
     const store = new InMemoryGateDecisionRecordStore()
     await expect(store.createConfirmed(record({ normalizedDecision: 'deny' }))).rejects.toThrow(/inconsistent/)
     await expect(store.createConfirmed(record({ route: 'trust-envelope' }))).rejects.toThrow(/reviewRunId/)
+    await expect(store.createConfirmed(record({ contaminatedRotations: 1 }))).rejects.toThrow(/execution summary/)
+    await expect(store.createConfirmed(record({ reviewAttempts: 0 }))).rejects.toThrow(/execution summary/)
   })
 
   it('returns conflict when the same ask confirms a different disposition', async () => {

@@ -99,6 +99,11 @@ export interface GateDecisionRecord {
   readonly generation: string
   readonly configurationFingerprint: string
   readonly disposition: SealedDispositionKind
+  /** Number of protocol attempts in the real Guardian run; zero for fast paths. */
+  readonly reviewAttempts: number
+  /** Infrastructure recovery counts, separate from protocol attempts. */
+  readonly contaminatedRotationAttempts: number
+  readonly contaminatedRotations: number
 }
 
 export type GateDecisionRecordResult = 'confirmed' | 'conflict' | 'unavailable'
@@ -113,7 +118,7 @@ const GATE_HASH = /^sha256:[0-9a-f]{64}$/
 export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('gate decision record must be an object')
   const value = input as Record<string, unknown>
-  const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition']
+  const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition', 'reviewAttempts', 'contaminatedRotationAttempts', 'contaminatedRotations']
   const allowed = new Set([...required, 'reviewRunId'])
   for (const key of required) if (!Object.hasOwn(value, key)) throw new TypeError(`gate decision record.${key} is required`)
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`gate decision record.${key} is not supported`)
@@ -127,6 +132,9 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   }
   for (const key of ['actionHash', 'configurationFingerprint'] as const) {
     if (typeof value[key] !== 'string' || !GATE_HASH.test(value[key])) throw new TypeError(`gate decision record.${key} must be a sha256 digest`)
+  }
+  for (const key of ['reviewAttempts', 'contaminatedRotationAttempts', 'contaminatedRotations'] as const) {
+    if (!Number.isSafeInteger(value[key]) || (value[key] as number) < 0) throw new TypeError(`gate decision record.${key} is invalid`)
   }
   if (value.reviewRunId !== undefined && (typeof value.reviewRunId !== 'string' || value.reviewRunId.length === 0)) {
     throw new TypeError('gate decision record.reviewRunId is invalid')
@@ -143,6 +151,14 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   const reviewRoute = route === 'guardian' || route === 'sealed-replay'
   if (reviewRoute !== (value.reviewRunId !== undefined)) {
     throw new TypeError('gate decision record reviewRunId does not match its route')
+  }
+  const attempts = value.reviewAttempts as number
+  const rotations = value.contaminatedRotationAttempts as number
+  const successfulRotations = value.contaminatedRotations as number
+  if ((!reviewRoute && (attempts !== 0 || rotations !== 0 || successfulRotations !== 0))
+    || (reviewRoute && attempts < 1)
+    || successfulRotations > rotations) {
+    throw new TypeError('gate decision record execution summary is inconsistent with its route')
   }
   return Object.freeze({ ...value }) as unknown as GateDecisionRecord
 }
@@ -184,6 +200,9 @@ function recordFor(
   route: GateDecisionRouteV1,
   pluginDisposition: GatePluginDispositionV1,
   reviewRunId?: string,
+  execution: Pick<SealedDispositionV1, 'reviewAttempts' | 'contaminatedRotationAttempts' | 'contaminatedRotations'> = {
+    reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+  },
 ): GateDecisionRecord {
   return {
     version: 1,
@@ -199,6 +218,9 @@ function recordFor(
     generation: facts.generation,
     configurationFingerprint: facts.configurationFingerprint,
     disposition: normalizedDecision === 'human_review' ? 'human' : normalizedDecision,
+    reviewAttempts: execution.reviewAttempts,
+    contaminatedRotationAttempts: execution.contaminatedRotationAttempts,
+    contaminatedRotations: execution.contaminatedRotations,
   }
 }
 
@@ -296,7 +318,7 @@ export class DefaultGatePipeline implements GatePipeline {
         const mapped = this.mapDisposition(replay.disposition.disposition)
         if (mapped !== 'allowed-once') return mapped
         const result = await this.deps.records.createConfirmed(
-          recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId),
+          recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId, replay.disposition),
         )
         if (result !== 'confirmed') return result === 'conflict' ? 'unavailable' : this.delegateOrUnavailable()
         if (request.signal?.aborted) return 'cancelled'
@@ -325,7 +347,7 @@ export class DefaultGatePipeline implements GatePipeline {
     const pluginDisposition: GatePluginDispositionV1 = sealed.disposition === 'allow'
       ? 'allow'
       : sealed.disposition === 'deny' ? 'deny' : 'delegate-human'
-    const record = recordFor(request, facts, sealed.disposition === 'human' ? 'human_review' : sealed.disposition, 'guardian', pluginDisposition, sealed.reviewRunId)
+    const record = recordFor(request, facts, sealed.disposition === 'human' ? 'human_review' : sealed.disposition, 'guardian', pluginDisposition, sealed.reviewRunId, sealed)
 
     if (mapped === 'allowed-once') {
       const result = await this.deps.records.createConfirmed(record)

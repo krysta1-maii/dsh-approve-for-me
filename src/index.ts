@@ -160,7 +160,7 @@ export type { ReviewerDirectory } from './application/reviewer-directory.js'
 export {
   DefaultReviewCoordinator,
 } from './application/review-coordinator.js'
-export type { ReviewCoordinator, ReviewCoordinatorOptions } from './application/review-coordinator.js'
+export type { ReviewCoordinator, ReviewCoordinatorOptions, ReviewExecutionSummaryV1, ReviewOutcomeV1 } from './application/review-coordinator.js'
 
 // Ports.
 export type {

@@ -46,6 +46,15 @@ interface ReviewerTelemetryRunState {
   rotations: number
 }
 
+/** Bounded, content-free execution summary for the sealed audit boundary. */
+export interface ReviewExecutionSummaryV1 {
+  readonly attempts: number
+  readonly contaminatedRotationAttempts: number
+  readonly contaminatedRotations: number
+}
+
+export type ReviewOutcomeV1 = ApprovalDecision & { readonly execution: ReviewExecutionSummaryV1 }
+
 function telemetryFailure(error: unknown): ReviewerTelemetryFailureV1 {
   if (!(error instanceof ReviewProtocolError)) return 'infrastructure'
   switch (error.code) {
@@ -95,7 +104,7 @@ export interface ReviewCoordinator<Parent, SessionId extends string> {
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
-  }): Promise<ApprovalDecision>
+  }): Promise<ReviewOutcomeV1>
 }
 
 export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
@@ -145,7 +154,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     readonly callId?: string
     readonly reason?: string
     readonly signal?: AbortSignal
-  }): Promise<ApprovalDecision> {
+  }): Promise<ReviewOutcomeV1> {
     const action = parseActionSnapshot(input.action)
     if (input.signal?.aborted) {
       // An already-aborted review never enters the lane: no child ensure, no
@@ -190,7 +199,14 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
           attempts: telemetry.attempts, contaminatedRotationAttempts: telemetry.rotationAttempts,
           contaminatedRotations: telemetry.rotations,
         })
-        return decision
+        return Object.freeze({
+          ...decision,
+          execution: Object.freeze({
+            attempts: telemetry.attempts,
+            contaminatedRotationAttempts: telemetry.rotationAttempts,
+            contaminatedRotations: telemetry.rotations,
+          }),
+        })
       },
       error => {
         this.observeTelemetry({

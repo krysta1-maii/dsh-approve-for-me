@@ -17,6 +17,10 @@ export interface SealedDispositionV1 {
   readonly generation: string
   readonly configurationFingerprint: string
   readonly disposition: SealedDispositionKind
+  /** Bounded execution counts from the real Guardian run. */
+  readonly reviewAttempts: number
+  readonly contaminatedRotationAttempts: number
+  readonly contaminatedRotations: number
   readonly issuedAt: number
   readonly deadlineAt: number
   /** Consumed by tools/result; a settled execution can no longer replay. */

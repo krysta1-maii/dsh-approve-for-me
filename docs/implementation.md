@@ -129,7 +129,7 @@ Exact breaker 的 key 限定 parent lifecycle、turn、direct-user frontier 与�
 
 生产 Gate 的 Storage Domain 决策行现在是闭集、版本化的最小审计记录：完整 parent lifecycle／ask／call／action hash、configuration 和 generation 之外，还保存实际 route（trust envelope、allow cache、sealed replay 或 Guardian）、规范化 Guardian decision、最终插件 disposition，以及仅在真实 Guardian/重放路径可得的 `reviewRunId`。该行明确拒绝 rationale、decision payload、packet、dossier、tool arguments 和任何未定义字段。
 
-自动 allow 仍必须在其 compact row durable-confirmed 后才返回；Guardian deny 与 human 的记录是 best-effort，记录失败不能改变拒绝或人工下沉。Reviewer telemetry 已接入 coordinator 与最终 Gate fallback：仅聚合结果、时长、attempt、污染轮换和固定失败类别，不保存身份或内容，观察器异常也不影响裁决。完整 ReviewDecisionRecord、attempt/recovery 的 durable audit，以及 full case capture durable backend 仍未接线，不能由此最小行推断。为避免将内存测试 double 误报为生产留存，插件在该 durable adapter 就绪前会拒绝 `caseCapture.mode: full` 安装。
+自动 allow 仍必须在其 compact row durable-confirmed 后才返回；Guardian deny 与 human 的记录是 best-effort，记录失败不能改变拒绝或人工下沉。Reviewer telemetry 已接入 coordinator 与最终 Gate fallback：仅聚合结果、时长、attempt、污染轮换和固定失败类别，不保存身份或内容，观察器异常也不影响裁决。每个 Guardian/sealed 路径还会保存内容无关的 protocol attempt 数及污染 child recovery 尝试／成功数；fast path 固定为零，parser 强制 route 与该摘要一致。完整 ReviewDecisionRecord、逐次 attempt/recovery 的 durable audit，以及 full case capture durable backend 仍未接线，不能由此最小行推断。为避免将内存测试 double 误报为生产留存，插件在该 durable adapter 就绪前会拒绝 `caseCapture.mode: full` 安装。
 
 ### 验证
 

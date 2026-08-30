@@ -68,5 +68,8 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
       && a.generation === b.generation
       && a.configurationFingerprint === b.configurationFingerprint
       && a.disposition === b.disposition
+      && a.reviewAttempts === b.reviewAttempts
+      && a.contaminatedRotationAttempts === b.contaminatedRotationAttempts
+      && a.contaminatedRotations === b.contaminatedRotations
   }
 }

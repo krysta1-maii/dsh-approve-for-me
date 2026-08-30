@@ -296,7 +296,10 @@ describe('DefaultReviewCoordinator', () => {
       expect(submit(decision(request), childId).status).toBe('accepted')
     }
     await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
-      .resolves.toMatchObject({ reviewId: 'review-2', decision: 'allow' })
+      .resolves.toMatchObject({
+        reviewId: 'review-2', decision: 'allow',
+        execution: { attempts: 2, contaminatedRotationAttempts: 0, contaminatedRotations: 0 },
+      })
     expect(port.deliveries.map(delivery => delivery.request.reviewId)).toEqual(['review-1', 'review-2'])
     expect(port.interrupts).toHaveLength(1)
   })

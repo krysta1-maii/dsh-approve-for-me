@@ -67,6 +67,9 @@ function sealed(disposition: SealedDispositionV1['disposition']): SealedDisposit
     generation: 'generation-1',
     configurationFingerprint: hash('cfg'),
     disposition,
+    reviewAttempts: 1,
+    contaminatedRotationAttempts: 0,
+    contaminatedRotations: 0,
     issuedAt: 100,
     deadlineAt: Number.MAX_SAFE_INTEGER,
     replayable: true,
@@ -333,6 +336,7 @@ describe('DefaultGatePipeline', () => {
     expect(allow.records.createConfirmed).toHaveBeenCalledOnce()
     expect(allow.records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
       version: 1, route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow', reviewRunId: 'run-1',
+      reviewAttempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
     }))
 
     const deny = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('deny')) } })

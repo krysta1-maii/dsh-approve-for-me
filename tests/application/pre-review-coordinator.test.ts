@@ -34,7 +34,12 @@ function decision(overrides: Partial<ApprovalDecision> = {}): ApprovalDecision {
 }
 
 function reviewReturning(result: ApprovalDecision) {
-  return { review: vi.fn(async () => result) } as unknown as ReviewCoordinator<{ id: string }, string>
+  return {
+    review: vi.fn(async () => ({
+      ...result,
+      execution: { attempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0 },
+    })),
+  } as unknown as ReviewCoordinator<{ id: string }, string>
 }
 
 function input(overrides: Partial<Parameters<DefaultPreReviewCoordinator<{ id: string }, string>['preReview']>[0]> = {}) {
@@ -61,6 +66,7 @@ describe('DefaultPreReviewCoordinator', () => {
     const sealed = await coordinator.preReview(input())
     expect(sealed.disposition).toBe('allow')
     expect(sealed.requestId).toBe('ask-1')
+    expect(sealed).toMatchObject({ reviewAttempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0 })
     expect(review).toHaveBeenCalledOnce()
     expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) })).toEqual({
       kind: 'sealed',
