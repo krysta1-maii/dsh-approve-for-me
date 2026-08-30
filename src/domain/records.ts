@@ -3,6 +3,7 @@ import { canonicalJson } from './json.js'
 import type { JsonValue } from './json.js'
 import { parseApprovalDecision, parseApprovalReviewRequest } from './protocol.js'
 import type { ApprovalDecision, ApprovalReviewRequest } from './protocol.js'
+import type { RiskAssessmentV1 } from './risk-assessment.js'
 
 /** Durable parent Session lifecycle identity used as record/artifact scope. */
 export interface SessionLifecycleIdentityV1 {
@@ -410,6 +411,33 @@ export interface ApprovalReviewPacketV1 {
   readonly request: ApprovalReviewRequest
   readonly dossier: JsonValue
   readonly dossierHash: string
+}
+
+/** R5 packet extension; v1 remains available for persisted historical cases. */
+export interface ApprovalReviewPacketV2 {
+  readonly version: 2
+  readonly kind: 'approval-review-packet'
+  readonly request: ApprovalReviewRequest
+  readonly dossier: JsonValue
+  readonly dossierHash: string
+  readonly policy: { readonly version: string; readonly configurationFingerprint: string }
+  readonly baseline: RiskAssessmentV1
+}
+
+export function createApprovalReviewPacketV2(input: {
+  readonly request: ApprovalReviewRequest
+  readonly dossier: JsonValue
+  readonly dossierHash?: string
+  readonly policy: ApprovalReviewPacketV2['policy']
+  readonly baseline: RiskAssessmentV1
+}): ApprovalReviewPacketV2 {
+  const request = parseApprovalReviewRequest(input.request)
+  canonicalJson(input.dossier)
+  const dossierHash = input.dossierHash ?? hashGuardianDossier(input.dossier)
+  if (dossierHash !== hashGuardianDossier(input.dossier)) throw new TypeError('approval-review-packet.dossierHash does not match dossier')
+  if (typeof input.policy.version !== 'string' || input.policy.version.length === 0 || !HASH_PATTERN.test(input.policy.configurationFingerprint)) throw new TypeError('approval-review-packet.policy is invalid')
+  canonicalJson(input.baseline)
+  return Object.freeze({ version: 2, kind: 'approval-review-packet', request, dossier: input.dossier, dossierHash, policy: Object.freeze({ ...input.policy }), baseline: input.baseline })
 }
 
 export interface GuardianPolicyArtifactV1 {

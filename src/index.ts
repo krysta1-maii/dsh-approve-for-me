@@ -15,6 +15,7 @@ export {
   artifactBytes,
   caseArtifactKey,
   createApprovalReviewPacketV1,
+  createApprovalReviewPacketV2,
   hashApprovalDecisionPayload,
   hashApprovalReviewPacket,
   hashDecisionToolSchema,
@@ -29,6 +30,7 @@ export {
 } from './domain/records.js'
 export type {
   ApprovalReviewPacketV1,
+  ApprovalReviewPacketV2,
   GuardianCaseArtifactV1,
   GuardianCaseAttemptObservationV1,
   GuardianCaseCaptureConfigV1,

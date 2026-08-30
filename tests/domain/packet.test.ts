@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   createActionSnapshot,
   createApprovalReviewPacketV1,
+  createApprovalReviewPacketV2,
+  assessVerifiedActionV1,
   createApprovalReviewRequest,
   hashApprovalReviewPacket,
   hashGuardianDossier,
@@ -37,6 +39,18 @@ describe('approval review packet codec', () => {
     expect(packet.dossierHash).toBe(hashGuardianDossier(dossier))
     expect(parseApprovalReviewPacketV1(packet)).toEqual(packet)
     expect(hashApprovalReviewPacket(packet)).toMatch(/^sha256:[0-9a-f]{64}$/)
+  })
+
+  it('binds an R4 baseline and policy identity in the v2 packet', () => {
+    const reviewRequest = request()
+    const packet = createApprovalReviewPacketV2({
+      request: reviewRequest,
+      dossier,
+      policy: { version: 'policy-v2', configurationFingerprint: `sha256:${'b'.repeat(64)}` },
+      baseline: assessVerifiedActionV1(reviewRequest.action, [7]),
+    })
+    expect(packet).toMatchObject({ version: 2, policy: { version: 'policy-v2' }, baseline: { authorization: { sourceRefs: ['event:7'] } } })
+    expect(Object.isFrozen(packet.policy)).toBe(true)
   })
 
   it('accepts an explicit matching dossierHash and rejects a tampered hash', () => {
