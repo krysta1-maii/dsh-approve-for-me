@@ -4,7 +4,7 @@ R4 supplies evidence-bound facts to the gate; it is not an allow policy. The ass
 
 ## Taxonomy
 
-The stable vocabulary is: data exfiltration, credential access, destructive change, persistent security weakening, permission expansion, network exposure, supply-chain or unverified execution, approval evasion, and unknown semantics. Each future rule must declare its structural trigger, counterevidence, scope, required authorization, manual-confirmation condition, and absolute-denial condition.
+The stable vocabulary is: data exfiltration, credential access, destructive change, persistent security weakening, permission expansion, network exposure, supply-chain or unverified execution, approval evasion, and unknown semantics. `RISK_RULES_V1` provides one versioned entry for each category, with a structural trigger, counterevidence, scope, authorization requirement, manual-confirmation condition, and absolute-denial condition. A rule whose adapter is not yet proved remains unasserted; the matrix is not a license to infer facts from free text.
 
 The current baseline has only auditable structural triggers:
 

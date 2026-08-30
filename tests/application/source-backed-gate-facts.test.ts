@@ -51,6 +51,7 @@ describe('DossierGateFactProjector', () => {
     } as never)
     expect(facts).toMatchObject({ rootRequester: true, breakerKey: { turn: 3, directUserFrontierSeq: 7, actionHash } })
     expect(facts?.classification).toEqual({ kind: 'classified', classification: 'gate-ask' })
+    expect(facts?.assessment).toMatchObject({ authorization: { level: 'unknown', sourceRefs: ['event:7'] } })
 
     const withoutUserFrontier = projector.project({
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },

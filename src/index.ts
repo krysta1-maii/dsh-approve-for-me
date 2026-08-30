@@ -133,8 +133,8 @@ export type {
   UserAuthorization,
 } from './domain/protocol.js'
 
-export { assessVerifiedActionV1, permitsAutomaticFastPath } from './domain/risk-assessment.js'
-export type { AuthorizationAssessmentV1, RiskAssessmentV1, RiskCategoryV1 } from './domain/risk-assessment.js'
+export { assessVerifiedActionV1, permitsAutomaticFastPath, RISK_RULES_V1 } from './domain/risk-assessment.js'
+export type { AuthorizationAssessmentV1, RiskAssessmentV1, RiskCategoryV1, RiskEvidenceV1, RiskRuleV1 } from './domain/risk-assessment.js'
 
 // Application services (no DSH imports).
 export {

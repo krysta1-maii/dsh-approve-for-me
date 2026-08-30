@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { assessVerifiedActionV1, createActionSnapshot, permitsAutomaticFastPath } from '../../src/index.js'
+import { assessVerifiedActionV1, createActionSnapshot, permitsAutomaticFastPath, RISK_RULES_V1 } from '../../src/index.js'
 
 describe('assessVerifiedActionV1', () => {
+  it('publishes a complete non-authorizing rule matrix', () => {
+    expect(RISK_RULES_V1).toHaveLength(9)
+    expect(new Set(RISK_RULES_V1.map(rule => rule.category)).size).toBe(9)
+    for (const rule of RISK_RULES_V1) {
+      expect(rule.structuralTrigger).not.toHaveLength(0)
+      expect(rule.counterevidence).not.toHaveLength(0)
+      expect(rule.authorizationRequirement).not.toHaveLength(0)
+      expect(rule.manualConfirmation).not.toHaveLength(0)
+      expect(rule.absoluteDenial).not.toHaveLength(0)
+    }
+  })
+
   it('records network payload risk without inferring user authorization', () => {
     const action = createActionSnapshot({ toolName: 'fetch', arguments: {}, projectorId: 'network-v1', semantics: { family: 'network-v1', value: { body: { kind: 'utf8' }, headers: [] } } })
     const assessment = assessVerifiedActionV1(action, [7])
     expect(assessment).toMatchObject({ risk: 'high', categories: ['data-exfiltration', 'network-exposure'], authorization: { level: 'unknown', targetCovered: false, sideEffectsCovered: false, sourceRefs: ['event:7'] } })
+    expect(assessment.evidence).toEqual([
+      expect.objectContaining({ category: 'data-exfiltration', sourceRefs: ['action-snapshot'] }),
+      expect.objectContaining({ category: 'network-exposure', sourceRefs: ['action-snapshot'] }),
+    ])
+    expect(Object.isFrozen(assessment.evidence)).toBe(true)
     expect(permitsAutomaticFastPath(assessment)).toBe(false)
   })
 
