@@ -23,6 +23,7 @@ import type {
 } from '../domain/protocol.js'
 import type { ParentAuthority, ManagedReviewerPort } from '../ports/managed-reviewer.js'
 import type { ReviewerDirectory } from './reviewer-directory.js'
+import type { ReviewerTelemetryFailureV1, ReviewerTelemetrySink } from '../ports/reviewer-telemetry.js'
 
 /** True for Guarded Continuable errors that mean the selected child is contaminated. */
 function isContaminationError(error: unknown): boolean {
@@ -37,6 +38,24 @@ function isContaminationError(error: unknown): boolean {
  */
 function isRetryableAttemptFailure(error: unknown): boolean {
   return error instanceof ReviewProtocolError && error.code === 'invalid-result'
+}
+
+interface ReviewerTelemetryRunState {
+  attempts: number
+  rotationAttempts: number
+  rotations: number
+}
+
+function telemetryFailure(error: unknown): ReviewerTelemetryFailureV1 {
+  if (!(error instanceof ReviewProtocolError)) return 'infrastructure'
+  switch (error.code) {
+    case 'invalid-result': return 'invalid-result'
+    case 'timed-out': return 'timed-out'
+    case 'aborted': return 'aborted'
+    case 'disposed': return 'disposed'
+    case 'delivery-failed': return 'delivery-failed'
+    default: return 'infrastructure'
+  }
 }
 
 function dossierBindsReviewAction(
@@ -89,6 +108,8 @@ export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
   readonly now?: () => number
   readonly reviewId?: () => string
   readonly buildContent?: (packet: ApprovalReviewPacketV1 | ApprovalReviewPacketV2) => readonly ReviewerTextBlock[]
+  /** Scalar-only observer invoked after a Reviewer run settles. */
+  readonly telemetry?: ReviewerTelemetrySink
 }
 
 /**
@@ -144,14 +165,16 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     if (!Number.isSafeInteger(deadlineAt) || deadlineAt <= startedAt) {
       return Promise.reject(new ReviewProtocolError('timed-out', 'review deadline is absent or already expired'))
     }
-    return this.options.lane.run(input.authority.sessionId, async () => {
+    const telemetry: ReviewerTelemetryRunState = { attempts: 0, rotationAttempts: 0, rotations: 0 }
+    const run = this.options.lane.run(input.authority.sessionId, async () => {
       // At most two business attempts may share the immutable evidence and
       // deadline. Child contamination is separate infrastructure recovery and
       // never consumes one of those attempts.
       let lastError: unknown
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        telemetry.attempts += 1
         try {
-          return await this.reviewAttempt(input, action, deadlineAt)
+          return await this.reviewAttempt(input, action, deadlineAt, telemetry)
         } catch (error: unknown) {
           lastError = error
           if (attempt === 0 && isRetryableAttemptFailure(error)) continue
@@ -160,6 +183,24 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       }
       throw lastError
     })
+    return run.then(
+      decision => {
+        this.observeTelemetry({
+          kind: 'review', outcome: decision.decision === 'human_review' ? 'human' : decision.decision, durationMs: this.durationSince(startedAt),
+          attempts: telemetry.attempts, contaminatedRotationAttempts: telemetry.rotationAttempts,
+          contaminatedRotations: telemetry.rotations,
+        })
+        return decision
+      },
+      error => {
+        this.observeTelemetry({
+          kind: 'review', outcome: 'error', durationMs: this.durationSince(startedAt),
+          attempts: telemetry.attempts, contaminatedRotationAttempts: telemetry.rotationAttempts,
+          contaminatedRotations: telemetry.rotations, failure: telemetryFailure(error),
+        })
+        throw error
+      },
+    )
   }
 
   /** Recover a freshly discovered contaminated child at most once. */
@@ -177,11 +218,12 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     },
     action: ActionSnapshot,
     deadlineAt: number,
+    telemetry: ReviewerTelemetryRunState,
   ): Promise<ApprovalDecision> {
     let lastError: unknown
     for (let recovery = 0; recovery < 2; recovery += 1) {
       try {
-        return await this.reviewOnce(input, action, deadlineAt)
+        return await this.reviewOnce(input, action, deadlineAt, telemetry)
       } catch (error: unknown) {
         lastError = error
         if (recovery === 0 && isContaminationError(error)) continue
@@ -203,6 +245,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     },
     action: ActionSnapshot,
     deadlineAt: number,
+    telemetry: ReviewerTelemetryRunState,
   ): Promise<ApprovalDecision> {
     if (input.signal?.aborted) {
       throw new ReviewProtocolError('aborted', 'review was aborted before an attempt started')
@@ -266,7 +309,9 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       if (isContaminationError(error)) {
         // Drain the contaminated child and reserve a clean replacement before
         // the retry selects a child from the durable catalog.
+        telemetry.rotationAttempts += 1
         await this.options.port.rotate(input.authority, childId, input.signal)
+        telemetry.rotations += 1
       }
       throw error
     }
@@ -278,5 +323,14 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       }
       throw error
     }
+  }
+
+  private durationSince(startedAt: number): number {
+    const elapsed = this.now() - startedAt
+    return Number.isSafeInteger(elapsed) && elapsed >= 0 ? elapsed : 0
+  }
+
+  private observeTelemetry(observation: Parameters<ReviewerTelemetrySink['observe']>[0]): void {
+    try { this.options.telemetry?.observe(observation) } catch { /* telemetry never authorizes */ }
   }
 }

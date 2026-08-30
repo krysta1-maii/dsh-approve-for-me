@@ -22,6 +22,7 @@ import type {
   ReviewerProviderDataV1,
   ReviewerTextBlock,
   ReviewClock,
+  ReviewerTelemetrySink,
 } from '../../src/index.js'
 
 type Parent = { id: string }
@@ -137,6 +138,7 @@ function makeCoordinator(port: FakePort, overrides: {
   clock?: ReviewClock
   reviewId?: () => string
   submit?: (payload: unknown, actualId: string) => ReturnType<DefaultDecisionChannel['submit']>
+  telemetry?: ReviewerTelemetrySink
 } = {}) {
   const channel = new DefaultDecisionChannel(overrides.clock)
   const submit = overrides.submit ?? ((payload: unknown, actualId: string) => channel.submit(payload, { actualReviewerSessionId: actualId }))
@@ -151,6 +153,7 @@ function makeCoordinator(port: FakePort, overrides: {
       preset: providerData(),
       ...overrides.now === undefined ? {} : { now: overrides.now },
       ...overrides.reviewId === undefined ? {} : { reviewId: overrides.reviewId },
+      ...overrides.telemetry === undefined ? {} : { telemetry: overrides.telemetry },
     }),
     submit,
   }
@@ -180,6 +183,18 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.creates).toBe(1)
     expect(port.deliveries.map(item => item.childId)).toEqual(['parent-1-reviewer-1', 'parent-1-reviewer-1'])
     expect(port.deliveries[0]!.request.action).toEqual(action())
+  })
+
+  it('observes a settled reviewer outcome without changing it', async () => {
+    const port = new FakePort()
+    const observe = vi.fn()
+    const { coordinator, submit } = makeCoordinator(port, { telemetry: { observe } })
+    port.onDeliver = ({ childId, request }) => { expect(submit(decision(request), childId).status).toBe('accepted') }
+    await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
+      .resolves.toMatchObject({ decision: 'allow' })
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'review', outcome: 'allow', attempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
   })
 
   it('delivers an assessed v2 packet when source-derived evidence is supplied', async () => {
