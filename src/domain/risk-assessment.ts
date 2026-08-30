@@ -1,4 +1,4 @@
-import type { ActionSnapshot, ApprovalRisk } from './protocol.js'
+import type { ActionSnapshot, ApprovalDecision, ApprovalRisk } from './protocol.js'
 
 /** Evidence-bound R4 baseline; it never interprets free-form model claims. */
 export type RiskCategoryV1 =
@@ -82,6 +82,29 @@ export function assessVerifiedActionV1(action: ActionSnapshot, directUserEventSe
   } else if (!['shell-process-v1', 'filesystem-v1'].includes(action.semantics.family)) { add('unknown-semantics', 'action', `unrecognized semantic family ${action.semantics.family}`); risk = 'unknown' }
   if (action.requestedPermissions.some(permission => permission.kind === 'sandbox' && permission.scope === 'danger-full-access')) { add('permission-expansion', 'environment', 'danger-full-access sandbox permission requested'); risk = 'critical' }
   return Object.freeze({ version: 1, risk, categories: Object.freeze([...categories].sort()), evidence: Object.freeze(evidence.sort((a, b) => a.category.localeCompare(b.category))), authorization: Object.freeze({ level: 'unknown', targetCovered: false, sideEffectsCovered: false, sourceRefs: Object.freeze([...directUserEventSeqs].sort((a, b) => a - b).map(seq => `event:${seq}`)), rationale: 'R4 baseline does not infer target or side-effect authorization from message text.' }) })
+}
+
+export type DecisionAssessmentValidityV1 =
+  | { readonly kind: 'valid' }
+  | { readonly kind: 'under-evidenced'; readonly reason: string }
+  | { readonly kind: 'prohibited'; readonly reason: string }
+
+/**
+ * R5's DSH-neutral evidence floor. It does not trust a model's labels to lower
+ * source-derived risk, omit asserted categories, or invent authorization.
+ */
+export function validateDecisionAssessmentV1(decision: ApprovalDecision, assessment: RiskAssessmentV1): DecisionAssessmentValidityV1 {
+  const ranks: Record<ApprovalRisk, number> = { low: 0, medium: 1, high: 2, critical: 3, unknown: 4 }
+  if (ranks[decision.risk] < ranks[assessment.risk]) return { kind: 'under-evidenced', reason: 'decision lowers source-derived risk' }
+  if (assessment.categories.some(category => !decision.categories.includes(category))) return { kind: 'under-evidenced', reason: 'decision omits source-derived risk category' }
+  if (assessment.categories.includes('approval-evasion')) return { kind: 'prohibited', reason: 'approval-evasion is an absolute denial condition' }
+  if (decision.decision !== 'allow') return { kind: 'valid' }
+  if (assessment.risk === 'critical' || assessment.risk === 'unknown') return { kind: 'prohibited', reason: 'critical or unknown risk cannot be automatically allowed' }
+  if (assessment.authorization.level !== 'explicit' || decision.userAuthorization !== 'explicit'
+    || !assessment.authorization.targetCovered || !assessment.authorization.sideEffectsCovered) {
+    return { kind: 'under-evidenced', reason: 'explicit authorization does not cover target and side effects' }
+  }
+  return { kind: 'valid' }
 }
 
 export function permitsAutomaticFastPath(assessment: RiskAssessmentV1): boolean {

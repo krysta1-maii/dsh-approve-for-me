@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { assessVerifiedActionV1, createActionSnapshot, permitsAutomaticFastPath, RISK_RULES_V1 } from '../../src/index.js'
+import { assessVerifiedActionV1, createActionSnapshot, permitsAutomaticFastPath, RISK_RULES_V1, validateDecisionAssessmentV1 } from '../../src/index.js'
+import type { ApprovalDecision } from '../../src/index.js'
+
+function decision(overrides: Partial<ApprovalDecision> = {}): ApprovalDecision {
+  return { protocolVersion: 1, reviewId: 'review-1', parentSessionId: 'parent-1', reviewerSessionId: 'reviewer-1', generation: 'generation-1', actionHash: `sha256:${'a'.repeat(64)}`, decision: 'allow', risk: 'low', categories: [], userAuthorization: 'explicit', rationale: 'test', ...overrides }
+}
 
 describe('assessVerifiedActionV1', () => {
   it('publishes a complete non-authorizing rule matrix', () => {
@@ -24,6 +29,14 @@ describe('assessVerifiedActionV1', () => {
     ])
     expect(Object.isFrozen(assessment.evidence)).toBe(true)
     expect(permitsAutomaticFastPath(assessment)).toBe(false)
+  })
+
+  it('rejects a model allow that lowers or omits source risk', () => {
+    const action = createActionSnapshot({ toolName: 'fetch', arguments: {}, projectorId: 'network-v1', semantics: { family: 'network-v1', value: { body: { kind: 'utf8' }, headers: [] } } })
+    const assessment = assessVerifiedActionV1(action, [7])
+    expect(validateDecisionAssessmentV1(decision(), assessment)).toMatchObject({ kind: 'under-evidenced', reason: 'decision lowers source-derived risk' })
+    expect(validateDecisionAssessmentV1(decision({ risk: 'high', categories: ['data-exfiltration', 'network-exposure'] }), assessment)).toMatchObject({ kind: 'under-evidenced', reason: 'explicit authorization does not cover target and side effects' })
+    expect(validateDecisionAssessmentV1(decision({ decision: 'human_review', risk: 'high', categories: ['data-exfiltration', 'network-exposure'] }), assessment)).toEqual({ kind: 'valid' })
   })
 
   it('keeps a benign complete shell snapshot low risk without inventing authorization', () => {
