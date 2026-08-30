@@ -33,6 +33,25 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
   })
 
+  it('accepts a closed post-facts no-decision audit row', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const failure: GateDecisionRecord = {
+      ...base,
+      route: 'post-facts-failure',
+      normalizedDecision: 'no-decision',
+      pluginDisposition: 'unavailable',
+      disposition: 'no-decision',
+      failureStage: 'classification',
+      reviewAttempts: 0,
+      contaminatedRotationAttempts: 0,
+      contaminatedRotations: 0,
+    }
+    await expect(store.createConfirmed(failure)).resolves.toBe('confirmed')
+    await expect(store.createConfirmed({ ...failure, reviewRunId: 'forbidden' })).rejects.toThrow(/no-decision/)
+    await expect(store.createConfirmed({ ...failure, failureStage: 'unknown' as never })).rejects.toThrow(/no-decision/)
+  })
+
   it('rejects unknown fields at the compact durable boundary', async () => {
     const store = new InMemoryGateDecisionRecordStore()
     await expect(store.createConfirmed({ ...record(), packet: {} } as unknown as GateDecisionRecord)).rejects.toThrow(/not supported/)

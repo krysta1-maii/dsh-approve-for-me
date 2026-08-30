@@ -154,6 +154,26 @@ describe('DefaultGatePipeline', () => {
     await expect(nonRoot.pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
   })
 
+  it('best-effort records a post-facts failure without changing its safe outcome', async () => {
+    const records = recordsStub()
+    const { pipeline } = makePipeline({ factsResult: facts({ directChildOrigin: true }), records })
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'post-facts-failure',
+      normalizedDecision: 'no-decision',
+      pluginDisposition: 'unavailable',
+      disposition: 'no-decision',
+      failureStage: 'requester',
+      reviewAttempts: 0,
+      contaminatedRotationAttempts: 0,
+      contaminatedRotations: 0,
+    }))
+
+    const failingRecords = recordsStub({ recordBestEffort: vi.fn(async () => { throw new Error('audit unavailable') }) })
+    const failedAudit = makePipeline({ factsResult: facts({ directChildOrigin: true }), records: failingRecords })
+    await expect(failedAudit.pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+  })
+
   it('rejects immediately on a breaker hit', async () => {
     const { pipeline, preReview } = makePipeline({ breakerHit: true })
     await expect(pipeline.decide(request())).resolves.toBe('rejected')

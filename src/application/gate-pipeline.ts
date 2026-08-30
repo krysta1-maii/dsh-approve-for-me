@@ -19,7 +19,7 @@ import type {
   TrustEnvelopeEvaluatorV1,
   TrustEnvelopeInputV1,
 } from '../approval-gate/trust-envelope.js'
-import { gateFailureOutcome } from './gate-failure.js'
+import { GateFailure, gateFailureOutcome } from './gate-failure.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import { permitsAutomaticFastPath } from '../domain/risk-assessment.js'
 import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
@@ -76,8 +76,19 @@ export interface GatePreReviewInput {
  * security-critical distinction between "cannot confirm right now" and
  * "the record conflicts with an existing decision".
  */
-export type GateDecisionRouteV1 = 'trust-envelope' | 'allow-cache' | 'sealed-replay' | 'guardian'
-export type GatePluginDispositionV1 = 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled'
+export type GateDecisionRouteV1 = 'trust-envelope' | 'allow-cache' | 'sealed-replay' | 'guardian' | 'post-facts-failure'
+export type GatePluginDispositionV1 = 'allow' | 'deny' | 'delegate-human' | 'unavailable' | 'cancelled' | 'delegate'
+export type GateRecordDispositionV1 = SealedDispositionKind | 'no-decision'
+export type GateFailureStageV1 =
+  | 'verified-dossier'
+  | 'requester'
+  | 'classification'
+  | 'assessment'
+  | 'breaker'
+  | 'sealed-replay'
+  | 'pre-review'
+  | 'deadline'
+  | 'unexpected'
 
 /**
  * Default-minimal durable audit record. It intentionally carries only identity,
@@ -88,7 +99,7 @@ export interface GateDecisionRecord {
   /** Present only for a real Guardian/sealed review, never synthesized for fast paths. */
   readonly reviewRunId?: string
   readonly route: GateDecisionRouteV1
-  readonly normalizedDecision: 'allow' | 'deny' | 'human_review'
+  readonly normalizedDecision: 'allow' | 'deny' | 'human_review' | 'no-decision'
   readonly pluginDisposition: GatePluginDispositionV1
   readonly requestId: string
   readonly parentSessionId: string
@@ -98,7 +109,10 @@ export interface GateDecisionRecord {
   readonly actionHash: string
   readonly generation: string
   readonly configurationFingerprint: string
-  readonly disposition: SealedDispositionKind
+  /** Record-local no-decision is never a sealed disposition. */
+  readonly disposition: GateRecordDispositionV1
+  /** Present only for a post-facts no-decision outcome. */
+  readonly failureStage?: GateFailureStageV1
   /** Number of protocol attempts in the real Guardian run; zero for fast paths. */
   readonly reviewAttempts: number
   /** Infrastructure recovery counts, separate from protocol attempts. */
@@ -108,10 +122,11 @@ export interface GateDecisionRecord {
 
 export type GateDecisionRecordResult = 'confirmed' | 'conflict' | 'unavailable'
 
-const GATE_DECISION_ROUTES = ['trust-envelope', 'allow-cache', 'sealed-replay', 'guardian'] as const
-const GATE_PLUGIN_DISPOSITIONS = ['allow', 'deny', 'delegate-human', 'unavailable', 'cancelled'] as const
-const GATE_NORMALIZED_DECISIONS = ['allow', 'deny', 'human_review'] as const
-const GATE_SEALED_DISPOSITIONS = ['allow', 'deny', 'human'] as const
+const GATE_DECISION_ROUTES = ['trust-envelope', 'allow-cache', 'sealed-replay', 'guardian', 'post-facts-failure'] as const
+const GATE_PLUGIN_DISPOSITIONS = ['allow', 'deny', 'delegate-human', 'unavailable', 'cancelled', 'delegate'] as const
+const GATE_NORMALIZED_DECISIONS = ['allow', 'deny', 'human_review', 'no-decision'] as const
+const GATE_RECORD_DISPOSITIONS = ['allow', 'deny', 'human', 'no-decision'] as const
+const GATE_FAILURE_STAGES = ['verified-dossier', 'requester', 'classification', 'assessment', 'breaker', 'sealed-replay', 'pre-review', 'deadline', 'unexpected'] as const
 const GATE_HASH = /^sha256:[0-9a-f]{64}$/
 
 /** Validates the closed, metadata-only production audit row before persistence. */
@@ -119,14 +134,14 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('gate decision record must be an object')
   const value = input as Record<string, unknown>
   const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition', 'reviewAttempts', 'contaminatedRotationAttempts', 'contaminatedRotations']
-  const allowed = new Set([...required, 'reviewRunId'])
+  const allowed = new Set([...required, 'reviewRunId', 'failureStage'])
   for (const key of required) if (!Object.hasOwn(value, key)) throw new TypeError(`gate decision record.${key} is required`)
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`gate decision record.${key} is not supported`)
   if (value.version !== 1) throw new TypeError('gate decision record.version must be 1')
   if (!GATE_DECISION_ROUTES.includes(value.route as GateDecisionRouteV1)) throw new TypeError('gate decision record.route is invalid')
   if (!GATE_NORMALIZED_DECISIONS.includes(value.normalizedDecision as GateDecisionRecord['normalizedDecision'])) throw new TypeError('gate decision record.normalizedDecision is invalid')
   if (!GATE_PLUGIN_DISPOSITIONS.includes(value.pluginDisposition as GatePluginDispositionV1)) throw new TypeError('gate decision record.pluginDisposition is invalid')
-  if (!GATE_SEALED_DISPOSITIONS.includes(value.disposition as SealedDispositionKind)) throw new TypeError('gate decision record.disposition is invalid')
+  if (!GATE_RECORD_DISPOSITIONS.includes(value.disposition as GateRecordDispositionV1)) throw new TypeError('gate decision record.disposition is invalid')
   for (const key of ['requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'generation'] as const) {
     if (typeof value[key] !== 'string' || value[key].length === 0) throw new TypeError(`gate decision record.${key} is invalid`)
   }
@@ -140,25 +155,36 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
     throw new TypeError('gate decision record.reviewRunId is invalid')
   }
   const normalized = value.normalizedDecision as GateDecisionRecord['normalizedDecision']
-  const disposition = value.disposition as SealedDispositionKind
+  const disposition = value.disposition as GateRecordDispositionV1
   const plugin = value.pluginDisposition as GatePluginDispositionV1
-  if ((normalized === 'allow' && (disposition !== 'allow' || plugin !== 'allow'))
-    || (normalized === 'deny' && (disposition !== 'deny' || plugin !== 'deny'))
-    || (normalized === 'human_review' && (disposition !== 'human' || plugin !== 'delegate-human'))) {
-    throw new TypeError('gate decision record decision fields are inconsistent')
-  }
   const route = value.route as GateDecisionRouteV1
-  const reviewRoute = route === 'guardian' || route === 'sealed-replay'
-  if (reviewRoute !== (value.reviewRunId !== undefined)) {
-    throw new TypeError('gate decision record reviewRunId does not match its route')
-  }
   const attempts = value.reviewAttempts as number
   const rotations = value.contaminatedRotationAttempts as number
   const successfulRotations = value.contaminatedRotations as number
-  if ((!reviewRoute && (attempts !== 0 || rotations !== 0 || successfulRotations !== 0))
-    || (reviewRoute && attempts < 1)
-    || successfulRotations > rotations) {
-    throw new TypeError('gate decision record execution summary is inconsistent with its route')
+  if (normalized === 'no-decision') {
+    if (route !== 'post-facts-failure' || disposition !== 'no-decision'
+      || (plugin !== 'unavailable' && plugin !== 'delegate')
+      || !GATE_FAILURE_STAGES.includes(value.failureStage as GateFailureStageV1)
+      || value.reviewRunId !== undefined
+      || attempts !== 0 || rotations !== 0 || successfulRotations !== 0) {
+      throw new TypeError('gate no-decision record is inconsistent')
+    }
+  } else {
+    if (value.failureStage !== undefined
+      || (normalized === 'allow' && (disposition !== 'allow' || plugin !== 'allow'))
+      || (normalized === 'deny' && (disposition !== 'deny' || plugin !== 'deny'))
+      || (normalized === 'human_review' && (disposition !== 'human' || plugin !== 'delegate-human'))) {
+      throw new TypeError('gate decision record decision fields are inconsistent')
+    }
+    const reviewRoute = route === 'guardian' || route === 'sealed-replay'
+    if (reviewRoute !== (value.reviewRunId !== undefined)) {
+      throw new TypeError('gate decision record reviewRunId does not match its route')
+    }
+    if ((!reviewRoute && (attempts !== 0 || rotations !== 0 || successfulRotations !== 0))
+      || (reviewRoute && attempts < 1)
+      || successfulRotations > rotations) {
+      throw new TypeError('gate decision record execution summary is inconsistent with its route')
+    }
   }
   return Object.freeze({ ...value }) as unknown as GateDecisionRecord
 }
@@ -191,6 +217,32 @@ export interface GatePipelineDependencies {
 
 export interface GatePipeline {
   decide(request: GateMachineRequestV1): Promise<GateMachineDecisionV1>
+}
+
+function failureRecordFor(
+  request: GateMachineRequestV1,
+  facts: GateActionFacts,
+  outcome: 'unavailable' | 'delegate',
+  failureStage: GateFailureStageV1,
+): GateDecisionRecord {
+  return {
+    version: 1,
+    route: 'post-facts-failure',
+    normalizedDecision: 'no-decision',
+    pluginDisposition: outcome,
+    disposition: 'no-decision',
+    failureStage,
+    requestId: request.requestId ?? '',
+    parentSessionId: request.parentSessionId,
+    parentLifecycleFingerprint: facts.breakerKey.parentLifecycleFingerprint,
+    callId: request.callId ?? '',
+    actionHash: request.actionHash,
+    generation: facts.generation,
+    configurationFingerprint: facts.configurationFingerprint,
+    reviewAttempts: 0,
+    contaminatedRotationAttempts: 0,
+    contaminatedRotations: 0,
+  }
 }
 
 function recordFor(
@@ -267,15 +319,22 @@ export class DefaultGatePipeline implements GatePipeline {
     if (facts === undefined) return 'unavailable'
     // This precedes every trust/cache/replay route; a packet-less action can
     // never acquire an automatic authorization in the real plugin.
-    if (this.deps.requireVerifiedDossier && facts.verifiedDossier === undefined) return 'unavailable'
-    if (facts.directChildOrigin || !facts.rootRequester) return 'unavailable'
+    if (this.deps.requireVerifiedDossier && facts.verifiedDossier === undefined) {
+      return this.finishPostFactsFailure(request, facts, 'unavailable', 'verified-dossier')
+    }
+    if (facts.directChildOrigin || !facts.rootRequester) {
+      return this.finishPostFactsFailure(request, facts, 'unavailable', 'requester')
+    }
 
     const classification = facts.classification
-    if (classification.kind === 'catalog-mismatch') return 'unavailable'
-    if (classification.kind === 'unclassified') return 'unavailable'
+    if (classification.kind === 'catalog-mismatch' || classification.kind === 'unclassified') {
+      return this.finishPostFactsFailure(request, facts, 'unavailable', 'classification')
+    }
     // R4 never upgrades unverified/unknown authorization into an automatic
     // grant. It deliberately still permits Guardian pre-review below.
-    if (this.deps.requireVerifiedDossier && facts.assessment === undefined) return 'unavailable'
+    if (this.deps.requireVerifiedDossier && facts.assessment === undefined) {
+      return this.finishPostFactsFailure(request, facts, 'unavailable', 'assessment')
+    }
     const fastPathsAllowed = facts.assessment === undefined || permitsAutomaticFastPath(facts.assessment)
 
     if (this.deps.breaker.lookup(facts.breakerKey)) return 'rejected'
@@ -316,7 +375,18 @@ export class DefaultGatePipeline implements GatePipeline {
         // registry reports consumed and the gate fails closed.
         if (!this.deps.seals.consume(requestId, callId)) return 'unavailable'
         const mapped = this.mapDisposition(replay.disposition.disposition)
-        if (mapped !== 'allowed-once') return mapped
+        if (mapped !== 'allowed-once') {
+          await this.recordBestEffortSafely(recordFor(
+            request,
+            facts,
+            replay.disposition.disposition === 'human' ? 'human_review' : replay.disposition.disposition,
+            'sealed-replay',
+            replay.disposition.disposition === 'deny' ? 'deny' : 'delegate-human',
+            replay.disposition.reviewRunId,
+            replay.disposition,
+          ))
+          return mapped
+        }
         const result = await this.deps.records.createConfirmed(
           recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId, replay.disposition),
         )
@@ -328,19 +398,29 @@ export class DefaultGatePipeline implements GatePipeline {
       if (replay.kind === 'consumed' || replay.kind === 'mismatch') return 'unavailable'
     }
 
-    const sealed = await this.deps.preReview.preReview({
-      requestId,
-      parentSessionId: request.parentSessionId,
-      callId,
-      action: facts.action,
-      ...facts.verifiedDossier === undefined ? {} : { verifiedDossier: facts.verifiedDossier },
-      ...facts.assessment === undefined ? {} : { assessment: facts.assessment },
-      ...request.reason === undefined ? {} : { reason: request.reason },
-      ...request.signal === undefined ? {} : { signal: request.signal },
-      generation: facts.generation,
-      configurationFingerprint: facts.configurationFingerprint,
-      ...facts.policyVersion === undefined ? {} : { policyVersion: facts.policyVersion },
-    })
+    let sealed: SealedDispositionV1
+    try {
+      sealed = await this.deps.preReview.preReview({
+        requestId,
+        parentSessionId: request.parentSessionId,
+        callId,
+        action: facts.action,
+        ...facts.verifiedDossier === undefined ? {} : { verifiedDossier: facts.verifiedDossier },
+        ...facts.assessment === undefined ? {} : { assessment: facts.assessment },
+        ...request.reason === undefined ? {} : { reason: request.reason },
+        ...request.signal === undefined ? {} : { signal: request.signal },
+        generation: facts.generation,
+        configurationFingerprint: facts.configurationFingerprint,
+        ...facts.policyVersion === undefined ? {} : { policyVersion: facts.policyVersion },
+      })
+    } catch (error: unknown) {
+      const outcome = gateFailureOutcome(error, this.deps.mode)
+      if (outcome === 'cancelled' || (outcome !== 'unavailable' && outcome !== 'delegate')) return outcome
+      const stage: GateFailureStageV1 = error instanceof GateFailure && error.code === 'deadline'
+        ? 'deadline'
+        : error instanceof GateFailure ? 'pre-review' : 'unexpected'
+      return this.finishPostFactsFailure(request, facts, outcome, stage)
+    }
     if (request.signal?.aborted) return 'cancelled'
     if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
     const mapped = this.mapDisposition(sealed.disposition)
@@ -374,6 +454,16 @@ export class DefaultGatePipeline implements GatePipeline {
 
   private async recordBestEffortSafely(record: GateDecisionRecord): Promise<void> {
     try { await this.deps.records.recordBestEffort(record) } catch { /* audit must not authorize */ }
+  }
+
+  private async finishPostFactsFailure(
+    request: GateMachineRequestV1,
+    facts: GateActionFacts,
+    outcome: 'unavailable' | 'delegate',
+    failureStage: GateFailureStageV1,
+  ): Promise<GateMachineDecisionV1> {
+    await this.recordBestEffortSafely(failureRecordFor(request, facts, outcome, failureStage))
+    return outcome
   }
 
   private delegateOrUnavailable(): GateMachineDecisionV1 {
