@@ -369,11 +369,15 @@ export class DefaultGatePipeline implements GatePipeline {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
         const now = this.deps.now?.() ?? Date.now()
-        if (!replay.disposition.replayable || replay.disposition.deadlineAt <= now) return 'unavailable'
+        if (!replay.disposition.replayable || replay.disposition.deadlineAt <= now) {
+          return this.finishPostFactsFailure(request, facts, 'unavailable', 'sealed-replay')
+        }
         // A sealed outcome is a single-use replay for an ask identity. Consuming
         // here closes the infinite-replay hole; if another path raced us, the
         // registry reports consumed and the gate fails closed.
-        if (!this.deps.seals.consume(requestId, callId)) return 'unavailable'
+        if (!this.deps.seals.consume(requestId, callId)) {
+          return this.finishPostFactsFailure(request, facts, 'unavailable', 'sealed-replay')
+        }
         const mapped = this.mapDisposition(replay.disposition.disposition)
         if (mapped !== 'allowed-once') {
           await this.recordBestEffortSafely(recordFor(
@@ -395,7 +399,9 @@ export class DefaultGatePipeline implements GatePipeline {
         if (replay.disposition.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
         return 'allowed-once'
       }
-      if (replay.kind === 'consumed' || replay.kind === 'mismatch') return 'unavailable'
+      if (replay.kind === 'consumed' || replay.kind === 'mismatch') {
+        return this.finishPostFactsFailure(request, facts, 'unavailable', 'sealed-replay')
+      }
     }
 
     let sealed: SealedDispositionV1

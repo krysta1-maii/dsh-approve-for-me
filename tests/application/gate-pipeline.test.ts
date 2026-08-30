@@ -92,11 +92,13 @@ function makePipeline(overrides: {
   breaker?: GatePipelineDependencies['breaker']
   allowHit?: boolean
   preReview?: GatePreReview
+  seals?: GatePipelineDependencies['seals']
   records?: GateDecisionRecordStore
   now?: () => number
   reviewerTelemetry?: GatePipelineDependencies['reviewerTelemetry']
 } = {}) {
-  const seals = new InMemorySealedDispositionRegistry()
+  const defaultSeals = new InMemorySealedDispositionRegistry()
+  const seals = overrides.seals ?? defaultSeals
   const records = overrides.records ?? recordsStub()
   const preReview = overrides.preReview ?? { preReview: vi.fn(async () => sealed('allow')) }
   const factsResolver = { resolve: vi.fn(async () => overrides.factsResult === undefined ? facts(
@@ -131,7 +133,7 @@ function makePipeline(overrides: {
     ...overrides.now === undefined ? {} : { now: overrides.now },
     ...overrides.reviewerTelemetry === undefined ? {} : { reviewerTelemetry: overrides.reviewerTelemetry },
   }
-  return { pipeline: new DefaultGatePipeline(deps), seals, records, preReview, factsResolver, deps }
+  return { pipeline: new DefaultGatePipeline(deps), seals: defaultSeals, records, preReview, factsResolver, deps }
 }
 
 describe('DefaultGatePipeline', () => {
@@ -244,14 +246,19 @@ describe('DefaultGatePipeline', () => {
     expect(preReview.preReview).not.toHaveBeenCalled()
   })
 
-  it('replays a sealed disposition once instead of reviewing again', async () => {
-    const { pipeline, preReview, seals } = makePipeline()
+  it('replays a sealed disposition once and audits later invalidation', async () => {
+    const records = recordsStub()
+    const { pipeline, preReview, seals } = makePipeline({ records })
     seals.seal(sealed('deny'))
     await expect(pipeline.decide(request())).resolves.toBe('rejected')
     expect(preReview.preReview).not.toHaveBeenCalled()
     // The same ask identity is consumed after replay, not endlessly replayable.
     await expect(pipeline.decide(request())).resolves.toBe('unavailable')
     expect(seals.lookup('ask-1', 'call-1', hash('a')).kind).toBe('consumed')
+    expect(records.recordBestEffort).toHaveBeenLastCalledWith(expect.objectContaining({
+      route: 'post-facts-failure', normalizedDecision: 'no-decision', failureStage: 'sealed-replay',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
   })
 
   it('requires durable confirmation for a replayed sealed allow', async () => {
@@ -320,11 +327,25 @@ describe('DefaultGatePipeline', () => {
     expect(observe).toHaveBeenCalledOnce()
   })
 
-  it('does not replay an expired sealed disposition', async () => {
-    const { pipeline, preReview, seals } = makePipeline({ now: () => 300 })
+  it('does not replay an expired sealed disposition and retains only its closed failure stage', async () => {
+    const records = recordsStub({ recordBestEffort: vi.fn(async () => { throw new Error('audit down') }) })
+    const { pipeline, preReview, seals } = makePipeline({ now: () => 300, records })
     seals.seal({ ...sealed('allow'), deadlineAt: 200 })
     await expect(pipeline.decide(request())).resolves.toBe('unavailable')
     expect(preReview.preReview).not.toHaveBeenCalled()
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'post-facts-failure', normalizedDecision: 'no-decision', failureStage: 'sealed-replay',
+    }))
+  })
+
+  it('audits a sealed replay identity mismatch without retaining its reason', async () => {
+    const records = recordsStub()
+    const { pipeline, seals } = makePipeline({ records })
+    seals.seal(sealed('deny'))
+    await expect(pipeline.decide({ ...request(), actionHash: hash('b') })).resolves.toBe('unavailable')
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'post-facts-failure', normalizedDecision: 'no-decision', failureStage: 'sealed-replay',
+    }))
   })
 
   it('does not confirm or cache an expired initial Guardian disposition', async () => {
