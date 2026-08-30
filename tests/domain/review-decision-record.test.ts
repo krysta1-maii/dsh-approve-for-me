@@ -74,6 +74,15 @@ describe('parseReviewDecisionRecord', () => {
     expect(Object.isFrozen(record.guardian)).toBe(true)
   })
 
+  it('preserves either canonical packet codec without retaining packet contents', () => {
+    const record = parseReviewDecisionRecord({
+      ...validRecord(),
+      review: { ...validRecord().review, packetCodecId: 'approval-review-packet-v2' },
+    })
+    expect(record.review.packetCodecId).toBe('approval-review-packet-v2')
+    expect('packet' in record.review).toBe(false)
+  })
+
   it('rejects unsupported versions, unknown fields, and malformed enums', () => {
     expect(() => parseReviewDecisionRecord({ ...validRecord(), version: 2 })).toThrow(/version/)
     expect(() => parseReviewDecisionRecord({ ...validRecord(), extra: true })).toThrow(/not supported/)

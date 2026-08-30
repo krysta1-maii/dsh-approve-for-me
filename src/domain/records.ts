@@ -135,7 +135,8 @@ export interface ReviewDecisionRecordV1 {
     readonly dossierVersion: 1
     readonly approvalProtocolVersion: 1
     readonly decisionSchemaVersion: 1
-    readonly packetCodecId: 'approval-review-packet-v1'
+    /** Canonical Reviewer packet codec used by this recorded review. */
+    readonly packetCodecId: 'approval-review-packet-v1' | 'approval-review-packet-v2'
     readonly hashSuiteId: 'dsh-approve-for-me-hash-v1'
     readonly sourceProjectionPolicyId: 'dsh-session-facts-v1'
     readonly argumentSemanticsId: string
@@ -334,7 +335,9 @@ export function parseReviewDecisionRecord(input: unknown): ReviewDecisionRecordV
   if (review.dossierVersion !== 1) throw new TypeError('record.review.dossierVersion must be 1')
   if (review.approvalProtocolVersion !== 1) throw new TypeError('record.review.approvalProtocolVersion must be 1')
   if (review.decisionSchemaVersion !== 1) throw new TypeError('record.review.decisionSchemaVersion must be 1')
-  if (review.packetCodecId !== 'approval-review-packet-v1') throw new TypeError('record.review.packetCodecId must be approval-review-packet-v1')
+  if (review.packetCodecId !== 'approval-review-packet-v1' && review.packetCodecId !== 'approval-review-packet-v2') {
+    throw new TypeError('record.review.packetCodecId must be approval-review-packet-v1 or approval-review-packet-v2')
+  }
   if (review.hashSuiteId !== 'dsh-approve-for-me-hash-v1') throw new TypeError('record.review.hashSuiteId must be dsh-approve-for-me-hash-v1')
   if (review.sourceProjectionPolicyId !== 'dsh-session-facts-v1') throw new TypeError('record.review.sourceProjectionPolicyId must be dsh-session-facts-v1')
   if (review.toolsetVersion !== 1) throw new TypeError('record.review.toolsetVersion must be 1')
@@ -345,7 +348,7 @@ export function parseReviewDecisionRecord(input: unknown): ReviewDecisionRecordV
     dossierVersion: 1,
     approvalProtocolVersion: 1,
     decisionSchemaVersion: 1,
-    packetCodecId: 'approval-review-packet-v1' as const,
+    packetCodecId: review.packetCodecId as 'approval-review-packet-v1' | 'approval-review-packet-v2',
     hashSuiteId: 'dsh-approve-for-me-hash-v1' as const,
     sourceProjectionPolicyId: 'dsh-session-facts-v1' as const,
     argumentSemanticsId: nonEmptyString(review.argumentSemanticsId, 'record.review.argumentSemanticsId'),
