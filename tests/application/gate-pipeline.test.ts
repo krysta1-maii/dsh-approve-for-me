@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   DefaultGatePipeline,
   GateFailure,
+  InMemoryExactDenialBreaker,
   InMemorySealedDispositionRegistry,
   createActionSnapshot,
   assessVerifiedActionV1,
@@ -85,6 +86,7 @@ function makePipeline(overrides: {
   factsResult?: GateActionFacts | undefined
   trustInside?: boolean
   breakerHit?: boolean
+  breaker?: GatePipelineDependencies['breaker']
   allowHit?: boolean
   preReview?: GatePreReview
   records?: GateDecisionRecordStore
@@ -101,7 +103,7 @@ function makePipeline(overrides: {
   const deps: GatePipelineDependencies = {
     classifier: { classify: vi.fn() },
     trustEnvelope: { evaluate },
-    breaker: {
+    breaker: overrides.breaker ?? {
       lookup: vi.fn(() => overrides.breakerHit === true),
       recordGuardianDeny: vi.fn(),
       clearParent: vi.fn(),
@@ -235,6 +237,17 @@ describe('DefaultGatePipeline', () => {
     const deny = makePipeline({ preReview: { preReview: vi.fn(async () => sealed('deny')) } })
     await deny.pipeline.decide(request())
     expect(deny.deps.breaker.recordGuardianDeny).toHaveBeenCalledWith(facts().breakerKey)
+  })
+
+  it('suppresses a later exact action after Guardian deny without re-reviewing it', async () => {
+    const breaker = new InMemoryExactDenialBreaker()
+    const preReview = { preReview: vi.fn(async () => sealed('deny')) }
+    const { pipeline } = makePipeline({ breaker, preReview })
+
+    await expect(pipeline.decide(request())).resolves.toBe('rejected')
+    await expect(pipeline.decide({ ...request(), requestId: 'ask-2', callId: 'call-2' })).resolves.toBe('rejected')
+
+    expect(preReview.preReview).toHaveBeenCalledOnce()
   })
 
   it('does not replay an expired sealed disposition', async () => {
