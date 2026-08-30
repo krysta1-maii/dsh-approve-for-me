@@ -83,6 +83,7 @@ describe('DshStorageDomainFactRepositories', () => {
     const { shared, executions } = repositories(fake.facility)
     await expect(executions.create({ ...execution(), projection: { ...execution().projection, action: null } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
     await expect(executions.create({ ...execution(), toolClassification: null } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'unknown' } } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
     await expect(executions.list(session)).resolves.toEqual([])
     await shared.drain()
   })
