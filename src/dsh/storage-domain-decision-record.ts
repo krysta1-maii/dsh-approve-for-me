@@ -58,6 +58,17 @@ const decisionRecordDomainSpec = Object.freeze({
   }),
 })
 
+function matchesCanonicalRecord(value: unknown, canonical: string): boolean {
+  try {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    const row = value as Partial<StoredGateDecisionRecordV1>
+    if (row.version !== 1 || row.canonical !== canonical || row.record === undefined) return false
+    return canonicalJson(parseGateDecisionRecord(row.record)) === canonical
+  } catch {
+    return false
+  }
+}
+
 function recordKey(record: GateDecisionRecord): string {
   // Per-record Storage Domain keys are path-safe. Hashing also avoids exposing
   // session/call identifiers in a backend's file layout.
@@ -121,11 +132,10 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
         const canonical = canonicalJson(record)
         const existing = table.get(key)
         if (existing !== undefined) {
-          const row = existing as Partial<StoredGateDecisionRecordV1>
-          return row.version === 1 && row.canonical === canonical ? 'confirmed' : 'conflict'
+          return matchesCanonicalRecord(existing, canonical) ? 'confirmed' : 'conflict'
         }
         await table.put(key, Object.freeze({ version: 1, canonical, record: Object.freeze({ ...record }) }))
-        return 'confirmed'
+        return matchesCanonicalRecord(table.get(key), canonical) ? 'confirmed' : 'unavailable'
       } catch {
         return 'unavailable'
       }

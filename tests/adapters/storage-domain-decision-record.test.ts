@@ -48,6 +48,15 @@ describe('DshStorageDomainGateDecisionRecordStore', () => {
     expect(fake.put).toHaveBeenCalledTimes(2)
   })
 
+  it('fails closed when a resolved write is not readable as the canonical record', async () => {
+    const put = vi.fn(async () => {})
+    const store = new DshStorageDomainGateDecisionRecordStore({
+      open: async () => ({ table: () => ({ get: () => undefined, put }), close: async () => {} }),
+    })
+    await expect(store.createConfirmed(record())).resolves.toBe('unavailable')
+    expect(put).toHaveBeenCalledOnce()
+  })
+
   it('fails closed before storage on malformed compact audit input', async () => {
     const fake = facility()
     const store = new DshStorageDomainGateDecisionRecordStore(fake.facility)
