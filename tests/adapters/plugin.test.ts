@@ -205,6 +205,7 @@ describe('installApproveForMe composition root', () => {
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)
     expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
     expect(plugin.getDossierCompilationMetrics()).toMatchObject({ attempts: 0, overflowRate: 0 })
+    expect(plugin.getReviewerTelemetryMetrics()).toMatchObject({ reviews: 0, fallbacks: 0, attempts: 0 })
 
     // Complete action capture remains available to the sole machine-policy path.
     // No legacy approval/request listener is registered.

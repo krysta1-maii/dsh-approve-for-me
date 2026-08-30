@@ -19,6 +19,8 @@ import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
 import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
+import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
+import type { ReviewerTelemetrySink, ReviewerTelemetrySnapshotV1 } from './ports/reviewer-telemetry.js'
 import { fingerprintDelegationToolCatalogV1 } from './domain/dossier.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from './application/fact-repositories.js'
@@ -44,6 +46,8 @@ export interface ApproveForMePlugin {
   readonly config: NormalizedConfig
   /** Non-sensitive bounded compiler baseline measurements. */
   getDossierCompilationMetrics(): DossierCompilationMetricsSnapshotV1
+  /** Non-sensitive bounded Reviewer execution measurements. */
+  getReviewerTelemetryMetrics(): ReviewerTelemetrySnapshotV1
   dispose(): Promise<void>
 }
 
@@ -68,6 +72,8 @@ export interface ApproveForMeInstallOptions {
   toolFamilyActionProjectors?: ToolFamilyActionProjectorRegistry<ToolExecution>
   /** Best-effort non-sensitive compiler metrics consumer. */
   dossierMetricsSink?: DossierCompilationMetricsSink
+  /** Best-effort scalar-only Reviewer telemetry consumer. */
+  reviewerTelemetrySink?: ReviewerTelemetrySink
 }
 
 export { Config }
@@ -136,6 +142,13 @@ export function installApproveForMe(
   }))
   const port = createManagedReviewerPort(registration.controller)
   const lanes = new SerialLanes()
+  const reviewerTelemetry = new InMemoryReviewerTelemetry()
+  const reviewerTelemetrySink: ReviewerTelemetrySink = {
+    observe(observation) {
+      reviewerTelemetry.observe(observation)
+      try { options.reviewerTelemetrySink?.observe(observation) } catch { /* optional telemetry never authorizes */ }
+    },
+  }
   const coordinator = new DefaultReviewCoordinator({
     port,
     directory: new DefaultReviewerDirectory(port),
@@ -143,6 +156,7 @@ export function installApproveForMe(
     lane: lanes,
     timeoutMs: normalized.timeoutMs,
     preset: normalized.preset,
+    telemetry: reviewerTelemetrySink,
   })
   const classifier = createToolApprovalClassifier(normalized.toolCatalog)
   const trustEnvelope = createTrustEnvelopeEvaluator(normalized.trustEnvelope)
@@ -278,6 +292,7 @@ export function installApproveForMe(
     facts: factStore,
     preReview,
     records,
+    reviewerTelemetry: reviewerTelemetrySink,
     mode: normalized.mode,
     // No automatic path may run until the source adapter supplies a complete,
     // source-verified dossier for this exact approval ask.
@@ -342,6 +357,7 @@ export function installApproveForMe(
   return {
     config: normalized,
     getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
+    getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
     async dispose(): Promise<void> {
       stopMachinePolicy()
       stopSessionEvent()
