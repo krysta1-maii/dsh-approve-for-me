@@ -109,9 +109,13 @@
 
 `DossierGateFactProjector` 将该 assessment 加入 source-backed facts。生产 verified-dossier 模式中缺失 assessment 会失败关闭；未知或不完整 assessment 只会跳过 trust/cache/sealed replay 的自动 allow，仍进入 Guardian pre-review。详见 [R4 风险 assessment](risk-assessment.md)。R4 的完整规则、攻击/良性评测与 target-matching verifier 尚未完成。
 
-### R5 policy artifact（起步）
+### R5 policy artifact（进行中）
 
-`policy-v2` 已作为可持久化、显式选择的 Reviewer policy artifact 注册，保留 `policy-v1` 以便历史 descriptor 恢复。它要求基于 source-verified dossier 的精确 action/semantics 审查、分离风险与授权，未知 target、side effect、authorization 或 semantics 均不得 allow。R4 assessment 现从 source-backed facts 穿过 Gate 到 pre-review；在 seal 前，模型不得降低已证实风险或遗漏类别，证据不足的 allow 会变为 human，禁止性 allow 会变为 deny，已有 deny/human 不会被弱化。它尚未接收 R4 assessment 的独立 packet 字段，也未形成可替代人工判断的完整结构化 decision assessment；R5 仍在进行中。
+`policy-v2` 已作为可持久化、显式选择的 Reviewer policy artifact 注册，保留 `policy-v1` 以便历史 descriptor 恢复。它要求基于 source-verified dossier 的精确 action/semantics 审查、分离风险与授权，未知 target、side effect、authorization 或 semantics 均不得 allow。
+
+有 R4 evidence 的 review 现使用不可变 `ApprovalReviewPacketV2`，绑定 request、dossier hash、policy identity 与 R4 baseline；其严格 parser 重算 dossier hash。`policy-v2` 的 scoped decision tool 要求模型提交版本化 target/side-effect coverage 与唯一 source refs。source-backed facts 将 selected policy、verified dossier 与 baseline 贯穿 Gate、ReviewCoordinator 和 pre-seal 边界；模型不得降低已证实风险、遗漏类别、引用卷宗之外的 source，或声称超过 baseline 的 coverage。证据不足的 allow 会变为 human，禁止性 allow 会变为 deny，已有 deny/human 不会被弱化。
+
+R5 仍不构成成熟自动审批能力：R4 尚未具备已证明的 target/side-effect matcher，故其 baseline 默认不授权；未实现工具族也不能进入自动 catalog。
 
 ### 验证
 
