@@ -49,15 +49,31 @@ const forkExpected = readFileSync(forkSidecar, 'utf8').trim().split(/\s+/)[0]
 if (forkExpected !== sha256(fork)) throw new Error('approval fork digest does not match its sidecar')
 const forkProvenance = JSON.parse(readFileSync(forkProvenancePath, 'utf8'))
 const approveSourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim()
+const forkSourceCommit = forkProvenance.source?.commit
+let forkSourceTree
+let forkSourceIsAncestor = false
+let forkInputsUnchanged = false
+if (typeof forkSourceCommit === 'string') {
+  try {
+    forkSourceTree = execFileSync('git', ['rev-parse', `${forkSourceCommit}^{tree}`], { cwd: root, encoding: 'utf8' }).trim()
+    execFileSync('git', ['merge-base', '--is-ancestor', forkSourceCommit, approveSourceCommit], { cwd: root })
+    forkSourceIsAncestor = true
+    execFileSync('git', ['diff', '--quiet', forkSourceCommit, approveSourceCommit, '--', 'patch/dsh-user-approval'], { cwd: root })
+    forkInputsUnchanged = true
+  } catch {
+    // Rejected by the provenance check below.
+  }
+}
 if (forkProvenance.version !== 1 || forkProvenance.file !== basename(fork)
   || forkProvenance.sha256 !== forkExpected
   || forkProvenance.source?.repository !== approveSourceRemote
-  || forkProvenance.source?.commit !== approveSourceCommit
-  || forkProvenance.source?.tree !== approveSourceTree
+  || forkProvenance.source?.tree !== forkSourceTree
+  || !forkSourceIsAncestor
+  || !forkInputsUnchanged
   || forkProvenance.upstream?.lockSha256 !== sha256(join(root, 'patch/dsh-user-approval/upstream.json'))
   || forkProvenance.upstream?.commit !== upstream.upstreamCommit
   || forkProvenance.upstream?.patchVersion !== upstream.patchVersion) {
-  throw new Error('approval fork provenance does not match the current reviewed source')
+  throw new Error('approval fork provenance does not match the reviewed fork inputs')
 }
 
 const managedArtifact = JSON.parse(readFileSync(managedManifestPath, 'utf8'))
@@ -106,9 +122,9 @@ const artifacts = tarballs.map((file) => {
       }
     : manifest.name === '@deepseek-ai/dsh-user-approval'
       ? {
-          repository: approveSourceRemote,
-          commit: approveSourceCommit,
-          tree: approveSourceTree,
+          repository: forkProvenance.source.repository,
+          commit: forkProvenance.source.commit,
+          tree: forkProvenance.source.tree,
           upstreamCommit: upstream.upstreamCommit,
           patchVersion: upstream.patchVersion,
         }

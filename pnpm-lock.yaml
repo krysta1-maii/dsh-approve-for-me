@@ -480,7 +480,7 @@ packages:
       '@deepseek-ai/cordis': ^4.0.2
 
   '@deepseek-ai/dsh-user-approval@file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz':
-    resolution: {integrity: sha512-rS2VpAbYoirB9CMGUaVk3C0FzMv33gyqg9z7G7eeyQZ4X8vSdYhJpqfmmVmrVWMidPOMcd+UHvQsuYQDBjZ2rg==, tarball: file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz}
+    resolution: {integrity: sha512-e2RndhBQS5UJU0Gfy81MsRINaehdwDavMlYBnJup7quoWDsyAr6Co973rcrU0TWA0zJh12jnITYKAI4NvoYxsA==, tarball: file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz}
     version: 0.1.2-alpha.2
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.2
