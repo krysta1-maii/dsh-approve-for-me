@@ -202,6 +202,10 @@ export async function apply(ctx) {
 
   const adapter = new ProfileSmokeAdapter(scenarios)
   ctx.llm.registerAdapter(['profile-smoke-provider'], adapter)
+  // Adapter publication emits llm/adapters-updated. Let fail-closed Guardian
+  // reconciliation validate and arm the newly published route before driving
+  // the first approval request.
+  await new Promise(resolve => setTimeout(resolve, 0))
   ctx.on('tools/pre-execute', (exec, next) => {
     const description = exec.arguments?.description
     if (exec.name === 'bash' && typeof description === 'string' && description.includes('smoke command')) {
