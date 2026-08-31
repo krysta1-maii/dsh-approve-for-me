@@ -194,6 +194,9 @@ else
   exit 2
 fi
 
+echo "==> normalizing publish manifest order"
+node -e 'const fs=require("fs"); const path=process.argv[1]; const value=JSON.parse(fs.readFileSync(path,"utf8")); for (const key of ["dependencies","devDependencies","peerDependencies","optionalDependencies"]) if (value[key]) value[key]=Object.fromEntries(Object.entries(value[key]).sort(([a],[b])=>a.localeCompare(b))); fs.writeFileSync(path,JSON.stringify(value,null,2)+"\n")' "${CLONE_DIR}/${PKG_PATH}/package.json"
+
 echo "==> packing"
 # pnpm rewrites `workspace:^` ranges only when packing from inside the
 # workspace that installed those dependencies; always pack from the verified
