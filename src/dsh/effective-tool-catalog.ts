@@ -14,9 +14,9 @@ import type {
   DurableToolCatalogCommitmentV1,
 } from '../domain/dossier.js'
 import {
-  createDshAlpha1DossierCatalog,
-  createDshAlpha1StockProjectorRegistry,
-  createDshAlpha1StockToolCatalog,
+  createDshAlpha2DossierCatalog,
+  createDshAlpha2StockProjectorRegistry,
+  createDshAlpha2StockToolCatalog,
 } from './stock-tools.js'
 import type { ActionProjector } from '../ports/action-projector.js'
 
@@ -37,7 +37,7 @@ export interface DshExecutionEventBinding {
   readonly parentRequestEventSeq: number
 }
 
-export interface DshAlpha1EffectiveCatalog {
+export interface DshAlpha2EffectiveCatalog {
   /** Full exact scoped callable registry, including hidden PTC tools. */
   readonly schemas: readonly JsonValue[]
   readonly approval: ApprovalToolCatalog
@@ -87,8 +87,8 @@ function last<T extends { readonly seq: number }>(values: readonly T[]): T | und
   return [...values].sort((left, right) => left.seq - right.seq).at(-1)
 }
 
-export function createDshAlpha1CatalogCommitment(
-  effective: Omit<DshAlpha1EffectiveCatalog, 'commitment' | 'execution'>,
+export function createDshAlpha2CatalogCommitment(
+  effective: Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'>,
   presentation: 'native' | 'ptc',
   requestHeaderEventSeq: number,
   wireSchemas: readonly unknown[],
@@ -113,11 +113,11 @@ export function createDshAlpha1CatalogCommitment(
 }
 
 /** Build both authorization catalogs from one detached exact callable schema set. */
-export function createDshAlpha1EffectiveCatalog(schemas: readonly unknown[]): Omit<DshAlpha1EffectiveCatalog, 'commitment' | 'execution'> {
+export function createDshAlpha2EffectiveCatalog(schemas: readonly unknown[]): Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'> {
   const frozen = frozenSchemas(schemas)
   if (frozen === undefined) throw new TypeError('effective tool schemas must be a strict JSON array')
-  const approval = createDshAlpha1StockToolCatalog(frozen)
-  const dossier = createDshAlpha1DossierCatalog(frozen, approval)
+  const approval = createDshAlpha2StockToolCatalog(frozen)
+  const dossier = createDshAlpha2DossierCatalog(frozen, approval)
   return Object.freeze({ schemas: frozen, approval, dossier })
 }
 
@@ -197,15 +197,15 @@ function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory 
  * nested executions to the frozen full callable registry of their root event.
  */
 export class DshScopedEffectiveCatalogResolver {
-  private readonly byExecution = new WeakMap<ToolExecution, DshAlpha1EffectiveCatalog>()
-  private readonly byToken = new Map<ToolExecution['token'], DshAlpha1EffectiveCatalog>()
+  private readonly byExecution = new WeakMap<ToolExecution, DshAlpha2EffectiveCatalog>()
+  private readonly byToken = new Map<ToolExecution['token'], DshAlpha2EffectiveCatalog>()
 
   constructor(
     private readonly tools: ScopedToolSchemas,
     private readonly configuredTemplate?: ApprovalToolCatalog,
   ) {}
 
-  private applyConfiguredTemplate(base: Omit<DshAlpha1EffectiveCatalog, 'commitment' | 'execution'>): Omit<DshAlpha1EffectiveCatalog, 'commitment' | 'execution'> | undefined {
+  private applyConfiguredTemplate(base: Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'>): Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'> | undefined {
     const template = this.configuredTemplate
     if (template === undefined || template.descriptors.length === 0) return base
     const descriptors = base.approval.descriptors.map(visible => {
@@ -224,13 +224,13 @@ export class DshScopedEffectiveCatalogResolver {
     if (fingerprint === undefined) return undefined
     const approval = Object.freeze({ ...unsealed, fingerprint })
     try {
-      return Object.freeze({ schemas: base.schemas, approval, dossier: createDshAlpha1DossierCatalog(base.schemas, approval) })
+      return Object.freeze({ schemas: base.schemas, approval, dossier: createDshAlpha2DossierCatalog(base.schemas, approval) })
     } catch {
       return undefined
     }
   }
 
-  forExecution(exec: ToolExecution): DshAlpha1EffectiveCatalog | undefined {
+  forExecution(exec: ToolExecution): DshAlpha2EffectiveCatalog | undefined {
     const cached = this.byExecution.get(exec)
     if (cached !== undefined) return cached
     if (exec.agent === undefined) return undefined
@@ -272,9 +272,9 @@ export class DshScopedEffectiveCatalogResolver {
       && callableSchemas.some(schema => canonicalJson(schema) === canonicalJson(history.wireSchemas[0]!))
     const presentation = same ? 'native' as const : runCodeWire ? 'ptc' as const : undefined
     if (presentation === undefined) return undefined
-    let base: Omit<DshAlpha1EffectiveCatalog, 'commitment' | 'execution'>
+    let base: Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'>
     try {
-      const discovered = createDshAlpha1EffectiveCatalog(callableSchemas)
+      const discovered = createDshAlpha2EffectiveCatalog(callableSchemas)
       const configured = this.applyConfiguredTemplate(discovered)
       if (configured === undefined) return undefined
       base = configured
@@ -315,7 +315,7 @@ export class DshScopedEffectiveCatalogResolver {
     project: (exec: ToolExecution) => {
       const catalog = this.forExecution(exec)
       if (catalog === undefined) throw new TypeError(`no corroborated scoped effective catalog for ${exec.name}`)
-      return createDshAlpha1StockProjectorRegistry(catalog.approval).project(exec)
+      return createDshAlpha2StockProjectorRegistry(catalog.approval).project(exec)
     },
   })
 }

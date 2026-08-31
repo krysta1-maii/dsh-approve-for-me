@@ -8,7 +8,7 @@
 
 ### 1.1 目标
 
-- 在 stock DSH 0.1.2-alpha.1 上，只 patch 官方 `@deepseek-ai/dsh-user-approval`，实现机器决策槽；
+- 在 stock DSH 0.1.2-alpha.2 上，只 patch 官方 `@deepseek-ai/dsh-user-approval`，实现机器决策槽；
 - 本体插件以 `registerMachinePolicy()` 为唯一自动裁决入口，裁决优先级与 `approval/request` listener 顺序无关；
 - 长程任务无人值守：`trustEnvelope` 确定性快路径 + deny breaker + allow-cache；
 - Guardian Reviewer 经独立插件 `dsh-managed-agent` 的 Guarded Continuable 承载；
@@ -104,7 +104,7 @@ export class ApprovalService extends Service {
 - `upstream.json`（tag/commit/version/patchVersion/changes）；
 - `overlay/src/{index,types,invariant}.ts`；
 - `overlay/tests/approval-machine-policy.spec.ts`；
-- `scripts/build-fork.sh`（worktree 覆盖 → pnpm build → `pnpm pack` → 校验）；
+- `scripts/build-fork.sh`（一次性上游 clone 覆盖 → pnpm build → `pnpm pack` → 校验，产出 `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz`）；
 - `scripts/mark-package.mjs`（写 `dshApprovalPatch` 标记，name/version 不变）；
 - `scripts/verify-fork.mjs`（校验标记与 lib 内 `registerMachinePolicy`/`requestId`）。
 

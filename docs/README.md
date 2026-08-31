@@ -38,11 +38,13 @@
 v2 的目标部署只 patch 一个官方包，并把以下组件作为一个整体交付并锁定兼容版本：
 
 ```text
-stock DSH 0.1.2-alpha.1（不修改）
+stock DSH 0.1.2-alpha.2（不修改）
 + dsh-user-approval fork tarball（本仓库 patch/ 产出，替换官方同名包）
 + dsh-managed-agent（独立仓库，Host/Client bundle，依赖插件）
 + dsh-approve-for-me（本仓库，插件本体）
 ```
+
+宿主闭包不再由本地源码 tarball 拼装：仓库以普通 npm 依赖固定 `0.1.2-alpha.2`（npm dist-tag `alpha`），复现锚点是 `pnpm-lock.yaml` 的 integrity 摘要；只有 approval fork 仍从锁定 commit（`dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`）的宿主源码构建，并由 workspace overrides 覆盖同名官方包。
 
 官方 patch 只向 `dsh-user-approval` 增加 `ApprovalRequestEvent.requestId` 与 `ApprovalService.registerMachinePolicy()`：机器决策在 `never` 之后、`approval/request` waterfall 之前执行，拥有与 listener 顺序无关的确定性优先级。`'delegate'` 继续进入官方 `api-remotes → client/ui-approval` 人工瀑布。未注册机器策略时行为与上游一致。
 

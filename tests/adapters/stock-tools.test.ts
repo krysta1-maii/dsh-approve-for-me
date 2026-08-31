@@ -3,12 +3,12 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
-  DSH_ALPHA1_ARGUMENT_SEMANTICS_ID,
-  DSH_ALPHA1_OPAQUE_FAMILY,
+  DSH_ALPHA2_ARGUMENT_SEMANTICS_ID,
+  DSH_ALPHA2_OPAQUE_FAMILY,
   createActionSnapshot,
-  createDshAlpha1DossierCatalog,
-  createDshAlpha1StockProjectorRegistry,
-  createDshAlpha1StockToolCatalog,
+  createDshAlpha2DossierCatalog,
+  createDshAlpha2StockProjectorRegistry,
+  createDshAlpha2StockToolCatalog,
 } from '../../src/index.js'
 
 function schema(name: string, fields: Record<string, unknown> = {}): unknown {
@@ -31,21 +31,21 @@ function execution(name: string, arguments_: unknown): ToolExecution {
   }
 }
 
-describe('DSH 0.1.2-alpha.1 stock tool composition', () => {
+describe('DSH 0.1.2-alpha.2 stock tool composition', () => {
   it('derives a deterministic exact-schema catalog with fail-closed opaque coverage', () => {
-    const catalog = createDshAlpha1StockToolCatalog([
+    const catalog = createDshAlpha2StockToolCatalog([
       schema('write', { file_path: { type: 'string' } }),
       schema('bash', { command: { type: 'string' } }),
       schema('todo_write', { todos: { type: 'array' } }),
     ])
-    expect(catalog.argumentSemanticsId).toBe(DSH_ALPHA1_ARGUMENT_SEMANTICS_ID)
+    expect(catalog.argumentSemanticsId).toBe(DSH_ALPHA2_ARGUMENT_SEMANTICS_ID)
     expect(catalog.fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/)
     expect(catalog.descriptors).toEqual([
       expect.objectContaining({ toolName: 'bash', classification: 'body-escalation', actionSemanticsFamily: 'shell-process-v1' }),
-      expect.objectContaining({ toolName: 'todo_write', classification: 'ordinary', actionSemanticsFamily: DSH_ALPHA1_OPAQUE_FAMILY }),
+      expect.objectContaining({ toolName: 'todo_write', classification: 'ordinary', actionSemanticsFamily: DSH_ALPHA2_OPAQUE_FAMILY }),
       expect.objectContaining({ toolName: 'write', classification: 'body-escalation', actionSemanticsFamily: 'filesystem-v1' }),
     ])
-    expect(createDshAlpha1StockToolCatalog([
+    expect(createDshAlpha2StockToolCatalog([
       schema('write', { file_path: { type: 'string' } }),
       schema('bash', { command: { type: 'string' } }),
       schema('todo_write', { todos: { type: 'array' } }),
@@ -71,8 +71,8 @@ describe('DSH 0.1.2-alpha.1 stock tool composition', () => {
       },
       schema('bash', { command: { type: 'string' } }),
     ]
-    const approval = createDshAlpha1StockToolCatalog(schemas)
-    const dossier = createDshAlpha1DossierCatalog(schemas, approval)
+    const approval = createDshAlpha2StockToolCatalog(schemas)
+    const dossier = createDshAlpha2DossierCatalog(schemas, approval)
     expect(dossier.descriptors).toEqual([
       expect.objectContaining({ classification: 'ordinary', toolName: 'bash' }),
       expect.objectContaining({ classification: 'delegation', toolName: 'send_message', operation: 'followup', receiptPolicy: { kind: 'required-on-completed', receiptKinds: ['followup-delivered'] } }),
@@ -86,14 +86,14 @@ describe('DSH 0.1.2-alpha.1 stock tool composition', () => {
         properties: { ...subagentSchema.parameters.properties, authority_override: { type: 'boolean' } },
       },
     }]
-    const masqueradingApproval = createDshAlpha1StockToolCatalog(masquerading)
-    expect(createDshAlpha1DossierCatalog(masquerading, masqueradingApproval).descriptors[0])
+    const masqueradingApproval = createDshAlpha2StockToolCatalog(masquerading)
+    expect(createDshAlpha2DossierCatalog(masquerading, masqueradingApproval).descriptors[0])
       .toMatchObject({ classification: 'ordinary', toolName: 'subagent' })
   })
 
   it('projects the exact stock bash escalation fields', () => {
-    const catalog = createDshAlpha1StockToolCatalog([schema('bash')])
-    const registry = createDshAlpha1StockProjectorRegistry(catalog)
+    const catalog = createDshAlpha2StockToolCatalog([schema('bash')])
+    const registry = createDshAlpha2StockProjectorRegistry(catalog)
     const action = createActionSnapshot(registry.project(execution('bash', {
       command: 'npm test',
       description: 'Run test suite',
@@ -117,8 +117,8 @@ describe('DSH 0.1.2-alpha.1 stock tool composition', () => {
   })
 
   it('projects stock file_path/search fields and content commitments', () => {
-    const catalog = createDshAlpha1StockToolCatalog([schema('write'), schema('grep')])
-    const registry = createDshAlpha1StockProjectorRegistry(catalog)
+    const catalog = createDshAlpha2StockToolCatalog([schema('write'), schema('grep')])
+    const registry = createDshAlpha2StockProjectorRegistry(catalog)
     const write = createActionSnapshot(registry.project(execution('write', {
       file_path: 'notes/result.txt', content: 'done', sandbox_permissions: 'workspace-write', justification: 'Save requested output.',
     })))
@@ -131,13 +131,13 @@ describe('DSH 0.1.2-alpha.1 stock tool composition', () => {
   })
 
   it('makes unknown profile tools opaque and rejects semantic masquerading', () => {
-    const catalog = createDshAlpha1StockToolCatalog([schema('custom_tool')])
-    const registry = createDshAlpha1StockProjectorRegistry(catalog)
+    const catalog = createDshAlpha2StockToolCatalog([schema('custom_tool')])
+    const registry = createDshAlpha2StockProjectorRegistry(catalog)
     const action = createActionSnapshot(registry.project(execution('custom_tool', { value: 1 })))
-    expect(action.semantics).toEqual({ family: DSH_ALPHA1_OPAQUE_FAMILY, value: { operation: 'opaque' } })
+    expect(action.semantics).toEqual({ family: DSH_ALPHA2_OPAQUE_FAMILY, value: { operation: 'opaque' } })
 
     const descriptor = catalog.descriptors[0]!
-    expect(() => createDshAlpha1StockProjectorRegistry({
+    expect(() => createDshAlpha2StockProjectorRegistry({
       ...catalog,
       descriptors: [{ ...descriptor, actionSemanticsFamily: 'filesystem-v1' }],
     })).toThrow(/not bound/)

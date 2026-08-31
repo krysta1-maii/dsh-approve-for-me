@@ -3,7 +3,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import {
   DshScopedEffectiveCatalogResolver,
-  createDshAlpha1EffectiveCatalog,
+  createDshAlpha2EffectiveCatalog,
 } from '../../src/dsh/effective-tool-catalog.js'
 import { fingerprintApprovalToolCatalogV1 } from '../../src/approval-gate/catalog.js'
 
@@ -105,7 +105,7 @@ describe('DshScopedEffectiveCatalogResolver', () => {
 
   it('subsets an explicit configured template and preserves it on durable resume', () => {
     const schemas = [schema('bash')]
-    const base = createDshAlpha1EffectiveCatalog(schemas)
+    const base = createDshAlpha2EffectiveCatalog(schemas)
     const unsealed = {
       version: 1 as const,
       argumentSemanticsId: base.approval.argumentSemanticsId,

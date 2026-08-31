@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
 import { DossierGateFactProjector, SourceBackedGateFactResolver, fingerprintGateConfigurationV1 } from '../../src/application/source-backed-gate-facts.js'
-import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
 
 const agent = { id: 'session-1', session: { id: 'session-1' } } as unknown as Agent
@@ -33,8 +33,8 @@ describe('DossierGateFactProjector', () => {
     const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
     const actionHash = hashAction(action)
     const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
-    const effective = createDshAlpha1EffectiveCatalog(schemas)
-    const commitment = createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas)
+    const effective = createDshAlpha2EffectiveCatalog(schemas)
+    const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
     const projector = new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2')
     const projectInput = {
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },

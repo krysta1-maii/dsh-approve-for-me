@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DshParentSessionFactSource, createActionSnapshot } from '../../src/index.js'
-import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
   DelegationToolClassificationCatalogV1,
@@ -9,13 +9,13 @@ import type {
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
-const effective = createDshAlpha1EffectiveCatalog(schemas)
+const effective = createDshAlpha2EffectiveCatalog(schemas)
 const catalog: DelegationToolClassificationCatalogV1 = effective.dossier
 const lifecycle = { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 100 }
 const descriptor = catalog.descriptors[0]!
 const execution: ToolExecutionFactRecordV1 = {
   version: 1,
-  catalogCommitment: createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas),
+  catalogCommitment: createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas),
   session: lifecycle,
   request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
   toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },

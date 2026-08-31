@@ -2,6 +2,8 @@
 
 > 状态：2026-08-28，**宿主设计 v2 候选契约**。v2 只 patch 官方 `@deepseek-ai/dsh-user-approval`，增加 `ApprovalRequestEvent.requestId` 与 `ApprovalService.registerMachinePolicy()`；机器裁决在 `never` 之后、`approval/request` waterfall 之前执行，拥有与 listener 顺序无关的确定性优先级。已废弃的 v1 companion Host Profile／thin composer adapter／mutation gate／attestation 方案见 [archive/README.md](archive/README.md) 与旧版契约。
 >
+> 目标宿主基线为 `0.1.2-alpha.2`（tag `dsh-v0.1.2-alpha.2` / commit `0a53fb55bea101816fa226bb964ae2bed71c343b`）：除 approval fork 外的宿主包按已发布的 npm `0.1.2-alpha.2` 消费，fork 仍从该 commit 的宿主源码构建。
+>
 > 本文定义 `dsh-approve-for-me` 的审批组合、裁决映射、Review Run、生命周期、持久化与失败关闭边界。当前代码实现状态见 [implementation.md](implementation.md)：机器决策槽、source-backed dossier、R4 基线、Storage Domain 决策行与 disposable Profile smoke 已落地；真实 LLM/Web/cold-process E2E 仍待执行。Guardian 材料本身由 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 定义，文档权威顺序见 [文档地图](README.md)。
 
 ## 1. 定稿范围与固定决策
@@ -230,8 +232,8 @@ function apply(ctx: Context, config: ApproveForMeHostConfigV2): void {
 6. 自动 allow 在最小记录 durable 前不生效；记录冲突不 delegate；
 7. starting/draining 的 delegate 只在 request 活跃时发生；failed 不 delegate；dispose 后 Profile default 无自动 grant；
 8. 卸载/重载/Abort/污染轮换/迟到结果全部 fail-closed；
-9. 真实 0.1.2 Web Profile：长程 soak 包络内 0 人工、0 误放行；人工下沉到达 ui-approval；
-10. patch 能对锁定 commit 可复现构建，上游版本变化时构建脚本拒绝错误 commit。
+9. 真实 0.1.2-alpha.2 Web Profile：长程 soak 包络内 0 人工、0 误放行；人工下沉到达 ui-approval；
+10. patch 能在只读上游 checkout 的一次性 clone 中对锁定 commit 可复现构建，上游版本变化时构建脚本拒绝错误 commit。
 
 ## 14. 版本演进
 

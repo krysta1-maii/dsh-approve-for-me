@@ -35,14 +35,14 @@ scripts/verify-target-host.mjs        # 校验目标 DSH commit/tag、tarball �
 
 ## 构建
 
-前置条件：sibling 目录有 `deepseek-harness`，其 HEAD **精确等于** `upstream.json` 中完整 40 位 commit；可用 `pnpm`。构建脚本拒绝短 SHA、tag 漂移或任意其他提交。
+前置条件：sibling 目录有 `deepseek-harness`，其对象库**包含** `upstream.json` 中完整 40 位 commit（HEAD 可指向任意位置）；可用 `pnpm`。构建脚本拒绝短 SHA，并只在该精确 commit 上构建。
 
 ```bash
 patch/dsh-user-approval/scripts/build-fork.sh
-# 产物：.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
+# 产物：.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz
 ```
 
-脚本在临时 worktree 中覆盖源码、运行 overlay 测试、重建 `lib/`、打标记、校验并输出 `.sha256`，不污染上游 checkout。`SKIP_BUILD=1` 被明确拒绝，因为它不能证明编译产物包含 patch。
+脚本在一次性 clone（`.build/upstream-clone`）中 detach 到锁定 commit，覆盖源码、运行 overlay 测试、重建 `lib/`、打标记、校验并输出 `.sha256`，构建结束删除该 clone。上游 checkout 全程只被读取（`git clone`），不注册 worktree，也不写入其 index/config。`SKIP_BUILD=1` 被明确拒绝，因为它不能证明编译产物包含 patch。
 
 ## 安装与校验
 
@@ -54,11 +54,13 @@ npm run verify:approval-fork
 # 再由目标 Profile 安装器把同一 tarball 替换到
 # @deepseek-ai/dsh-user-approval；安装后必须重新读取安装位置的
 # package.json 并校验 dshApprovalPatch marker、patchVersion、完整 upstreamCommit。
-# 不要把本仓库的 node_modules、全局 0.1.1-rc.2 CLI 或另起的 Web server
+# 不要把本仓库的 node_modules、全局安装的 DSH CLI 或另起的 Web server
 # 当成目标 Profile 验收。
 ```
 
 ## 上游跟进
+
+当前锁定：`upstreamVersion 0.1.2-alpha.2`、`upstreamTag dsh-v0.1.2-alpha.2`、`upstreamCommit 0a53fb55bea101816fa226bb964ae2bed71c343b`、`patchVersion 2`；patch 语义与上一版本一致，包内唯一的上游增量是 `order` 由字面量 `115` 改为 `scope.systemPrompt.getContextOrder('APPROVAL_POLICY')`。
 
 上游版本变化时：更新 `upstream.json` 的 tag/commit/version，重放 overlay，重跑构建脚本；`build-fork.sh` 会拒绝在错误 commit 上构建。目标是把这两个改动作为上游 PR 合并，合并后本目录只保留记录、不再产出 tarball。
 

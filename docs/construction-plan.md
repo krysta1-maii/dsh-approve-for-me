@@ -4,7 +4,7 @@
 
 ## 1. 施工目标
 
-将当前“协议与运行骨架”建设为可在 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.1 中验收的自动审批产品：
+将当前“协议与运行骨架”建设为可在 patched `dsh-user-approval` + stock DSH 0.1.2-alpha.2 中验收的自动审批产品：
 
 - 官方只 patch `@deepseek-ai/dsh-user-approval`：`requestId` + `registerMachinePolicy()`；
 - 本体插件注册唯一机器决策槽，机器裁决拥有与 listener 顺序无关的确定性优先级；
@@ -26,11 +26,11 @@
 - Reviewer composition、唯一 scoped decision tool、`approval=never`、`sandbox=read-only`；
 - `tools/pre-execute` 动作捕获骨架与标准 DSH bundle 包装；
 - **patch 包结构**：`patch/dsh-user-approval/` 的 overlay、upstream.json、build/verify 脚本、机器决策槽测试；
-- **`src/approval-gate/` 端口骨架**：catalog、trust-envelope、breaker、sealed-decision、machine-policy。
+- **`src/approval-gate/` 端口骨架**：catalog、trust-envelope、breaker、sealed-decision、machine-policy；
+- **0.1.2-alpha.2 基线**：peer/dev 依赖固定到已发布的 `0.1.2-alpha.2`；本仓库无源码变更，`dsh-managed-agent` 仅把 `JsonValue` 的 import 从 `@deepseek-ai/dsh-session` 换到 `@deepseek-ai/dsh-util-values`。
 
 ### 尚未完成
 
-- 0.1.2-alpha.1 迁移（本体与依赖插件的 peer/类型面）；
 - 本体 `registerMachinePolicy` 适配器与决策管线实现；
 - trustEnvelope、deny breaker、allow-cache；
 - source-backed dossier compiler 和 Storage Domain fact adapters（执行/审批投影必须用完整 session lifecycle 键控，并与唯一 durable call/ask event 精确关联；不能只以 session ID 隔离或猜测首个匹配项）；
@@ -43,22 +43,22 @@
 ## 3. v2 部署组成
 
 ```text
-stock DSH 0.1.2-alpha.1（不修改）
+stock DSH 0.1.2-alpha.2（不修改）
 + dsh-user-approval fork tarball（本仓库 patch/ 产出）
 + dsh-managed-agent（独立仓库，依赖插件）
 + dsh-approve-for-me（本仓库，插件本体）
 ```
 
-官方 patch 只有两处新增，未注册机器策略时行为与上游一致；fork tarball 保留原名/版本并用 `dshApprovalPatch` 标记第三方身份。构建与校验见 `patch/dsh-user-approval/README.md`。
+官方 patch 只有两处新增，未注册机器策略时行为与上游一致；fork tarball 保留原名/版本并用 `dshApprovalPatch` 标记第三方身份。宿主闭包按已发布的 npm `0.1.2-alpha.2` 消费（复现锚点是 `pnpm-lock.yaml` 的 integrity），只有 approval 包被 workspace overrides 换成本地 fork tarball。构建与校验见 `patch/dsh-user-approval/README.md`。
 
 ## 4. 实施阶段
 
 ### P0：0.1.2 基线迁移
 
-- 本体与 `dsh-managed-agent` 的 peer deps/类型面迁到 0.1.2-alpha.1（`CallId→ToolCallId`、`tools/ptc-dispatch-log`、scoped `this` 等）；
+- 本体与 `dsh-managed-agent` 的 peer deps/类型面迁到 0.1.2-alpha.2（`CallId→ToolCallId`、`tools/ptc-dispatch-log`、scoped `this`，以及 `JsonValue` 迁至 `@deepseek-ai/dsh-util-values`）；
 - `upstream.json` 固定完整 40 位 SHA；fork 构建拒绝短 SHA 和 `SKIP_BUILD=1`，并在打包前运行 `approval-machine-policy.spec.ts`；
 - `verify-target-host.mjs` 校验目标 host 的版本、精确 commit/tag、fork marker/API 与 SHA-256；
-- CI 从 `deepseek-harness@cd5ef8148158c3a752a658978873241fdf8e2bbc` 构建、校验并上传 tarball 和 checksum。根目录的 rc.2 lockfile 绿测仅是遗留回归基线，不能替代该 lane。
+- CI 从 `deepseek-harness@0a53fb55bea101816fa226bb964ae2bed71c343b` 构建、校验并上传 fork tarball 和 checksum；其余宿主包由 `pnpm install --frozen-lockfile` 从已发布的 `0.1.2-alpha.2` 安装，lockfile integrity 是唯一复现锚点。
 
 退出条件：两仓库在 0.1.2 上 typecheck/tests 全绿；patch 的 CI 版本门禁生效；目标 Profile 的已安装包也通过 marker 校验。
 
@@ -132,4 +132,4 @@ P1 与 D1 可以并行；P2 需要可用的机器决策槽与事实源；I1 的�
 
 ## 7. 当前施工入口
 
-下一步从 **P0 0.1.2 基线迁移** 开始：先在依赖插件仓库和本仓库把 peer/类型面迁到 0.1.2-alpha.1，并让 `patch/dsh-user-approval` 的 fork 构建与测试进入 CI；随后进入 P1。`dsh plugin --profile web add` 当前只用于骨架开发，不构成产品级部署。
+下一步从 **P0 0.1.2 基线迁移** 开始：先在依赖插件仓库和本仓库把 peer/类型面迁到 0.1.2-alpha.2，并让 `patch/dsh-user-approval` 的 fork 构建与测试进入 CI；随后进入 P1。`dsh plugin --profile web add` 当前只用于骨架开发，不构成产品级部署。

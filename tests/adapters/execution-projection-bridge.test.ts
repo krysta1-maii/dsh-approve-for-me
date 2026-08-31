@@ -5,12 +5,12 @@ import { DshExecutionFactProjectionBridge } from '../../src/dsh/execution-projec
 import { createActionSnapshot } from '../../src/domain/protocol.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from '../../src/application/fact-repositories.js'
 import { DefaultActionCapture } from '../../src/ports/action-projector.js'
-import { createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { fingerprintDurableToolCatalogCommitmentV1 } from '../../src/domain/dossier.js'
 
 const bashSchema = { name: 'bash', description: 'shell', parameters: { type: 'object', properties: { command: { type: 'string' } } } }
 const runCodeSchema = { name: 'run_code', description: 'dispatch', parameters: { type: 'object', properties: { code: { type: 'string' } } } }
-const baseCatalog = createDshAlpha1EffectiveCatalog([bashSchema, runCodeSchema])
+const baseCatalog = createDshAlpha2EffectiveCatalog([bashSchema, runCodeSchema])
 const catalog = baseCatalog.dossier
 function effectiveCatalog(exec: ToolExecution) {
   const nested = exec.parent !== undefined

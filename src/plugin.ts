@@ -15,7 +15,7 @@ import { ToolFamilyActionProjectorRegistry } from './ports/tool-family-action-pr
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 import { DshScopedEffectiveCatalogResolver } from './dsh/effective-tool-catalog.js'
-import { createDshAlpha1StockProjectorRegistry } from './dsh/stock-tools.js'
+import { createDshAlpha2StockProjectorRegistry } from './dsh/stock-tools.js'
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
@@ -136,7 +136,7 @@ export function installApproveForMe(
   const configuredProjectors = options.toolFamilyActionProjectors
     ?? (normalized.toolCatalog.descriptors.length === 0
       ? undefined
-      : createDshAlpha1StockProjectorRegistry(normalized.toolCatalog))
+      : createDshAlpha2StockProjectorRegistry(normalized.toolCatalog))
   if (normalized.toolCatalog.descriptors.length > 0) {
     const registered = configuredProjectors
     if (registered === undefined) {

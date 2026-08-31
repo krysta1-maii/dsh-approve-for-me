@@ -9,15 +9,15 @@ import type { ActionSnapshotInput, RequestedPermission } from '../domain/protoco
 import type { ToolFamilyActionProjector } from '../ports/tool-family-action-projector.js'
 import { ToolFamilyActionProjectorRegistry } from '../ports/tool-family-action-projector.js'
 
-export const DSH_ALPHA1_ARGUMENT_SEMANTICS_ID = 'dsh-0.1.2-alpha.1-stock-v1'
-export const DSH_ALPHA1_SHELL_FAMILY = 'shell-process-v1'
-export const DSH_ALPHA1_SHELL_PROJECTOR_ID = 'dsh-approve-for-me/shell-process-v1'
-export const DSH_ALPHA1_FILESYSTEM_FAMILY = 'filesystem-v1'
-export const DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID = 'dsh-approve-for-me/filesystem-v1'
-export const DSH_ALPHA1_NETWORK_FAMILY = 'network-v1'
-export const DSH_ALPHA1_NETWORK_PROJECTOR_ID = 'dsh-approve-for-me/network-v1'
-export const DSH_ALPHA1_OPAQUE_FAMILY = 'opaque-v1'
-export const DSH_ALPHA1_OPAQUE_PROJECTOR_ID = 'dsh-approve-for-me/dsh-0.1.2-alpha.1/opaque-v1'
+export const DSH_ALPHA2_ARGUMENT_SEMANTICS_ID = 'dsh-0.1.2-alpha.2-stock-v1'
+export const DSH_ALPHA2_SHELL_FAMILY = 'shell-process-v1'
+export const DSH_ALPHA2_SHELL_PROJECTOR_ID = 'dsh-approve-for-me/shell-process-v1'
+export const DSH_ALPHA2_FILESYSTEM_FAMILY = 'filesystem-v1'
+export const DSH_ALPHA2_FILESYSTEM_PROJECTOR_ID = 'dsh-approve-for-me/filesystem-v1'
+export const DSH_ALPHA2_NETWORK_FAMILY = 'network-v1'
+export const DSH_ALPHA2_NETWORK_PROJECTOR_ID = 'dsh-approve-for-me/network-v1'
+export const DSH_ALPHA2_OPAQUE_FAMILY = 'opaque-v1'
+export const DSH_ALPHA2_OPAQUE_PROJECTOR_ID = 'dsh-approve-for-me/dsh-0.1.2-alpha.2/opaque-v1'
 
 const FILESYSTEM_TOOLS = new Set(['read', 'read_image', 'write', 'edit', 'glob', 'grep'])
 const NETWORK_TOOLS = new Set(['web_search', 'web_fetch'])
@@ -31,10 +31,10 @@ interface StockBinding {
 }
 
 function bindingFor(toolName: string): StockBinding {
-  if (toolName === 'bash') return { family: DSH_ALPHA1_SHELL_FAMILY, projectorId: DSH_ALPHA1_SHELL_PROJECTOR_ID }
-  if (FILESYSTEM_TOOLS.has(toolName)) return { family: DSH_ALPHA1_FILESYSTEM_FAMILY, projectorId: DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID }
-  if (NETWORK_TOOLS.has(toolName)) return { family: DSH_ALPHA1_NETWORK_FAMILY, projectorId: DSH_ALPHA1_NETWORK_PROJECTOR_ID }
-  return { family: DSH_ALPHA1_OPAQUE_FAMILY, projectorId: DSH_ALPHA1_OPAQUE_PROJECTOR_ID }
+  if (toolName === 'bash') return { family: DSH_ALPHA2_SHELL_FAMILY, projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID }
+  if (FILESYSTEM_TOOLS.has(toolName)) return { family: DSH_ALPHA2_FILESYSTEM_FAMILY, projectorId: DSH_ALPHA2_FILESYSTEM_PROJECTOR_ID }
+  if (NETWORK_TOOLS.has(toolName)) return { family: DSH_ALPHA2_NETWORK_FAMILY, projectorId: DSH_ALPHA2_NETWORK_PROJECTOR_ID }
+  return { family: DSH_ALPHA2_OPAQUE_FAMILY, projectorId: DSH_ALPHA2_OPAQUE_PROJECTOR_ID }
 }
 
 function classificationFor(toolName: string): ToolApprovalClass {
@@ -46,7 +46,7 @@ function classificationFor(toolName: string): ToolApprovalClass {
  * mounts. Unknown stock/profile tools remain catalogued, but receive opaque
  * semantics and therefore can never be automatically authorized.
  */
-export function createDshAlpha1StockToolCatalog(schemas: readonly unknown[]): ApprovalToolCatalog {
+export function createDshAlpha2StockToolCatalog(schemas: readonly unknown[]): ApprovalToolCatalog {
   const descriptors: ToolApprovalDescriptor[] = []
   const names = new Set<string>()
   for (const schema of schemas) {
@@ -65,7 +65,7 @@ export function createDshAlpha1StockToolCatalog(schemas: readonly unknown[]): Ap
   }
   const unsealed: ApprovalToolCatalog = {
     version: 1,
-    argumentSemanticsId: DSH_ALPHA1_ARGUMENT_SEMANTICS_ID,
+    argumentSemanticsId: DSH_ALPHA2_ARGUMENT_SEMANTICS_ID,
     fingerprint: '',
     descriptors: Object.freeze(descriptors.sort((left, right) => left.toolName.localeCompare(right.toolName))),
   }
@@ -76,28 +76,28 @@ export function createDshAlpha1StockToolCatalog(schemas: readonly unknown[]): Ap
 
 const DELEGATION_BINDINGS = Object.freeze({
   subagent: Object.freeze({
-    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.1/subagent-start-v1',
+    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.2/subagent-start-v1',
     operation: 'start' as const,
     requiredParameters: Object.freeze(['description', 'prompt']),
     allowedParameters: Object.freeze(['description', 'prompt', 'run_in_background', 'provider', 'model', 'reasoning_effort']),
     receiptKinds: Object.freeze(['continuable-child-started', 'foreground-run-settled', 'background-job-started']),
   }),
   subagent_fork: Object.freeze({
-    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.1/subagent-fork-start-v1',
+    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.2/subagent-fork-start-v1',
     operation: 'start' as const,
     requiredParameters: Object.freeze(['description', 'prompt']),
     allowedParameters: Object.freeze(['description', 'prompt', 'run_in_background', 'provider', 'model', 'reasoning_effort']),
     receiptKinds: Object.freeze(['continuable-child-started', 'foreground-run-settled', 'background-job-started']),
   }),
   send_message: Object.freeze({
-    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.1/subagent-followup-v1',
+    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.2/subagent-followup-v1',
     operation: 'followup' as const,
     requiredParameters: Object.freeze(['subagent_id', 'message']),
     allowedParameters: Object.freeze(['subagent_id', 'message']),
     receiptKinds: Object.freeze(['followup-delivered']),
   }),
   interrupt_agent: Object.freeze({
-    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.1/subagent-interrupt-v1',
+    projectorId: 'dsh-approve-for-me/dsh-0.1.2-alpha.2/subagent-interrupt-v1',
     operation: 'interrupt' as const,
     requiredParameters: Object.freeze(['agent_id']),
     allowedParameters: Object.freeze(['agent_id']),
@@ -140,8 +140,8 @@ function delegationDescriptor(
   })
 }
 
-/** Build the exact alpha.1 dossier catalog from the same frozen model schemas. */
-export function createDshAlpha1DossierCatalog(
+/** Build the exact alpha.2 dossier catalog from the same frozen model schemas. */
+export function createDshAlpha2DossierCatalog(
   schemas: readonly unknown[],
   approvalCatalog: ApprovalToolCatalog,
 ): DelegationToolClassificationCatalogV1 {
@@ -238,8 +238,8 @@ function digestText(value: string): string {
 
 function shellProjector(toolNames: readonly string[]): ToolFamilyActionProjector<ToolExecution> {
   return Object.freeze({
-    family: DSH_ALPHA1_SHELL_FAMILY,
-    projectorId: DSH_ALPHA1_SHELL_PROJECTOR_ID,
+    family: DSH_ALPHA2_SHELL_FAMILY,
+    projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID,
     toolNames,
     project(execution: ToolExecution): ActionSnapshotInput {
       const value = argumentRecord(execution)
@@ -256,9 +256,9 @@ function shellProjector(toolNames: readonly string[]): ToolFamilyActionProjector
       return {
         toolName: execution.name,
         arguments: execution.arguments,
-        projectorId: DSH_ALPHA1_SHELL_PROJECTOR_ID,
+        projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID,
         semantics: {
-          family: DSH_ALPHA1_SHELL_FAMILY,
+          family: DSH_ALPHA2_SHELL_FAMILY,
           value: {
             operation: 'bash',
             command,
@@ -277,8 +277,8 @@ function shellProjector(toolNames: readonly string[]): ToolFamilyActionProjector
 
 function filesystemProjector(toolNames: readonly string[]): ToolFamilyActionProjector<ToolExecution> {
   return Object.freeze({
-    family: DSH_ALPHA1_FILESYSTEM_FAMILY,
-    projectorId: DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID,
+    family: DSH_ALPHA2_FILESYSTEM_FAMILY,
+    projectorId: DSH_ALPHA2_FILESYSTEM_PROJECTOR_ID,
     toolNames,
     project(execution: ToolExecution): ActionSnapshotInput {
       const value = argumentRecord(execution)
@@ -343,9 +343,9 @@ function filesystemProjector(toolNames: readonly string[]): ToolFamilyActionProj
       return {
         toolName: execution.name,
         arguments: execution.arguments,
-        projectorId: DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID,
+        projectorId: DSH_ALPHA2_FILESYSTEM_PROJECTOR_ID,
         semantics: {
-          family: DSH_ALPHA1_FILESYSTEM_FAMILY,
+          family: DSH_ALPHA2_FILESYSTEM_FAMILY,
           value: {
             operation,
             cwd,
@@ -376,8 +376,8 @@ function parseUrl(raw: string): { readonly scheme: string; readonly hostname: st
 
 function networkProjector(toolNames: readonly string[]): ToolFamilyActionProjector<ToolExecution> {
   return Object.freeze({
-    family: DSH_ALPHA1_NETWORK_FAMILY,
-    projectorId: DSH_ALPHA1_NETWORK_PROJECTOR_ID,
+    family: DSH_ALPHA2_NETWORK_FAMILY,
+    projectorId: DSH_ALPHA2_NETWORK_PROJECTOR_ID,
     toolNames,
     project(execution: ToolExecution): ActionSnapshotInput {
       const value = argumentRecord(execution)
@@ -398,8 +398,8 @@ function networkProjector(toolNames: readonly string[]): ToolFamilyActionProject
       return {
         toolName: execution.name,
         arguments: execution.arguments,
-        projectorId: DSH_ALPHA1_NETWORK_PROJECTOR_ID,
-        semantics: { family: DSH_ALPHA1_NETWORK_FAMILY, value: semantics },
+        projectorId: DSH_ALPHA2_NETWORK_PROJECTOR_ID,
+        semantics: { family: DSH_ALPHA2_NETWORK_FAMILY, value: semantics },
         requestedPermissions: Object.freeze([]),
       }
     },
@@ -408,16 +408,16 @@ function networkProjector(toolNames: readonly string[]): ToolFamilyActionProject
 
 function opaqueProjector(toolNames: readonly string[]): ToolFamilyActionProjector<ToolExecution> {
   return Object.freeze({
-    family: DSH_ALPHA1_OPAQUE_FAMILY,
-    projectorId: DSH_ALPHA1_OPAQUE_PROJECTOR_ID,
+    family: DSH_ALPHA2_OPAQUE_FAMILY,
+    projectorId: DSH_ALPHA2_OPAQUE_PROJECTOR_ID,
     toolNames,
     project(execution: ToolExecution): ActionSnapshotInput {
       argumentRecord(execution)
       return {
         toolName: execution.name,
         arguments: execution.arguments,
-        projectorId: DSH_ALPHA1_OPAQUE_PROJECTOR_ID,
-        semantics: { family: DSH_ALPHA1_OPAQUE_FAMILY, value: { operation: 'opaque' } },
+        projectorId: DSH_ALPHA2_OPAQUE_PROJECTOR_ID,
+        semantics: { family: DSH_ALPHA2_OPAQUE_FAMILY, value: { operation: 'opaque' } },
         requestedPermissions: Object.freeze([]),
       }
     },
@@ -425,11 +425,11 @@ function opaqueProjector(toolNames: readonly string[]): ToolFamilyActionProjecto
 }
 
 /** Build the loader-reachable closed registry bound to one exact catalog. */
-export function createDshAlpha1StockProjectorRegistry(
+export function createDshAlpha2StockProjectorRegistry(
   catalog: ApprovalToolCatalog,
 ): ToolFamilyActionProjectorRegistry<ToolExecution> {
-  if (catalog.argumentSemanticsId !== DSH_ALPHA1_ARGUMENT_SEMANTICS_ID) {
-    throw new TypeError(`loader stock projectors require argumentSemanticsId ${DSH_ALPHA1_ARGUMENT_SEMANTICS_ID}`)
+  if (catalog.argumentSemanticsId !== DSH_ALPHA2_ARGUMENT_SEMANTICS_ID) {
+    throw new TypeError(`loader stock projectors require argumentSemanticsId ${DSH_ALPHA2_ARGUMENT_SEMANTICS_ID}`)
   }
   const groups = {
     shell: [] as string[],

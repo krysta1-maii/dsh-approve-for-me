@@ -4,32 +4,40 @@ on:
   pull_request:
 
 jobs:
-  packed-dependencies:
+  published-host-closure:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: dsh-approve-for-me
     steps:
       - name: Checkout approve-for-me
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: dsh-approve-for-me
-      - uses: actions/setup-node@v4
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22.19.0
-      - run: corepack enable && corepack prepare pnpm@11.7.0 --activate
-      - name: Checkout exact DSH host
-        uses: actions/checkout@v4
+          node-version: 24
+      - name: Enable pinned pnpm
+        run: corepack enable && corepack prepare pnpm@11.7.0 --activate
+      # Only the approval fork is still built from host source; every other
+      # target-host package is installed from its published 0.1.2-alpha.2
+      # release through the frozen lockfile.
+      - name: Checkout pinned DeepSeek Harness for the fork build
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
+          ref: 0a53fb55bea101816fa226bb964ae2bed71c343b
           path: deepseek-harness
+          fetch-depth: 0
       # managed-agent main is not an immutable pin. The build below still
       # refuses to pack unless main exactly matches the reviewed
       # managed-agent-source.lock.json, so a main drift fails the lane instead
       # of being silently promoted into an artifact.
       - name: Checkout reviewed managed-agent source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: krysta1-maii/dsh-managed-agent
           ref: main
@@ -37,14 +45,12 @@ jobs:
       - name: Record managed source identity
         run: |
           { echo "managed_source_sha=$(git -C ../dsh-managed-agent rev-parse HEAD)"; } >> "$GITHUB_STEP_SUMMARY"
-      - run: pnpm --dir ../dsh-managed-agent run bootstrap:target-host
       - run: pnpm --dir ../dsh-managed-agent install --frozen-lockfile
       - run: pnpm --dir ../dsh-managed-agent run build
-      - run: npm run build:approval-fork
+      - run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" npm run build:approval-fork
       - run: node scripts/build-managed-artifact.mjs && cat .artifacts/managed-agent/artifact.json >> "$GITHUB_STEP_SUMMARY"
-      - run: node scripts/bootstrap-target-host.mjs
-      - name: Install run-resolved managed artifact
-        run: pnpm install --no-frozen-lockfile
+      - name: Install the published host closure and local artifacts
+        run: pnpm install --frozen-lockfile
       - run: pnpm run check
       - run: pnpm run verify:approval-fork
       - run: pnpm run package:smoke

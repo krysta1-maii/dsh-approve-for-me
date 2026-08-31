@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-31，alpha.1 基线）：精确适配 DSH `0.1.2-alpha.1`（commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`），机器决策槽 v2。本机 `node_modules` 已从本地 `target-host-artifacts.lock.json` 固定的 75 个宿主 artifact 精确安装；`npm run check` 通过 41 个测试文件、324 项测试；approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均已在本机通过。Profile smoke 验证了真实 `dsh plugin add` 安装、Cordis compose、`registerMachinePolicy()` 路径下的一次真实自动放行 side effect、`auto-then-user` 的人工拒绝兜底，以及全新进程重启后相同 effective tool catalog。
+> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包改为直接安装 npm 上已发布的 `0.1.2-alpha.2` 包（dist-tag `alpha`），可复现性由 `pnpm-lock.yaml` integrity 承担，本地 75 个 artifact 的自建流程与 `target-host-artifacts.lock.json` 已删除；`npm run check` 通过 41 个测试文件、324 项测试；approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均已在本机的 alpha.2 上通过。Profile smoke 验证了真实 `dsh plugin add` 安装、Cordis compose、`registerMachinePolicy()` 路径下的一次真实自动放行 side effect、`auto-then-user` 的人工拒绝兜底，以及全新进程重启后相同 effective tool catalog。
 >
 > 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前任何 automatic allow 仍被 branded source-verified dossier、R4 基线和 durable decision record 约束。
 
@@ -10,10 +10,10 @@
 
 `patch/dsh-user-approval/`：
 
-- `upstream.json` 锁定 `dsh-v0.1.2-alpha.1` / `cd5ef81481…`，patch version 2；
-- overlay 只含两处增量：`ApprovalRequestEvent.requestId`、`ApprovalService.registerMachinePolicy()`；
-- `build-fork.sh` 在 throwaway worktree 中重建、测试、构建、打包并写 SHA-256 sidecar；构建前强制核对上游 HEAD；
-- `.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz` 已通过 `verify:approval-fork` 与 `verify:target-host`。
+- `upstream.json` 锁定 `dsh-v0.1.2-alpha.2` / `0a53fb55be…`，patch version 2；
+- overlay 只含两处增量：`ApprovalRequestEvent.requestId`、`ApprovalService.registerMachinePolicy()`；alpha.2 上游在该包内的唯一改动（`order: 115` → `getContextOrder('APPROVAL_POLICY')`）已并入 overlay；
+- `build-fork.sh` 在 throwaway clone（`.build/upstream-clone`）中检出固定 commit 后重建、测试、构建、打包并写 SHA-256 sidecar；上游 checkout 只被读取，不再注册 worktree，HEAD 位置不影响构建；
+- `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz` 已通过 `verify:approval-fork` 与 `verify:target-host`。
 
 ### P1 机器决策槽接入（完成）
 
@@ -25,7 +25,7 @@
 
 - `src/dsh/effective-tool-catalog.ts`：每个 execution 从 exact `ctx.tools.schemas(agent)` 与 canonical `request/header.tools` 双向规范化比对，冻结一个 `DurableToolCatalogCommitmentV1`；
 - native call 要求 wire/callable schema 集合精确一致；`run_code` PTC call 绑定 root model call header，nested dispatch 继承 root catalog；
-- `src/dsh/stock-tools.ts`：alpha.1 stock 工具名与 schema 指纹的闭集审批目录 + shell/filesystem/network/opaque 语义投影；未识别工具进入 opaque 语义，永不自动授权；
+- `src/dsh/stock-tools.ts`：alpha.2 stock 工具名与 schema 指纹的闭集审批目录（`argumentSemanticsId: dsh-0.1.2-alpha.2-stock-v1`）+ shell/filesystem/network/opaque 语义投影；未识别工具进入 opaque 语义，永不自动授权；
 - 缺历史、歧义 header、late/HMR drift、schema 指纹不一致均 fail-closed；cold resume 只消费 durable commitment，不回退全局 `tools.schemas()`。
 
 ### P2 裁决管线（完成）
@@ -67,15 +67,15 @@
 ```bash
 npm run check                       # typecheck + 41 files / 324 tests + build
 npm run verify:managed-source       # sibling source tree 摘要 = reviewed lock
-npm run verify:target-host          # fork + pinned host + 宿主闭包摘要
+npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host
 npm run package:smoke               # 本插件 tarball 内容与泄漏检查
-DSH_REPO=../deepseek-harness npm run profile:artifact-smoke
+npm run profile:artifact-smoke      # 已发布 CLI + 三个部署 tarball 的一次性 Profile
 ```
 
-- 本机已用 `DSH_SKIP_BUILD=1`（只读宿主）重打包 75 个宿主包并与 `target-host-artifacts.lock.json` 逐项一致；
-- `bootstrap:target-host`/`bootstrap:managed-artifact`/`package:smoke`/`profile:artifact-smoke` 会自动解析可用 pnpm：`PNPM` env > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`（优先 `packageManager` 固定的 11.7.0）；
-- `profile:artifact-smoke` 使用临时 `DSH_HOME`，不会触碰本机正在运行的 Profile。
+- 宿主闭包不再本地重打包：`pnpm install --frozen-lockfile` 直接安装 registry 上的 `0.1.2-alpha.2`，lock 的 integrity 就是复现锚点；
+- `build:managed-artifact`/`package:smoke`/`profile:artifact-smoke` 会自动解析可用 pnpm：`PNPM` env > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`（优先 `packageManager` 固定的 11.7.0）；
+- `profile:artifact-smoke` 使用临时 `DSH_HOME` 与临时 CLI prefix，不会触碰本机正在运行的 Profile，也不需要宿主 checkout。
 
 ## 当前未执行/仍待人工
 

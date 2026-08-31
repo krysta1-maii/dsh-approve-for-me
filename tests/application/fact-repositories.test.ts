@@ -9,13 +9,13 @@ import type {
   SessionLifecycleIdentityV1,
   ToolExecutionFactRecordV1,
 } from '../../src/index.js'
-import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 const session: SessionLifecycleIdentityV1 = { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 1_000 }
 const schemas = [{ name: 'bash', description: 'shell', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
-const effective = createDshAlpha1EffectiveCatalog(schemas)
-const commitment = createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas)
+const effective = createDshAlpha2EffectiveCatalog(schemas)
+const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
 
 function executionFact(): ToolExecutionFactRecordV1 {
   return {

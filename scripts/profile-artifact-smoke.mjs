@@ -16,18 +16,18 @@ import { basename, join, resolve } from 'node:path'
 import { pnpmShellInvocation, runPnpm } from './lib/pnpm.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
-const dshRepo = resolve(process.env.DSH_REPO ?? join(root, '../deepseek-harness'))
+const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/upstream.json'), 'utf8'))
+const hostVersion = upstream.upstreamVersion
 const managedArtifactDir = resolve(process.env.MANAGED_AGENT_ARTIFACT_DIR ?? join(root, '.artifacts/managed-agent'))
 const managedArtifactManifest = join(managedArtifactDir, 'artifact.json')
 const forkTarball = resolve(process.env.APPROVAL_FORK_TARBALL
-  ?? join(root, '.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz'))
+  ?? join(root, `.build/dsh-user-approval-afm-${hostVersion}.tgz`))
 const output = resolve(process.env.PROFILE_SMOKE_OUTPUT ?? join(root, '.build/profile-smoke'))
-const cli = join(dshRepo, 'apps/cli/lib/bin.js')
-const expectedHost = 'cd5ef8148158c3a752a658978873241fdf8e2bbc'
 const profile = 'approve-for-me-artifact-smoke'
 const temp = mkdtempSync(join(tmpdir(), 'dsh-approve-profile-'))
 const dshHome = join(temp, 'home')
 const shimDir = join(temp, 'bin')
+const cliPrefix = join(temp, 'cli')
 const marker = join(output, 'boot-probe.json')
 const restartMarker = join(output, 'boot-probe-restart.json')
 let completed = false
@@ -54,12 +54,30 @@ function onlyTarball(directory, prefix) {
   return matches[0]
 }
 
-try {
-  const hostCommit = run('git', ['rev-parse', 'HEAD'], { cwd: dshRepo, capture: true }).trim()
-  if (hostCommit !== expectedHost) {
-    throw new Error(`target Host is ${hostCommit}; expected ${expectedHost}`)
+/**
+ * Materialize the published target Host CLI in a disposable prefix. The plugin
+ * is verified against the SAME artifacts a deployment installs, so the smoke
+ * needs no harness checkout and never builds or mutates one.
+ */
+function installTargetCli() {
+  mkdirSync(cliPrefix, { recursive: true })
+  writeFileSync(join(cliPrefix, 'package.json'), `${JSON.stringify({
+    name: 'dsh-approve-for-me-profile-smoke-cli',
+    private: true,
+    version: '0.0.0',
+    dependencies: { '@deepseek-ai/dsh': hostVersion },
+  }, null, 2)}\n`)
+  runPnpm(['install', '--config.ignore-scripts=true'], { cwd: cliPrefix, stdio: 'inherit' })
+  const cli = join(cliPrefix, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
+  if (!existsSync(cli)) throw new Error(`published @deepseek-ai/dsh@${hostVersion} has no lib/bin.js`)
+  const manifest = JSON.parse(readFileSync(join(cliPrefix, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8'))
+  if (manifest.version !== hostVersion) {
+    throw new Error(`installed CLI is ${manifest.version}; expected ${hostVersion}`)
   }
-  if (!existsSync(cli)) throw new Error(`built DSH CLI is missing at ${cli}`)
+  return cli
+}
+
+try {
   if (!existsSync(forkTarball)) throw new Error(`approval fork tarball is missing at ${forkTarball}`)
   if (!existsSync(managedArtifactManifest)) throw new Error(`managed-agent artifact manifest is missing at ${managedArtifactManifest}`)
   const managedManifest = JSON.parse(readFileSync(managedArtifactManifest, 'utf8'))
@@ -81,6 +99,8 @@ try {
   const pnpmShim = join(shimDir, 'pnpm')
   writeFileSync(pnpmShim, `#!/bin/sh\nexec ${pnpmShellInvocation()} "$@"\n`)
   chmodSync(pnpmShim, 0o755)
+
+  const cli = installTargetCli()
 
   copyFileSync(materializedManagedTarball, join(output, basename(materializedManagedTarball)))
   copyFileSync(managedArtifactManifest, join(output, 'managed-agent-artifact.json'))
@@ -107,7 +127,7 @@ try {
     managedTarball,
     approveTarball,
     probeTarball,
-  ], { cwd: dshRepo, env })
+  ], { cwd: temp, env })
 
   const profileDir = join(dshHome, 'profiles', profile)
   const profileManifest = join(profileDir, 'package.json')
@@ -116,7 +136,7 @@ try {
 
   const dump = run(process.execPath, [
     cli, '--profile', profile, '--dump-config',
-  ], { cwd: dshRepo, env, capture: true })
+  ], { cwd: temp, env, capture: true })
   for (const required of ['managed-agent-host', 'dsh-approve-for-me', 'dsh-approve-for-me-profile-probe']) {
     if (!dump.includes(required)) throw new Error(`composed Profile is missing ${required}`)
   }
@@ -125,9 +145,9 @@ try {
   const boot = (markerPath, phase) => {
     rmSync(markerPath, { force: true })
     run(process.execPath, [cli, '--profile', profile], {
-      cwd: dshRepo,
+      cwd: temp,
       env: { ...env, DSH_APPROVE_FOR_ME_PROFILE_PROBE: markerPath },
-      timeout: 30_000,
+      timeout: 60_000,
     })
     if (!existsSync(markerPath)) throw new Error(`${phase} Profile boot exited without the injected probe marker`)
     const probe = JSON.parse(readFileSync(markerPath, 'utf8'))
@@ -162,7 +182,7 @@ try {
   copyFileSync(profileManifest, join(output, 'profile-package.json'))
   copyFileSync(join(profileDir, 'pnpm-lock.yaml'), join(output, 'profile-pnpm-lock.yaml'))
   copyFileSync(userPatch, join(output, 'profile-cordis.patch.yml'))
-  console.log(`PASS exact-host artifact Profile install + cold-restart smoke (${probe.toolCount} effective tools)`)
+  console.log(`PASS published-host artifact Profile install + cold-restart smoke (${probe.toolCount} effective tools)`)
   console.log(`Artifacts: ${output}`)
   completed = true
 } finally {

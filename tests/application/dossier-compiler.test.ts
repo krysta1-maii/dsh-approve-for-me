@@ -13,7 +13,7 @@ import type {
   GuardianDossierCompilerDependencies,
   ParentSessionFactSnapshotV1,
 } from '../../src/index.js'
-import { createDshAlpha1CatalogCommitment } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2CatalogCommitment } from '../../src/dsh/effective-tool-catalog.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 
@@ -59,7 +59,7 @@ function commitment() {
     }],
   }
   const approval = { ...unsealedApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedApproval)! }
-  return createDshAlpha1CatalogCommitment({ schemas: headerTools, approval, dossier: catalog() }, 'native', 3, headerTools)
+  return createDshAlpha2CatalogCommitment({ schemas: headerTools, approval, dossier: catalog() }, 'native', 3, headerTools)
 }
 
 function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSessionFactSnapshotV1 {
@@ -414,7 +414,7 @@ describe('DefaultDossierCompiler', () => {
       }],
     }
     const delegationApproval = { ...unsealedDelegationApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedDelegationApproval)! }
-    const delegationCommitment = createDshAlpha1CatalogCommitment(
+    const delegationCommitment = createDshAlpha2CatalogCommitment(
       { schemas: [...headerTools, subagentSchema], approval: delegationApproval, dossier: delegationCatalog },
       'native', 3, [...headerTools, subagentSchema],
     )
@@ -1063,7 +1063,7 @@ describe('DefaultDossierCompiler', () => {
     const unsealedCatalog = {
       version: 1 as const,
       eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
-      argumentSemanticsId: 'dsh-0.1.2-alpha.1-stock-v1',
+      argumentSemanticsId: 'dsh-0.1.2-alpha.2-stock-v1',
       fingerprint: '',
       descriptors: [
         { classification: 'ordinary' as const, toolName: 'run_code', toolSchemaFingerprint: runCodeFingerprint, classificationId: 'stock/run-code' },
@@ -1084,7 +1084,7 @@ describe('DefaultDossierCompiler', () => {
       })),
     }
     const codeApproval = { ...unsealedApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedApproval)! }
-    const ptcCommitment = createDshAlpha1CatalogCommitment(
+    const ptcCommitment = createDshAlpha2CatalogCommitment(
       { schemas: [runCodeSchema, headerTools[0]!], approval: codeApproval, dossier: codeCatalog },
       'ptc', 3, [runCodeSchema],
     )

@@ -14,17 +14,23 @@ on:
 jobs:
   build-and-verify-fork:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check out approve-for-me
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: dsh-approve-for-me
+      # The fork is the only artifact still built from host source. Tags are
+      # required: verify-target-host asserts the exact release tag, and a
+      # shallow checkout would not carry it.
       - name: Check out pinned DeepSeek Harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
+          ref: 0a53fb55bea101816fa226bb964ae2bed71c343b
           path: deepseek-harness
+          fetch-depth: 0
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -33,19 +39,16 @@ jobs:
           cache-dependency-path: deepseek-harness/pnpm-lock.yaml
       - name: Enable pinned pnpm
         run: corepack enable
-      - name: Install target host dependencies
-        working-directory: deepseek-harness
-        run: pnpm install --frozen-lockfile
       - name: Build and test patched fork
         working-directory: dsh-approve-for-me
         run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" npm run build:approval-fork
       - name: Verify target host and artifact
         working-directory: dsh-approve-for-me
-        run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" node patch/dsh-user-approval/scripts/verify-target-host.mjs "$GITHUB_WORKSPACE/deepseek-harness" .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz patch/dsh-user-approval/upstream.json
+        run: node patch/dsh-user-approval/scripts/verify-target-host.mjs "$GITHUB_WORKSPACE/deepseek-harness" .build/dsh-user-approval-afm-0.1.2-alpha.2.tgz patch/dsh-user-approval/upstream.json
       - name: Upload verified fork
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dsh-user-approval-afm-0.1.2-alpha.1
+          name: dsh-user-approval-afm-0.1.2-alpha.2
           path: |
-            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
-            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz.sha256
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz.sha256

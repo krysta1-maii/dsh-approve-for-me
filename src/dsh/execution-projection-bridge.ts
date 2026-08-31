@@ -4,7 +4,7 @@ import { createActionSnapshot, hashAction } from '../domain/protocol.js'
 import { canonicalJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type { ApprovalSnapshotRecordV1, DelegationReceiptFactRecordV1, PrincipalDelegationReceiptV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
-import type { DshAlpha1EffectiveCatalog } from './effective-tool-catalog.js'
+import type { DshAlpha2EffectiveCatalog } from './effective-tool-catalog.js'
 import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
 
@@ -131,7 +131,7 @@ export class DshExecutionFactProjectionBridge {
 
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
-    private readonly catalogSource: (exec: ToolExecution) => DshAlpha1EffectiveCatalog | undefined,
+    private readonly catalogSource: (exec: ToolExecution) => DshAlpha2EffectiveCatalog | undefined,
     private readonly repository: ExecutionFactRepository,
     private readonly approvals?: ApprovalSnapshotRepository,
     /** Reuse the exact volatile projection when capture and fact bridging share one. */

@@ -241,24 +241,24 @@ export {
 } from './dsh/action-capture.js'
 export type { CaptureBridge, FilesystemToolNames, NetworkToolNames } from './dsh/action-capture.js'
 export {
-  DSH_ALPHA1_ARGUMENT_SEMANTICS_ID,
-  DSH_ALPHA1_FILESYSTEM_FAMILY,
-  DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID,
-  DSH_ALPHA1_NETWORK_FAMILY,
-  DSH_ALPHA1_NETWORK_PROJECTOR_ID,
-  DSH_ALPHA1_OPAQUE_FAMILY,
-  DSH_ALPHA1_OPAQUE_PROJECTOR_ID,
-  DSH_ALPHA1_SHELL_FAMILY,
-  DSH_ALPHA1_SHELL_PROJECTOR_ID,
-  createDshAlpha1DossierCatalog,
-  createDshAlpha1StockProjectorRegistry,
-  createDshAlpha1StockToolCatalog,
+  DSH_ALPHA2_ARGUMENT_SEMANTICS_ID,
+  DSH_ALPHA2_FILESYSTEM_FAMILY,
+  DSH_ALPHA2_FILESYSTEM_PROJECTOR_ID,
+  DSH_ALPHA2_NETWORK_FAMILY,
+  DSH_ALPHA2_NETWORK_PROJECTOR_ID,
+  DSH_ALPHA2_OPAQUE_FAMILY,
+  DSH_ALPHA2_OPAQUE_PROJECTOR_ID,
+  DSH_ALPHA2_SHELL_FAMILY,
+  DSH_ALPHA2_SHELL_PROJECTOR_ID,
+  createDshAlpha2DossierCatalog,
+  createDshAlpha2StockProjectorRegistry,
+  createDshAlpha2StockToolCatalog,
 } from './dsh/stock-tools.js'
 export {
   DshScopedEffectiveCatalogResolver,
-  createDshAlpha1EffectiveCatalog,
+  createDshAlpha2EffectiveCatalog,
 } from './dsh/effective-tool-catalog.js'
-export type { DshAlpha1EffectiveCatalog, ScopedToolSchemas } from './dsh/effective-tool-catalog.js'
+export type { DshAlpha2EffectiveCatalog, ScopedToolSchemas } from './dsh/effective-tool-catalog.js'
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'

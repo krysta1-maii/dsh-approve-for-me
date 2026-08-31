@@ -8,12 +8,12 @@ import {
   hashAction,
 } from '../../src/index.js'
 import type { ApprovalSnapshotRecordV1, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV1 } from '../../src/index.js'
-import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 const session: SessionLifecycleIdentityV1 = { sessionId: 'parent-1', sessionFormatVersion: 1, createdAt: 1_000, cwd: '/workspace' }
 const schemas = [{ name: 'bash', description: 'shell', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
-const effective = createDshAlpha1EffectiveCatalog(schemas)
-const commitment = createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas)
+const effective = createDshAlpha2EffectiveCatalog(schemas)
+const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
 const executionAction = createActionSnapshot({
   toolName: 'bash',
   arguments: { command: 'pwd' },

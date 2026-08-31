@@ -1,6 +1,6 @@
-# DSH 0.1.2-alpha.1 artifact 集成与验收
+# DSH 0.1.2-alpha.2 artifact 集成与验收
 
-> 当前实现基线：精确宿主 `dsh-v0.1.2-alpha.1` / `cd5ef8148158c3a752a658978873241fdf8e2bbc`，alpha.1 检查点为 41 个测试文件、324 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 41 个测试文件、324 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -9,7 +9,7 @@
 部署由四组 artifact 组成：
 
 ```text
-精确 DSH 0.1.2-alpha.1 源码闭包 tarballs
+已发布的 DSH 0.1.2-alpha.2 npm 依赖闭包（dist-tag alpha）
 + @deepseek-ai/dsh-user-approval fork tarball
 + dsh-managed-agent tarball
 + dsh-approve-for-me tarball
@@ -17,25 +17,25 @@
 
 硬约束：
 
-1. `deepseek-harness` 必须位于 commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`，版本必须为 `0.1.2-alpha.1`。
-2. `target-host-artifacts.lock.json` 固定宿主闭包每个包的名称、版本、文件名与 SHA-256；普通 bootstrap 只验证，不更新 lock。
-3. `@deepseek-ai/dsh-user-approval` fork 固定 `patch/dsh-user-approval/upstream.json` 中同一 tag/commit 和 patch version；保留上游 package name/version，必须携带 `dshApprovalPatch`。
-4. fork 构建在 throwaway upstream worktree 中进行，overlay、测试、编译、打包、marker/API 校验及 SHA-256 sidecar 必须全部成功；构建补充依赖使用精确版本。
+1. 目标宿主为 `0.1.2-alpha.2`（tag `dsh-v0.1.2-alpha.2`、commit `0a53fb55bea101816fa226bb964ae2bed71c343b`）。除 approval fork 外，宿主闭包及其 vendor（`@deepseek-ai/cordis` 4.0.2、`@deepseek-ai/schemastery` 3.18.2）全部作为普通 npm 依赖固定在该版本上。
+2. `pnpm-lock.yaml` 的 integrity 摘要是依赖闭包的复现锚点：安装只用 `pnpm install --frozen-lockfile`，不重新解析版本；lockfile 的 diff 就是供应链变更审查面。
+3. `@deepseek-ai/dsh-user-approval` fork 固定 `patch/dsh-user-approval/upstream.json` 中同一 tag/commit 和 patch version；保留上游 package name/version，必须携带 `dshApprovalPatch`；`pnpm-workspace.yaml` 的 overrides 把该包解析到 `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz`。
+4. fork 构建在一次性上游 clone（`.build/upstream-clone`）中进行，上游 checkout 只被读取；overlay、测试、编译、打包、marker/API 校验及 SHA-256 sidecar 必须全部成功；构建补充依赖使用精确版本。
 5. `dsh-managed-agent` 作为独立 artifact 先于本插件挂载。其 `artifact.json` 必须记录已审查 source commit、`dirty: false` 和 tarball SHA-256。
 6. 本插件 package 不内嵌 approval fork；目标 Profile 必须显式安装 fork、managed-agent 和 approve-for-me 三个 tarball。
 7. Profile 中解析到同版本官方 approval 包、错误宿主闭包、dirty managed artifact 或摘要不符时均不得继续发布。
 
-## 2. Source-artifact bootstrap
+## 2. 依赖 bootstrap
 
 预期 sibling 布局：
 
 ```text
-../deepseek-harness
+../deepseek-harness      # 只需包含锁定 commit，HEAD 可指向任意位置
 ../dsh-managed-agent
 ../dsh-approve-for-me
 ```
 
-从已审查源码生成完整本地安装图：
+生成本地 artifact 并安装完整依赖图：
 
 ```bash
 cd ../dsh-approve-for-me
@@ -47,18 +47,11 @@ npm run bootstrap:dependencies
 
 该命令依次执行：
 
-1. `build:approval-fork`：从 exact host commit 生成 `.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz`，执行 overlay 测试/构建/校验并写 SHA-256 sidecar；
+1. `build:approval-fork`：在一次性 clone 中 detach 到锁定 commit，生成 `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz`，执行 overlay 测试/构建/校验并写 SHA-256 sidecar；
 2. `build:managed-artifact`：pack sibling managed-agent，检查 runtime、types、Cordis patch，并写 source/digest manifest；
-3. `bootstrap:target-host`：安装并构建 exact host，收集依赖闭包 tarballs，与 `target-host-artifacts.lock.json` 逐项比对；
-4. `pnpm install --frozen-lockfile`：只从已生成的本地 artifacts 解析 alpha.1 依赖图。
+3. `pnpm install --frozen-lockfile`：按 `pnpm-lock.yaml` 的 integrity 从 npm 安装 `0.1.2-alpha.2` 宿主闭包，并用 workspace overrides 把 `@deepseek-ai/dsh-user-approval` 解析到本地 fork tarball、`dsh-managed-agent` 解析到已 materialize 的 artifact。
 
-维护者只有在有意审查并接受一套新的 artifact bytes 时，才运行：
-
-```bash
-DSH_REPO=../deepseek-harness npm run bootstrap:target-host:refresh
-```
-
-该命令会更新 package artifact 引用、workspace overrides 和 `target-host-artifacts.lock.json`，其 diff 必须作为供应链变更审查。
+升级目标宿主版本时：同步更新 peer/dev 依赖的版本、`patch/dsh-user-approval/upstream.json` 的 tag/commit/version 与 workspace overrides，重跑上述 bootstrap，并把 `pnpm-lock.yaml` 的 diff 作为供应链变更审查。
 
 ## 3. 构建、测试与 package 验证
 
@@ -66,9 +59,10 @@ DSH_REPO=../deepseek-harness npm run bootstrap:target-host:refresh
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# alpha.1 实现检查点：41 files / 324 tests
+# alpha.2 实现检查点：41 files / 324 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
+# 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
 npm run verify:installed-target-host
 
 # fork 独立校验
@@ -170,13 +164,12 @@ session never
 运行：
 
 ```bash
-DSH_REPO=../deepseek-harness \
 npm run profile:artifact-smoke
 ```
 
 `profile:artifact-smoke` 默认消费 `.artifacts/managed-agent/artifact.json` 中已 materialize 的 managed tarball；需要用另一份已安装 artifact 时再设置 `MANAGED_AGENT_ARTIFACT_DIR`。脚本会自行解析可用的 pnpm（`PNPM` 环境变量 > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`），无需预先激活 corepack。
 
-脚本使用真实 alpha.1 CLI 和临时 `DSH_HOME`：
+脚本把已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
 
 1. pack managed-agent、本插件和 probe；
 2. 复制已验证 approval fork；
@@ -186,7 +179,8 @@ npm run profile:artifact-smoke
 6. 真正启动一次 Profile；
 7. 从 Profile package anchor 验证精确依赖闭包、fork marker 与 machine-policy API；
 8. probe 验证 managedAgents create/renew/provider API、approval machine policy 和非空 Host tool catalog；
-9. 保存 boot probe、composed config、Profile package.json、pnpm lock 和 Cordis patch 到 `.build/profile-smoke/`。
+9. 从同一已安装 Profile 冷启动第二个 Host 进程，要求 probe 再次通过且 effective tool catalog 与首次完全一致；
+10. 保存两次 boot probe、composed config、Profile package.json、pnpm lock 和 Cordis patch 到 `.build/profile-smoke/`。
 
 ### 自动 smoke 通过时证明
 
@@ -194,14 +188,15 @@ npm run profile:artifact-smoke
 - Profile package/lock 可生成；
 - Cordis loader 能 compose 并启动这些 artifact；
 - Profile 内解析到 patched approval，而不是源码 checkout 的偶然依赖；
-- managed service、machine-policy API 和 Host tools 服务在真实 boot 时可达。
+- managed service、machine-policy API 和 Host tools 服务在真实 boot 时可达；
+- 同一 Profile 可由全新 Host 进程再次启动，且暴露相同的 effective tool catalog。
 
 ### 自动 smoke 未证明
 
 - 浏览器中官方 approval panel 的展示、点击和恢复；
 - 真实 LLM provider/model 能完成 Guardian allow/deny/human_review；
 - 真实工具执行前后的副作用阻断；
-- 进程被完全终止并重新启动后的 cold-resume；
+- pending approval、Reviewer child 与 Storage 状态在进程终止后的 cold-resume（smoke 只覆盖同一 Profile 的空载冷启动）；
 - 浏览器刷新、网络断开、并发卸载或存储故障下的完整行为；
 - scoped/restricted Agent 的每条运行时组合。后者由组件/集成测试覆盖，但仍应纳入真实 E2E。
 
@@ -222,7 +217,7 @@ npm run profile:artifact-smoke
 
 ### 10.1 自动 artifact 集成通过
 
-- exact host/source artifact lock 可复现；
+- 已发布宿主闭包按 `pnpm-lock.yaml` integrity 可复现，approval fork 可从锁定 commit 重建；
 - approval fork 与 managed artifact 身份/摘要通过；
 - frozen install、typecheck、tests、build、package smoke 通过；
 - disposable Profile artifact smoke 通过并产出可审查证据。

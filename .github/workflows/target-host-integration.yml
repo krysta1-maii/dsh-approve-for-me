@@ -1,4 +1,4 @@
-name: DSH 0.1.2-alpha.1 integration
+name: DSH 0.1.2-alpha.2 integration
 
 on:
   pull_request:
@@ -19,12 +19,15 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: dsh-approve-for-me
+      # Host source is needed only to rebuild the approval fork; the rest of
+      # the target closure comes from the published 0.1.2-alpha.2 packages.
       - name: Check out pinned DeepSeek Harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
+          ref: 0a53fb55bea101816fa226bb964ae2bed71c343b
           path: deepseek-harness
+          fetch-depth: 0
       - name: Check out managed-agent
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -37,7 +40,6 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: |
-            deepseek-harness/pnpm-lock.yaml
             dsh-managed-agent/pnpm-lock.yaml
             dsh-approve-for-me/pnpm-lock.yaml
       - name: Enable pinned pnpm
@@ -47,31 +49,22 @@ jobs:
         env:
           MANAGED_AGENT_SOURCE: ${{ github.workspace }}/dsh-managed-agent
         run: node scripts/verify-managed-agent-source.mjs
-      - name: Install exact target host
-        working-directory: deepseek-harness
-        run: pnpm install --frozen-lockfile
-      - name: Build target host contracts
-        working-directory: deepseek-harness
-        run: |
-          pnpm run build:lib:host
-          pnpm exec tsc -b tsconfig.client.json
-      - name: Build approval fork from pinned host
+      - name: Build approval fork from pinned host source
         working-directory: dsh-approve-for-me
         run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" npm run build:approval-fork
-      - name: Verify managed-agent against target host
+      - name: Verify the fork against the pinned host identity
+        working-directory: dsh-approve-for-me
+        run: node patch/dsh-user-approval/scripts/verify-target-host.mjs "$GITHUB_WORKSPACE/deepseek-harness" .build/dsh-user-approval-afm-0.1.2-alpha.2.tgz patch/dsh-user-approval/upstream.json
+      - name: Verify managed-agent against the published host
         working-directory: dsh-managed-agent
         run: |
           pnpm install --frozen-lockfile
           pnpm run check
-      - name: Materialize reviewed target-host artifacts
+      - name: Materialize the reviewed managed-agent artifact
         working-directory: dsh-approve-for-me
         env:
-          DSH_REPO: ${{ github.workspace }}/deepseek-harness
-          DSH_SKIP_BUILD: "1"
           MANAGED_AGENT_SOURCE: ${{ github.workspace }}/dsh-managed-agent
-        run: |
-          pnpm run bootstrap:target-host
-          pnpm run build:managed-artifact
+        run: pnpm run build:managed-artifact
       - name: Install approve-for-me exact closure
         working-directory: dsh-approve-for-me
         run: pnpm install --frozen-lockfile
@@ -85,10 +78,8 @@ jobs:
         run: |
           pnpm run check
           npm pack --dry-run --json > .build/npm-pack-dry-run.json
-      - name: Verify exact artifact Profile install and restart
+      - name: Verify published-artifact Profile install and restart
         working-directory: dsh-approve-for-me
-        env:
-          DSH_REPO: ${{ github.workspace }}/deepseek-harness
         run: pnpm run profile:artifact-smoke
       - name: Upload verification artifacts
         if: always()
@@ -96,8 +87,8 @@ jobs:
         with:
           name: dsh-approve-for-me-target-host
           path: |
-            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
-            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz.sha256
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz.sha256
             dsh-approve-for-me/.build/npm-pack-dry-run.json
             dsh-approve-for-me/.artifacts/managed-agent/artifact.json
             dsh-approve-for-me/.build/profile-smoke/

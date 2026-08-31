@@ -10,7 +10,7 @@ import {
   fingerprintApprovalToolCatalogV1,
   createFilesystemActionProjector,
   createShellProcessActionProjector,
-  createDshAlpha1StockToolCatalog,
+  createDshAlpha2StockToolCatalog,
   ToolFamilyActionProjectorRegistry,
   installApproveForMe,
   parseApprovalReviewRequest,
@@ -327,7 +327,7 @@ describe('installApproveForMe composition root', () => {
       { name: 'bash', description: 'Execute a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
       { name: 'read', description: 'Read a text file', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } },
     ]
-    const stockCatalog = createDshAlpha1StockToolCatalog(stockSchemas)
+    const stockCatalog = createDshAlpha2StockToolCatalog(stockSchemas)
     expect(stockCatalog.descriptors).toHaveLength(2)
     const loader = Object.create(Loader.prototype) as Loader
     const unwrapped = loader.unwrapExports(approveForMe) as typeof approveForMe

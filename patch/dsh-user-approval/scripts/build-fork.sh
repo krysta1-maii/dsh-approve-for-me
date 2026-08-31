@@ -7,10 +7,10 @@
 # replacement for the official package at the pinned upstream commit.
 #
 # Prerequisites:
-#   - a checkout of deepseek-harness at the pinned commit (default: sibling
-#     directory ../../deepseek-harness relative to the repository root)
-#   - pnpm available (the patched sources are built in a throwaway upstream
-#     worktree so your checkout stays clean)
+#   - a checkout of deepseek-harness CONTAINING the pinned commit (default:
+#     sibling directory ../../deepseek-harness relative to the repository root)
+#   - pnpm available (the patched sources are built in a throwaway local CLONE
+#     of that checkout, so the upstream repository is only ever read)
 #
 # Usage:
 #   DSH_REPO=/path/to/deepseek-harness ./build-fork.sh
@@ -24,7 +24,7 @@ UPSTREAM_JSON="${PATCH_DIR}/upstream.json"
 UPSTREAM_REPO="${DSH_REPO:-${REPO_ROOT}/../deepseek-harness}"
 BUILD_ROOT="${REPO_ROOT}/.build"
 BUILD_DIR="${BUILD_ROOT}/dsh-user-approval-afm"
-WORKTREE_DIR="${BUILD_ROOT}/upstream-worktree"
+CLONE_DIR="${BUILD_ROOT}/upstream-clone"
 PKG_PATH="packages/interaction/user-approval"
 
 PACKAGE_NAME="$(node -p "require('${UPSTREAM_JSON}').packageName")"
@@ -83,42 +83,45 @@ if [[ ! -d "${UPSTREAM_REPO}/.git" ]]; then
   exit 2
 fi
 
-ACTUAL_COMMIT="$(git -C "${UPSTREAM_REPO}" rev-parse HEAD)"
 # The patch is tied to one immutable upstream commit. A shortened SHA would
-# accept a collision and undermine reproducible fork builds.
-if [[ "${ACTUAL_COMMIT}" != "${UPSTREAM_COMMIT}" ]]; then
-  echo "error: upstream HEAD is ${ACTUAL_COMMIT}, expected ${UPSTREAM_COMMIT}" >&2
+# accept a collision and undermine reproducible fork builds. The upstream
+# checkout only has to CONTAIN that commit: the build clones it and checks the
+# exact object out, so a moved upstream HEAD neither blocks nor changes it.
+if ! git -C "${UPSTREAM_REPO}" cat-file -e "${UPSTREAM_COMMIT}^{commit}" 2>/dev/null; then
+  echo "error: upstream checkout ${UPSTREAM_REPO} does not contain ${UPSTREAM_COMMIT}" >&2
   exit 2
 fi
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
-# Build from a throwaway worktree at the pinned commit; the caller's checkout
-# is never modified.
-worktree_cleanup() {
-  git -C "${UPSTREAM_REPO}" worktree remove --force "${WORKTREE_DIR}" 2>/dev/null || true
+# Build from a throwaway CLONE at the pinned commit. `git clone` only reads the
+# upstream checkout (no worktree registration, no index or config writes), so
+# the official repository is never modified by this build.
+clone_cleanup() {
+  rm -rf "${CLONE_DIR}"
 }
-trap worktree_cleanup EXIT
+trap clone_cleanup EXIT
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  echo "==> creating throwaway upstream worktree"
-  git -C "${UPSTREAM_REPO}" worktree remove --force "${WORKTREE_DIR}" 2>/dev/null || true
-  git -C "${UPSTREAM_REPO}" worktree add --detach "${WORKTREE_DIR}" "${UPSTREAM_COMMIT}"
+  echo "==> creating throwaway upstream clone"
+  rm -rf "${CLONE_DIR}"
+  git clone --quiet --no-checkout --no-tags "${UPSTREAM_REPO}" "${CLONE_DIR}"
+  git -C "${CLONE_DIR}" checkout --quiet --detach "${UPSTREAM_COMMIT}"
 
-  # A fresh `git worktree` does not carry the repo's ignored node_modules. The
+  # A fresh clone does not carry the repo's ignored node_modules. The
   # 0.1.2 monorepo builds packages through the root aggregate (`build:lib:host`),
   # so install the workspace once before compiling the patched package.
   # pnpm treats the `vendor/CLAUDE.md -> AGENTS.md` symlink as a workspace
   # package and fails with ENOTDIR in a fresh checkout; it is only a doc
-  # alias, so remove it from this throwaway worktree before installing.
-  rm -f "${WORKTREE_DIR}/vendor/CLAUDE.md"
-  if [[ ! -d "${WORKTREE_DIR}/node_modules" ]]; then
-    echo "==> installing upstream workspace dependencies in throwaway worktree"
+  # alias, so remove it from this throwaway clone before installing.
+  rm -f "${CLONE_DIR}/vendor/CLAUDE.md"
+  if [[ ! -d "${CLONE_DIR}/node_modules" ]]; then
+    echo "==> installing upstream workspace dependencies in throwaway clone"
     (
-      cd "${WORKTREE_DIR}"
+      cd "${CLONE_DIR}"
       if [[ -f pnpm-lock.yaml ]]; then
-        # The throwaway worktree cannot inherit the upstream worktree-local
+        # The throwaway clone cannot inherit the upstream repository-local
         # hooks configuration. Dependency lifecycle scripts are irrelevant to
         # compiling this TypeScript package, so never let host hook install
         # mutate/reject this isolated build.
@@ -129,34 +132,34 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     )
   fi
 
-  echo "==> applying overlay into worktree"
-  PKG_DIR="${WORKTREE_DIR}/${PKG_PATH}"
+  echo "==> applying overlay into clone"
+  PKG_DIR="${CLONE_DIR}/${PKG_PATH}"
   cp "${PATCH_DIR}/overlay/src/index.ts" "${PKG_DIR}/src/index.ts"
   cp "${PATCH_DIR}/overlay/src/types.ts" "${PKG_DIR}/src/types.ts"
   cp "${PATCH_DIR}/overlay/src/invariant.ts" "${PKG_DIR}/src/invariant.ts"
   mkdir -p "${PKG_DIR}/tests"
   cp "${PATCH_DIR}/overlay/tests/approval-machine-policy.spec.ts" "${PKG_DIR}/tests/approval-machine-policy.spec.ts"
 
-  echo "==> marking package.json in worktree"
+  echo "==> marking package.json in clone"
   node "${PATCH_DIR}/scripts/mark-package.mjs" "${PKG_DIR}/package.json" "${UPSTREAM_JSON}"
 
   echo "==> testing patched source overlay"
   (
-    cd "${WORKTREE_DIR}"
+    cd "${CLONE_DIR}"
     # Invoke the installed binary directly. `pnpm exec` performs a workspace
     # dependency-status install after the overlay changes package metadata,
-    # which would re-run the upstream worktree hook scripts.
+    # which would re-run the upstream clone hook scripts.
     node node_modules/vitest/vitest.mjs run "${PKG_PATH}/tests/approval-machine-policy.spec.ts"
   )
 
   echo "==> rebuilding patched package lib/ from sources"
   (
-    cd "${WORKTREE_DIR}"
+    cd "${CLONE_DIR}"
     # The 0.1.2 package has no npm build script, but it does ship a package
     # tsdown config and a project tsconfig. Build only this package rather
     # than the whole host aggregate: `tsc -b` emits lib/types and the package
     # tsdown requires an optional loader absent from the upstream lock. Install
-    # the complete loader edge at exact versions into this throwaway worktree;
+    # the complete loader edge at exact versions into this throwaway clone;
     # do not mutate package.json or pnpm-lock.yaml.
     run_pnpm add -Dw --ignore-scripts \
       unrun@0.3.1 rolldown@1.1.1 synckit@0.11.12
@@ -175,7 +178,7 @@ EOF
     rm -f .afm-tsdown.config.mjs
   )
 
-  echo "==> copying built package out of the worktree"
+  echo "==> copying built package out of the clone"
   cp -R "${PKG_DIR}/." "${BUILD_DIR}/"
 else
   echo "error: SKIP_BUILD=1 cannot produce a verifiable fork; build patched sources instead" >&2
@@ -185,8 +188,8 @@ fi
 echo "==> packing"
 # pnpm rewrites `workspace:^` ranges only when packing from inside the
 # workspace that installed those dependencies; always pack from the verified
-# patched worktree package. SKIP_BUILD is intentionally rejected above.
-PACK_SOURCE="${WORKTREE_DIR}/${PKG_PATH}"
+# patched clone package. SKIP_BUILD is intentionally rejected above.
+PACK_SOURCE="${CLONE_DIR}/${PKG_PATH}"
 (
   cd "${PACK_SOURCE}"
   run_pnpm pack --pack-destination "${BUILD_ROOT}"
