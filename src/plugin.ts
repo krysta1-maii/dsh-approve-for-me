@@ -399,35 +399,43 @@ export async function apply(ctx: Context, config: ApproveForMeConfig): Promise<v
   const normalized = normalizeConfig(config)
   let topologyGeneration = 0
   let active: ApproveForMePlugin | undefined
-  const stopTopology = ctx.on('llm/adapters-updated', () => {
-    topologyGeneration += 1
+  let disposed = false
+  let transition: Promise<void> = Promise.resolve()
+
+  const reconcile = (): Promise<void> => {
+    const requestedGeneration = ++topologyGeneration
     const invalidated = active
     active = undefined
-    // Topology drift revokes the machine policy synchronously at the start of
-    // dispose(). A loader reload is required before automatic review can resume.
-    if (invalidated !== undefined) void invalidated.dispose().catch(() => {})
-  })
-  const validatedGeneration = topologyGeneration
-  try {
-    await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
-    if (topologyGeneration !== validatedGeneration) {
-      throw new Error('DSH provider/model topology changed while validating the Guardian route')
-    }
-  } catch (error) {
-    stopTopology()
-    throw error
+    // dispose() revokes the machine policy synchronously before its first
+    // await. No catalog transition can leave an old policy armed.
+    const revoke = invalidated?.dispose().catch(() => {}) ?? Promise.resolve()
+    transition = Promise.allSettled([transition, revoke]).then(async () => {
+      if (disposed || requestedGeneration !== topologyGeneration) return
+      try {
+        await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
+      } catch {
+        // A missing, ambiguous, or stale route is non-authorizing. A later
+        // adapters-updated event retries against the fresh DSH catalogs.
+        return
+      }
+      if (disposed || requestedGeneration !== topologyGeneration) return
+      active = installApproveForMe(ctx, config)
+    })
+    return transition
   }
-  ctx.effect(() => {
-    if (topologyGeneration !== validatedGeneration) {
-      stopTopology()
-      throw new Error('DSH provider/model topology changed before Guardian installation')
-    }
-    active = installApproveForMe(ctx, config)
-    return async () => {
-      stopTopology()
-      const plugin = active
-      active = undefined
-      await plugin?.dispose()
-    }
+
+  const stopTopology = ctx.on('llm/adapters-updated', () => {
+    void reconcile()
+  })
+  await reconcile()
+
+  ctx.effect(() => async () => {
+    disposed = true
+    topologyGeneration += 1
+    stopTopology()
+    const plugin = active
+    active = undefined
+    await plugin?.dispose()
+    await transition
   }, 'dsh-approve-for-me.install()')
 }

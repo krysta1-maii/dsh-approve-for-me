@@ -188,7 +188,10 @@ function harness(): InstallHarness {
     approval: {
       registerMachinePolicy(policy: unknown): () => void {
         machinePolicy = policy
-        return disposeMachinePolicy
+        return () => {
+          machinePolicy = undefined
+          disposeMachinePolicy()
+        }
       },
     },
     tools: { schemas: vi.fn(() => []) },
@@ -334,22 +337,37 @@ describe('installApproveForMe composition root', () => {
     expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
   })
 
-  it('withdraws the machine policy when the DSH provider topology changes', async () => {
+  it('withdraws on topology drift and rearms only after the configured route returns', async () => {
     const h = harness()
+    const listModels = vi.fn(async () => [{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }])
+    h.ctx.llm.listModels = listModels
     await approveForMe.apply(h.ctx as unknown as Context, config)
     expect(h.machinePolicy).toBeDefined()
+
+    listModels.mockResolvedValue([])
     h.listeners.topology?.()
     expect(h.disposeMachinePolicy).toHaveBeenCalledOnce()
+    expect(h.machinePolicy).toBeUndefined()
     await vi.waitFor(() => expect(h.disposeRegistration).toHaveBeenCalledOnce())
+    expect(h.machinePolicy).toBeUndefined()
+
+    listModels.mockResolvedValue([{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }])
+    h.listeners.topology?.()
+    await vi.waitFor(() => expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' }))
   })
 
-  it('fails loader mounting before registration when the Guardian route is stale in DSH', async () => {
+  it('keeps a stale Guardian route unarmed and installs after the DSH catalog publishes it', async () => {
     const h = harness()
-    h.ctx.llm.listProviders = vi.fn(() => [])
-    await expect(approveForMe.apply(h.ctx as unknown as Context, config))
-      .rejects.toThrow(/Guardian provider .*not present exactly once/)
+    const listProviders = vi.fn<() => Array<{ id: string; name: string }>>(() => [])
+    h.ctx.llm.listProviders = listProviders
+    await expect(approveForMe.apply(h.ctx as unknown as Context, config)).resolves.toBeUndefined()
     expect(h.registered).toBeUndefined()
     expect(h.machinePolicy).toBeUndefined()
+
+    listProviders.mockReturnValue([{ id: 'deepseek', name: 'DeepSeek' }])
+    h.listeners.topology?.()
+    await vi.waitFor(() => expect(h.registered?.name).toBe(REVIEWER_PROVIDER))
+    expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
   })
 
   it('mounts a supported non-empty stock catalog through the loader without programmatic projector options', async () => {
