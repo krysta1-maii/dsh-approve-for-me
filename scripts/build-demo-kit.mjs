@@ -11,12 +11,14 @@ import {
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { runPnpm } from './lib/pnpm.mjs'
+import { safeBuildOutput } from './lib/safe-build-output.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/upstream.json'), 'utf8'))
-const output = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
+const output = safeBuildOutput(root, process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'), 'DEMO_KIT_OUTPUT')
 const fork = join(root, `.build/dsh-user-approval-afm-${upstream.upstreamVersion}.tgz`)
 const forkSidecar = `${fork}.sha256`
+const forkProvenancePath = `${fork}.provenance.json`
 const managedManifestPath = join(root, '.artifacts/managed-agent/artifact.json')
 const approveSourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
 const approveSourceRemote = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8' }).trim()
@@ -37,14 +39,26 @@ function assertAtomic(tarball) {
   if (nested.length > 0) throw new Error(`${basename(tarball)} embeds package tarballs: ${nested.join(', ')}`)
 }
 
-if (!existsSync(fork) || !existsSync(forkSidecar)) {
-  throw new Error('approval fork is missing; run npm run build:approval-fork first')
+if (!existsSync(fork) || !existsSync(forkSidecar) || !existsSync(forkProvenancePath)) {
+  throw new Error('approval fork or its provenance is missing; run npm run build:approval-fork first')
 }
 if (!existsSync(managedManifestPath)) {
   throw new Error('managed-agent artifact is missing; run npm run build:managed-artifact first')
 }
 const forkExpected = readFileSync(forkSidecar, 'utf8').trim().split(/\s+/)[0]
 if (forkExpected !== sha256(fork)) throw new Error('approval fork digest does not match its sidecar')
+const forkProvenance = JSON.parse(readFileSync(forkProvenancePath, 'utf8'))
+const approveSourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim()
+if (forkProvenance.version !== 1 || forkProvenance.file !== basename(fork)
+  || forkProvenance.sha256 !== forkExpected
+  || forkProvenance.source?.repository !== approveSourceRemote
+  || forkProvenance.source?.commit !== approveSourceCommit
+  || forkProvenance.source?.tree !== approveSourceTree
+  || forkProvenance.upstream?.lockSha256 !== sha256(join(root, 'patch/dsh-user-approval/upstream.json'))
+  || forkProvenance.upstream?.commit !== upstream.upstreamCommit
+  || forkProvenance.upstream?.patchVersion !== upstream.patchVersion) {
+  throw new Error('approval fork provenance does not match the current reviewed source')
+}
 
 const managedArtifact = JSON.parse(readFileSync(managedManifestPath, 'utf8'))
 const managedSourceLock = JSON.parse(readFileSync(join(root, 'managed-agent-source.lock.json'), 'utf8'))
@@ -64,6 +78,12 @@ mkdirSync(output, { recursive: true })
 copyFileSync(fork, join(output, basename(fork)))
 copyFileSync(managed, join(output, basename(managed)))
 runPnpm(['pack', '--pack-destination', output], { cwd: root, stdio: 'inherit' })
+const approveCommitAfterPack = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+const approveRemoteAfterPack = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8' }).trim()
+const approveDirtyAfterPack = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()
+if (approveCommitAfterPack !== approveSourceCommit || approveRemoteAfterPack !== approveSourceRemote || approveDirtyAfterPack !== '') {
+  throw new Error('dsh-approve-for-me source changed while packing the demo kit')
+}
 
 const tarballs = readdirSync(output).filter(file => file.endsWith('.tgz')).sort()
 if (tarballs.length !== 3) throw new Error(`demo kit must contain exactly three tarballs, found ${tarballs.join(', ')}`)
@@ -88,10 +108,11 @@ const artifacts = tarballs.map((file) => {
       ? {
           repository: approveSourceRemote,
           commit: approveSourceCommit,
+          tree: approveSourceTree,
           upstreamCommit: upstream.upstreamCommit,
           patchVersion: upstream.patchVersion,
         }
-      : { repository: approveSourceRemote, commit: approveSourceCommit }
+      : { repository: approveSourceRemote, commit: approveSourceCommit, tree: approveSourceTree }
   return Object.freeze({ role, package: manifest.name, version: manifest.version, file, sha256: sha256(path), source })
 })
 if (new Set(artifacts.map(artifact => artifact.role)).size !== 3) {

@@ -1,6 +1,6 @@
 # DSH 0.1.2-alpha.2 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 42 个测试文件、329 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 42 个测试文件、330 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# alpha.2 实现检查点：42 files / 329 tests
+# alpha.2 实现检查点：42 files / 330 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
@@ -167,7 +167,7 @@ session never
 npm run profile:artifact-smoke
 ```
 
-先在两个源码仓库都 clean 且 managed source lock 精确匹配时运行 `npm run build:demo-kit`。它把 approval patch、managed-agent、approve-for-me 三个原子 tarball 封存到 `.build/demo-kit/`，并用 manifest 锁定每件 artifact 的文件名、SHA-256、source repository/commit/tree、patch upstream identity 与三个输入 lock 摘要；完成验收的同一 manifest 以 `deployment-artifacts.lock.json` 进入版本控制。
+先在两个源码仓库都 clean 且 managed source lock 精确匹配时运行 `npm run materialize:demo-inputs`，再运行 `npm run build:demo-kit`。它把 approval patch、managed-agent、approve-for-me 三个原子 tarball 封存到 `.build/demo-kit/`，并用 manifest 锁定每件 artifact 的文件名、SHA-256、source repository/commit/tree、patch upstream identity 与三个输入 lock 摘要；完成验收的同一 manifest 以 `deployment-artifacts.lock.json` 进入版本控制。
 
 `profile:artifact-smoke` 只消费这个 kit；不会在验收阶段重新 pack 三个生产 artifact。脚本把已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
 

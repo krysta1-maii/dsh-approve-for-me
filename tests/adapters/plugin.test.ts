@@ -64,7 +64,7 @@ interface InstallHarness {
     managedAgents: { registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration }
     approval: { registerMachinePolicy(policy: unknown): () => void }
     tools: { schemas(agent: unknown): readonly unknown[] }
-    on(event: CtxEvent, listener: (...args: unknown[]) => unknown): () => void
+    on(event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
     llm: {
       listProviders(): Array<{ id: string; name: string }>
@@ -81,6 +81,7 @@ interface InstallHarness {
   listeners: {
     preExecute: ((exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     result: ((exec: unknown, result: unknown) => unknown) | undefined
+    topology: (() => unknown) | undefined
   }
   disposeRegistration: ReturnType<typeof vi.fn>
 }
@@ -89,6 +90,7 @@ function harness(): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
     result: undefined,
+    topology: undefined,
   }
   const composition: InstallHarness['composition'] = {
     suppressions: 0,
@@ -195,9 +197,10 @@ function harness(): InstallHarness {
       listModels: vi.fn(async () => [{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }]),
       resolveModelInfo: vi.fn(async () => ({ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' })),
     },
-    on(event: CtxEvent, listener: (...args: unknown[]) => unknown) {
+    on(event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
+      if (event === 'llm/adapters-updated') listeners.topology = listener as InstallHarness['listeners']['topology']
       return () => {}
     },
     effect(setup: () => (() => void | Promise<void>)) { return setup() },
@@ -329,6 +332,15 @@ describe('installApproveForMe composition root', () => {
     expect(schemas).not.toHaveBeenCalled()
     expect(h.listeners.preExecute).toBeTypeOf('function')
     expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
+  })
+
+  it('withdraws the machine policy when the DSH provider topology changes', async () => {
+    const h = harness()
+    await approveForMe.apply(h.ctx as unknown as Context, config)
+    expect(h.machinePolicy).toBeDefined()
+    h.listeners.topology?.()
+    expect(h.disposeMachinePolicy).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(h.disposeRegistration).toHaveBeenCalledOnce())
   })
 
   it('fails loader mounting before registration when the Guardian route is stale in DSH', async () => {

@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pnpmShellInvocation, runPnpm } from './lib/pnpm.mjs'
+import { safeBuildOutput } from './lib/safe-build-output.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/upstream.json'), 'utf8'))
@@ -21,7 +22,7 @@ const hostVersion = upstream.upstreamVersion
 const demoKitDir = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
 const demoKitManifest = join(demoKitDir, 'demo-kit.json')
 const deploymentLock = join(root, 'deployment-artifacts.lock.json')
-const output = resolve(process.env.PROFILE_SMOKE_OUTPUT ?? join(root, '.build/profile-smoke'))
+const output = safeBuildOutput(root, process.env.PROFILE_SMOKE_OUTPUT ?? join(root, '.build/profile-smoke'), 'PROFILE_SMOKE_OUTPUT')
 const profile = 'approve-for-me-artifact-smoke'
 const temp = mkdtempSync(join(tmpdir(), 'dsh-approve-profile-'))
 const dshHome = join(temp, 'home')
@@ -84,7 +85,7 @@ try {
   if (JSON.stringify(demoKit) !== JSON.stringify(trackedKit)) {
     throw new Error('demo kit does not match tracked deployment-artifacts.lock.json')
   }
-  if (demoKit.atomicPackageCount !== 3 || demoKit.target?.version !== hostVersion
+  if (demoKit.atomicPackageCount !== 3 || demoKit.target?.package !== '@deepseek-ai/dsh' || demoKit.target?.version !== hostVersion
     || demoKit.target?.tag !== upstream.upstreamTag || demoKit.target?.commit !== upstream.upstreamCommit
     || demoKit.locks?.pnpmLockSha256 !== sha256(join(root, 'pnpm-lock.yaml'))
     || demoKit.locks?.approvalUpstreamSha256 !== sha256(join(root, 'patch/dsh-user-approval/upstream.json'))
@@ -92,6 +93,11 @@ try {
     || !Array.isArray(demoKit.artifacts) || demoKit.artifacts.length !== 3) {
     throw new Error('invalid or stale three-package demo kit manifest')
   }
+  const expectedPackages = new Map([
+    ['dsh-plugin-family-patch', ['@deepseek-ai/dsh-user-approval', hostVersion]],
+    ['managed-agent-plugin', ['dsh-managed-agent', '0.1.0-dev.0']],
+    ['approval-guardian-plugin', ['dsh-approve-for-me', '0.1.0-dev.0']],
+  ])
   const byRole = new Map()
   const sourceByRole = new Map()
   for (const artifact of demoKit.artifacts) {
@@ -107,6 +113,13 @@ try {
     const source = join(demoKitDir, artifact.file)
     if (!existsSync(source) || sha256(source) !== artifact.sha256) {
       throw new Error(`demo kit artifact digest mismatch: ${artifact.file}`)
+    }
+    const expected = expectedPackages.get(artifact.role)
+    if (expected === undefined) throw new Error(`unexpected demo kit role: ${artifact.role}`)
+    const packed = JSON.parse(execFileSync('tar', ['-xOf', source, 'package/package.json'], { encoding: 'utf8' }))
+    if (artifact.package !== expected[0] || artifact.version !== expected[1]
+      || packed.name !== expected[0] || packed.version !== expected[1]) {
+      throw new Error(`demo kit artifact identity mismatch for ${artifact.role}`)
     }
     if (byRole.has(artifact.role)) throw new Error(`duplicate demo kit role: ${artifact.role}`)
     byRole.set(artifact.role, source)
@@ -127,7 +140,8 @@ try {
     || managedSource.treeSha256 !== managedSourceLock.sourceTreeSha256) {
     throw new Error('managed-agent source identity does not match the reviewed source lock')
   }
-  if (patchSource.repository !== approveSource.repository || patchSource.commit !== approveSource.commit) {
+  if (patchSource.repository !== approveSource.repository || patchSource.commit !== approveSource.commit
+    || patchSource.tree !== approveSource.tree) {
     throw new Error('approval patch and approve-for-me artifacts do not share one source identity')
   }
 

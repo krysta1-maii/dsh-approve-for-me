@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），采用机器决策槽 v2。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.2` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.2 实现检查点通过 42 个测试文件、329 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），采用机器决策槽 v2。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.2` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.2 实现检查点通过 42 个测试文件、330 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -98,7 +98,8 @@ npm run check
 # 校验本插件发布包内容
 npm run package:smoke
 
-# 从 clean、锁定来源构造三原子 demo kit
+# 从 clean、锁定来源构造输入，再封存三原子 demo kit
+npm run materialize:demo-inputs
 npm run build:demo-kit
 
 # 只消费封存 kit，在临时 DSH_HOME 安装并启动脚本化验收 Profile

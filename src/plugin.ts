@@ -397,9 +397,37 @@ export function installApproveForMe(
  */
 export async function apply(ctx: Context, config: ApproveForMeConfig): Promise<void> {
   const normalized = normalizeConfig(config)
-  await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
+  let topologyGeneration = 0
+  let active: ApproveForMePlugin | undefined
+  const stopTopology = ctx.on('llm/adapters-updated', () => {
+    topologyGeneration += 1
+    const invalidated = active
+    active = undefined
+    // Topology drift revokes the machine policy synchronously at the start of
+    // dispose(). A loader reload is required before automatic review can resume.
+    if (invalidated !== undefined) void invalidated.dispose().catch(() => {})
+  })
+  const validatedGeneration = topologyGeneration
+  try {
+    await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
+    if (topologyGeneration !== validatedGeneration) {
+      throw new Error('DSH provider/model topology changed while validating the Guardian route')
+    }
+  } catch (error) {
+    stopTopology()
+    throw error
+  }
   ctx.effect(() => {
-    const plugin = installApproveForMe(ctx, config)
-    return () => plugin.dispose()
+    if (topologyGeneration !== validatedGeneration) {
+      stopTopology()
+      throw new Error('DSH provider/model topology changed before Guardian installation')
+    }
+    active = installApproveForMe(ctx, config)
+    return async () => {
+      stopTopology()
+      const plugin = active
+      active = undefined
+      await plugin?.dispose()
+    }
   }, 'dsh-approve-for-me.install()')
 }

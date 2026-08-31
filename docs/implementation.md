@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包直接安装 npm 上已发布的 `0.1.2-alpha.2` 包；`npm run check` 通过 42 个测试文件、329 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 alpha.2 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
+> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包直接安装 npm 上已发布的 `0.1.2-alpha.2` 包；`npm run check` 通过 42 个测试文件、330 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 alpha.2 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
 >
 > 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前任何 automatic allow 仍被 branded source-verified dossier、R4 基线和 durable decision record 约束。
 
@@ -32,7 +32,7 @@
 
 - `src/dsh/reviewer-model-catalog.ts` 直接消费 `ctx.llm.listProviders()` / `listModels()`，按 DSH 稳定 provider/model id 解析 route；
 - provider 不存在、model 不属于 provider、model 声明固定 provider 不匹配或 reasoning effort 不受支持时失败关闭；
-- `src/plugin.ts` 等待异步 catalog 验证完成后才注册 machine policy，成功路径仍由 `installModelSelection()` 使用 DSH adapter、凭据与 retry；
+- `src/plugin.ts` 在异步验证前订阅 `llm/adapters-updated`，只在无竞态时注册 machine policy；任何后续 provider topology 变化立即撤销该策略，须经 loader reload 重新验证后才能恢复；成功路径仍由 `installModelSelection()` 使用 DSH adapter、凭据与 retry；
 - descriptor 继续只持久化稳定 route id，不复制 provider secret 或私有配置。
 
 ### P2 裁决管线（完成）
@@ -72,11 +72,12 @@
 ## 验证
 
 ```bash
-npm run check                       # typecheck + 42 files / 329 tests + build
+npm run check                       # typecheck + 42 files / 330 tests + build
 npm run verify:managed-source       # sibling clean HEAD/remote/tree = reviewed lock
 npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host
 npm run package:smoke               # 本插件 tarball 内容与泄漏检查
+npm run materialize:demo-inputs     # clean source -> fork + managed inputs
 npm run build:demo-kit              # 三个预封存 artifact + manifest/source identity
 npm run profile:artifact-smoke      # 已发布 CLI + 封存 kit 的一次性 Profile
 DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare

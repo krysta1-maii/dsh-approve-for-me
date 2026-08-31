@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "krysta1-maii/dsh-managed-agent",
   "remote": "https://github.com/krysta1-maii/dsh-managed-agent.git",
-  "sourceCommit": "08f5435f9fec9e1f428731c11d06267fcf86355d",
-  "sourceTreeSha256": "0791e369c2609aa9fa9b0573914917dfcedaf76921a356010a1d06ef125223a4",
+  "sourceCommit": "c4ba705137185b37f3d79b7c58d94a01181a7eba",
+  "sourceTreeSha256": "25a9a38cda1afc30652d2852aa0851bfc350f42b7e7fc06c864278d4c3a66e82",
   "fileCount": 49
 }

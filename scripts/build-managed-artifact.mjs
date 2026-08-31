@@ -25,7 +25,22 @@ execFileSync(process.execPath, [join(root, 'scripts/verify-managed-agent-source.
 const files = readdirSync(out).filter(file => file.endsWith('.tgz'))
 if (files.length !== 1) throw new Error(`expected one managed-agent tarball, found ${files.join(', ')}`)
 const tarball = join(out, files[0])
-const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
+const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n')
+const sourceFiles = execFileSync('git', ['ls-files', 'src/**/*.ts', 'src/*.ts'], { cwd: sibling, encoding: 'utf8' })
+  .trim().split('\n').filter(Boolean)
+const expectedEntries = new Set([
+  'package/package.json', 'package/cordis.patch.yml', 'package/THIRD_PARTY_NOTICES.md',
+  'package/LICENSE', 'package/README.md',
+])
+for (const source of sourceFiles) {
+  const stem = source.replace(/^src\//, '').replace(/\.ts$/, '')
+  for (const suffix of ['.js', '.js.map', '.d.ts', '.d.ts.map']) expectedEntries.add(`package/dist/${stem}${suffix}`)
+}
+for (const entry of entries) {
+  if (!expectedEntries.has(entry) || entry.endsWith('.tgz')) {
+    throw new Error(`managed artifact contains unexpected file ${entry}`)
+  }
+}
 for (const required of ['package/dist/index.js', 'package/dist/index.d.ts', 'package/cordis.patch.yml']) if (!entries.includes(required)) throw new Error(`managed artifact lacks ${required}`)
 const sha256 = createHash('sha256').update(readFileSync(tarball)).digest('hex')
 const sourceLock = JSON.parse(readFileSync(join(root, 'managed-agent-source.lock.json'), 'utf8'))

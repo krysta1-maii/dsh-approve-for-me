@@ -32,6 +32,15 @@ UPSTREAM_VERSION="$(node -p "require('${UPSTREAM_JSON}').upstreamVersion")"
 UPSTREAM_COMMIT="$(node -p "require('${UPSTREAM_JSON}').upstreamCommit")"
 PATCH_VERSION="$(node -p "require('${UPSTREAM_JSON}').patchVersion")"
 TARBALL="dsh-user-approval-afm-${UPSTREAM_VERSION}.tgz"
+PROVENANCE="${TARBALL}.provenance.json"
+AFM_SOURCE_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+AFM_SOURCE_TREE="$(git -C "${REPO_ROOT}" rev-parse 'HEAD^{tree}')"
+AFM_SOURCE_REMOTE="$(git -C "${REPO_ROOT}" remote get-url origin)"
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
+  echo "error: dsh-approve-for-me source must be clean before fork construction" >&2
+  exit 2
+fi
+UPSTREAM_LOCK_SHA256="$(sha256sum "${UPSTREAM_JSON}" | cut -d' ' -f1)"
 
 # Resolve a working pnpm before touching any checkout. The workspace pins
 # pnpm 11.x; when no shell `pnpm` exists (or corepack's vm wrapper is broken
@@ -202,4 +211,14 @@ echo "==> verifying"
 node "${PATCH_DIR}/scripts/verify-fork.mjs" "${BUILD_ROOT}/${TARBALL}" "${UPSTREAM_JSON}"
 
 sha256sum "${BUILD_ROOT}/${TARBALL}" | tee "${BUILD_ROOT}/${TARBALL}.sha256"
+if [[ "$(git -C "${REPO_ROOT}" rev-parse HEAD)" != "${AFM_SOURCE_COMMIT}" \
+  || "$(git -C "${REPO_ROOT}" rev-parse 'HEAD^{tree}')" != "${AFM_SOURCE_TREE}" \
+  || -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
+  echo "error: dsh-approve-for-me source changed during fork construction" >&2
+  exit 2
+fi
+FORK_SHA256="$(sha256sum "${BUILD_ROOT}/${TARBALL}" | cut -d' ' -f1)"
+node -e 'const fs=require("fs"); const [path,digest,repository,commit,tree,upstreamDigest,upstreamCommit,patchVersion]=process.argv.slice(1); fs.writeFileSync(path, JSON.stringify({version:1,file:path.split("/").pop().replace(/\.provenance\.json$/, ""),sha256:digest,source:{repository,commit,tree},upstream:{lockSha256:upstreamDigest,commit:upstreamCommit,patchVersion:Number(patchVersion)}},null,2)+"\n")' \
+  "${BUILD_ROOT}/${PROVENANCE}" "${FORK_SHA256}" "${AFM_SOURCE_REMOTE}" "${AFM_SOURCE_COMMIT}" "${AFM_SOURCE_TREE}" \
+  "${UPSTREAM_LOCK_SHA256}" "${UPSTREAM_COMMIT}" "${PATCH_VERSION}"
 echo "==> done: ${BUILD_ROOT}/${TARBALL}"

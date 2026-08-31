@@ -7,15 +7,12 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, join, resolve, sep } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { pnpmShellInvocation, runPnpm } from './lib/pnpm.mjs'
+import { safeBuildOutput } from './lib/safe-build-output.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
-const output = resolve(process.env.DSH_DEMO_OUTPUT ?? join(root, '.build/demo-profile'))
-const allowedRoot = resolve(root, '.build')
-if (output !== allowedRoot && !output.startsWith(`${allowedRoot}${sep}`)) {
-  throw new Error('DSH_DEMO_OUTPUT must stay inside this repository .build directory')
-}
+const output = safeBuildOutput(root, process.env.DSH_DEMO_OUTPUT ?? join(root, '.build/demo-profile'), 'DSH_DEMO_OUTPUT')
 const kitDir = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
 const kit = JSON.parse(readFileSync(join(kitDir, 'demo-kit.json'), 'utf8'))
 const trackedKit = JSON.parse(readFileSync(join(root, 'deployment-artifacts.lock.json'), 'utf8'))
@@ -23,6 +20,12 @@ if (JSON.stringify(kit) !== JSON.stringify(trackedKit)) {
   throw new Error('demo kit does not match tracked deployment-artifacts.lock.json')
 }
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex')
+const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/upstream.json'), 'utf8'))
+const managedSourceLock = JSON.parse(readFileSync(join(root, 'managed-agent-source.lock.json'), 'utf8'))
+if (kit.target?.package !== '@deepseek-ai/dsh' || kit.target?.version !== upstream.upstreamVersion
+  || kit.target?.tag !== upstream.upstreamTag || kit.target?.commit !== upstream.upstreamCommit) {
+  throw new Error('demo kit target identity does not match the reviewed DSH target')
+}
 if (kit.atomicPackageCount !== 3 || !Array.isArray(kit.artifacts) || kit.artifacts.length !== 3
   || !Array.isArray(kit.installOrder) || kit.installOrder.length !== 3
   || kit.locks?.pnpmLockSha256 !== sha256(join(root, 'pnpm-lock.yaml'))
@@ -30,7 +33,13 @@ if (kit.atomicPackageCount !== 3 || !Array.isArray(kit.artifacts) || kit.artifac
   || kit.locks?.managedSourceSha256 !== sha256(join(root, 'managed-agent-source.lock.json'))) {
   throw new Error('demo kit must describe exactly three current atomic package artifacts')
 }
-const requiredRoles = new Set(['dsh-plugin-family-patch', 'managed-agent-plugin', 'approval-guardian-plugin'])
+const expectedPackages = new Map([
+  ['dsh-plugin-family-patch', ['@deepseek-ai/dsh-user-approval', upstream.upstreamVersion]],
+  ['managed-agent-plugin', ['dsh-managed-agent', '0.1.0-dev.0']],
+  ['approval-guardian-plugin', ['dsh-approve-for-me', '0.1.0-dev.0']],
+])
+const requiredRoles = new Set(expectedPackages.keys())
+const sources = new Map()
 for (const artifact of kit.artifacts) {
   if (!requiredRoles.delete(artifact.role) || typeof artifact.file !== 'string'
     || basename(artifact.file) !== artifact.file || typeof artifact.sha256 !== 'string'
@@ -40,10 +49,35 @@ for (const artifact of kit.artifacts) {
   const path = join(kitDir, artifact.file)
   if (!existsSync(path)) throw new Error(`demo artifact is missing: ${artifact.file}`)
   if (sha256(path) !== artifact.sha256) throw new Error(`demo artifact digest mismatch: ${artifact.file}`)
+  const packed = JSON.parse(execFileSync('tar', ['-xOf', path, 'package/package.json'], { encoding: 'utf8' }))
+  const [expectedName, expectedVersion] = expectedPackages.get(artifact.role)
+  if (artifact.package !== expectedName || artifact.version !== expectedVersion
+    || packed.name !== expectedName || packed.version !== expectedVersion) {
+    throw new Error(`demo artifact identity mismatch for ${artifact.role}`)
+  }
+  if (typeof artifact.source.repository !== 'string' || artifact.source.repository === ''
+    || typeof artifact.source.commit !== 'string' || !/^[0-9a-f]{40}$/u.test(artifact.source.commit)) {
+    throw new Error(`demo artifact source identity is invalid for ${artifact.role}`)
+  }
+  sources.set(artifact.role, artifact.source)
 }
 if (requiredRoles.size !== 0 || new Set(kit.installOrder).size !== 3
   || kit.installOrder.some(role => !kit.artifacts.some(artifact => artifact.role === role))) {
   throw new Error('demo kit roles or install order are incomplete')
+}
+const patchSource = sources.get('dsh-plugin-family-patch')
+const managedSource = sources.get('managed-agent-plugin')
+const approveSource = sources.get('approval-guardian-plugin')
+if (patchSource.upstreamCommit !== upstream.upstreamCommit || patchSource.patchVersion !== upstream.patchVersion) {
+  throw new Error('approval patch source does not match the reviewed upstream lock')
+}
+if (managedSource.repository !== managedSourceLock.remote || managedSource.commit !== managedSourceLock.sourceCommit
+  || managedSource.treeSha256 !== managedSourceLock.sourceTreeSha256) {
+  throw new Error('managed-agent source does not match the reviewed source lock')
+}
+if (patchSource.repository !== approveSource.repository || patchSource.commit !== approveSource.commit
+  || patchSource.tree !== approveSource.tree) {
+  throw new Error('approval patch and Guardian plugin do not share one reviewed AFM source')
 }
 
 const provider = process.env.DSH_DEMO_PROVIDER
