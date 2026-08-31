@@ -109,7 +109,7 @@ writeFileSync(join(cliPrefix, 'package.json'), `${JSON.stringify({
   version: '0.0.0',
   dependencies: { '@deepseek-ai/dsh': kit.target.version },
 }, null, 2)}\n`)
-runPnpm(['install', '--config.ignore-scripts=true'], { cwd: cliPrefix, stdio: 'inherit' })
+runPnpm(['install', '--ignore-workspace', '--config.ignore-scripts=true'], { cwd: cliPrefix, stdio: 'inherit' })
 const cli = join(cliPrefix, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
 if (!existsSync(cli)) throw new Error(`target DSH CLI is missing: ${cli}`)
 

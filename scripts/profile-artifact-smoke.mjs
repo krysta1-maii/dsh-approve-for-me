@@ -67,7 +67,7 @@ function installTargetCli() {
     version: '0.0.0',
     dependencies: { '@deepseek-ai/dsh': hostVersion },
   }, null, 2)}\n`)
-  runPnpm(['install', '--config.ignore-scripts=true'], { cwd: cliPrefix, stdio: 'inherit' })
+  runPnpm(['install', '--ignore-workspace', '--config.ignore-scripts=true'], { cwd: cliPrefix, stdio: 'inherit' })
   const cli = join(cliPrefix, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
   if (!existsSync(cli)) throw new Error(`published @deepseek-ai/dsh@${hostVersion} has no lib/bin.js`)
   const manifest = JSON.parse(readFileSync(join(cliPrefix, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8'))
