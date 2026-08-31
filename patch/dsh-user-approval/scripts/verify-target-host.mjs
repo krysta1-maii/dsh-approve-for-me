@@ -14,7 +14,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const [hostRootArg, tarballArg, upstreamArg, installedPackageArg] = process.argv.slice(2)
+const [defaultHostRootArg, tarballArg, upstreamArg, installedPackageArg] = process.argv.slice(2)
+const hostRootArg = process.env.DSH_REPO ?? defaultHostRootArg
 if (!hostRootArg || !tarballArg || !upstreamArg) {
   console.error('usage: node verify-target-host.mjs <deepseek-harness-root> <fork-tarball> <upstream.json> [installed-package-dir]')
   process.exit(2)

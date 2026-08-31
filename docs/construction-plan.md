@@ -76,7 +76,7 @@
 
 ### I：可交付 Demo 封装
 
-- 新增 scripts/demo-profile.sh：一次性 DSH_HOME + Profile 安装 + 预置用户消息 + 启动 Web，输出"期望看到的 5 个决策事件序列与人工兜底步骤"；
+- `scripts/build-demo-kit.mjs` + `scripts/prepare-demo-profile.mjs`：从 clean、锁定来源封存三原子 kit，再安装到用户指定的一次性 DSH_HOME；不擅自启动第二个 server，输出真实 Web/模型测试命令、期望事件与人工兜底步骤；
 - 更新 docs/reviews/ 与 docs/implementation.md 的"当前未执行"清单（G1/G2 完成后移除前两条，H1/H2 完成后移除第三条）。
 
 ### J：复查缺口修复（在 demo 前至少完成前两项）

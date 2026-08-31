@@ -16,7 +16,8 @@ try {
     if (!entries.includes(file)) throw new Error(`packed artifact is missing ${file}`)
   }
   for (const file of entries) {
-    if (/\/(?:src|tests|node_modules|patch)\//.test(file) || /(?:^|\/)tsconfig(?:\.|$)/.test(file)) {
+    if (/(?:^|\/)(?:src|tests|node_modules|patch|scripts|docs)(?:\/|$)/.test(file)
+      || /(?:^|\/)tsconfig(?:\.|$)/.test(file) || file.endsWith('.tgz')) {
       throw new Error(`packed artifact leaks development file ${file}`)
     }
   }

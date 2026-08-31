@@ -364,3 +364,8 @@ export {
   installApproveForMe,
 } from './plugin.js'
 export type { ApproveForMeInstallOptions, ApproveForMePlugin } from './plugin.js'
+export { resolveReviewerModelRouteFromDshCatalog } from './dsh/reviewer-model-catalog.js'
+export type {
+  ResolvedReviewerModelRoute,
+  ReviewerModelCatalog,
+} from './dsh/reviewer-model-catalog.js'

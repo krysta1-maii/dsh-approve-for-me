@@ -1,6 +1,6 @@
 # DSH 0.1.2-alpha.2 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 41 个测试文件、324 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 42 个测试文件、329 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# alpha.2 实现检查点：41 files / 324 tests
+# alpha.2 实现检查点：42 files / 329 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
@@ -167,18 +167,18 @@ session never
 npm run profile:artifact-smoke
 ```
 
-`profile:artifact-smoke` 默认消费 `.artifacts/managed-agent/artifact.json` 中已 materialize 的 managed tarball；需要用另一份已安装 artifact 时再设置 `MANAGED_AGENT_ARTIFACT_DIR`。脚本会自行解析可用的 pnpm（`PNPM` 环境变量 > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`），无需预先激活 corepack。
+先在两个源码仓库都 clean 且 managed source lock 精确匹配时运行 `npm run build:demo-kit`。它把 approval patch、managed-agent、approve-for-me 三个原子 tarball 封存到 `.build/demo-kit/`，并用 manifest 锁定每件 artifact 的文件名、SHA-256、source repository/commit/tree、patch upstream identity 与三个输入 lock 摘要；完成验收的同一 manifest 以 `deployment-artifacts.lock.json` 进入版本控制。
 
-脚本把已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
+`profile:artifact-smoke` 只消费这个 kit；不会在验收阶段重新 pack 三个生产 artifact。脚本把已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
 
-1. pack managed-agent、本插件和 probe；
-2. 复制已验证 approval fork；
+1. 完整校验 demo-kit manifest、三个 artifact digest 与 source identity；
+2. 单独 pack 非生产的 probe fixture；
 3. 执行真实 `dsh plugin --profile approve-for-me-artifact-smoke add --save-exact ...`；
 4. 写入最小插件配置；
 5. 用 `--dump-config` 确认 `managed-agent-host`、`dsh-approve-for-me` 和 probe 已 compose；
 6. 真正启动一次 Profile；
 7. 从 Profile package anchor 验证精确依赖闭包、fork marker 与 machine-policy API；
-8. probe 验证 managedAgents create/renew/provider API、approval machine policy 和非空 Host tool catalog；
+8. probe 验证 managedAgents create/renew/provider API、approval machine policy、catalog route 校验和非空 Host tool catalog；
 9. 从同一已安装 Profile 冷启动第二个 Host 进程，要求 probe 再次通过且 effective tool catalog 与首次完全一致；
 10. 保存两次 boot probe、composed config、Profile package.json、pnpm lock 和 Cordis patch 到 `.build/profile-smoke/`。
 
@@ -200,7 +200,19 @@ npm run profile:artifact-smoke
 - 浏览器刷新、网络断开、并发卸载或存储故障下的完整行为；
 - scoped/restricted Agent 的每条运行时组合。后者由组件/集成测试覆盖，但仍应纳入真实 E2E。
 
-## 9. 仍需 Web + 真实 LLM + cold-process E2E
+## 9. 真实模型/Web 测试实例准备
+
+```bash
+DSH_DEMO_PROVIDER=<provider-id> \
+DSH_DEMO_MODEL=<model-id> \
+npm run demo:prepare
+```
+
+该命令只消费已封存 demo kit，把三件套通过目标版本 CLI 安装进全新的仓库内 `.build/demo-profile/home`，生成 Profile package/lock，并打印隔离启动命令。provider/model 参数必须直接使用目标 DSH provider/model 列表中的稳定 ID；可用 `DSH_DEMO_REASONING_EFFORT` 传入模型声明的 effort。loader 会在注册机器策略前查询 `ctx.llm.listProviders()` / `listModels()` 并失败关闭。credential、adapter、retry 和 request route 都继续由 DSH 管理，本插件不会复制 secret。
+
+脚本拒绝已存在的输出目录，也不会启动 server、修改默认 `~/.dsh` 或访问当前运行实例。测试者可按输出命令在单独端口手工完成真实模型和 Web 链路，但这些人工结果不计入自动 smoke 证据。
+
+## 10. 仍需 Web + 真实 LLM + cold-process E2E
 
 发布验收环境必须使用已打包 artifact 和精确目标 Profile，而不是源码链接。至少执行：
 
@@ -213,15 +225,15 @@ npm run profile:artifact-smoke
 
 这些项目不能由 unit tests、已存在脚本、`--dump-config` 或一次正常 Profile boot 替代。
 
-## 10. 完成判定
+## 11. 完成判定
 
-### 10.1 自动 artifact 集成通过
+### 11.1 自动 artifact 集成通过
 
 - 已发布宿主闭包按 `pnpm-lock.yaml` integrity 可复现，approval fork 可从锁定 commit 重建；
 - approval fork 与 managed artifact 身份/摘要通过；
 - frozen install、typecheck、tests、build、package smoke 通过；
 - disposable Profile artifact smoke 通过并产出可审查证据。
 
-### 10.2 产品级审批 E2E 通过
+### 11.2 产品级审批 E2E 通过
 
-在 10.1 之外，必须完成第 9 节的真实 Web、真实 LLM、真实工具副作用和 cold-process 场景，并确认所有 unknown/ambiguous/failure 路径均失败关闭。只有 10.1 不足以声明自动审批产品就绪。
+在 11.1 之外，必须完成第 10 节的真实 Web、真实 LLM、真实工具副作用和 cold-process 场景，并确认所有 unknown/ambiguous/failure 路径均失败关闭。只有 11.1 不足以声明自动审批产品就绪。

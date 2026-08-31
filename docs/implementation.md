@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包改为直接安装 npm 上已发布的 `0.1.2-alpha.2` 包（dist-tag `alpha`），可复现性由 `pnpm-lock.yaml` integrity 承担，本地 75 个 artifact 的自建流程与 `target-host-artifacts.lock.json` 已删除；`npm run check` 通过 41 个测试文件、324 项测试；approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均已在本机的 alpha.2 上通过。Profile smoke 验证了真实 `dsh plugin add` 安装、Cordis compose、`registerMachinePolicy()` 路径下的一次真实自动放行 side effect、`auto-then-user` 的人工拒绝兜底，以及全新进程重启后相同 effective tool catalog。
+> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包直接安装 npm 上已发布的 `0.1.2-alpha.2` 包；`npm run check` 通过 42 个测试文件、329 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 alpha.2 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
 >
 > 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前任何 automatic allow 仍被 branded source-verified dossier、R4 基线和 durable decision record 约束。
 
@@ -27,6 +27,13 @@
 - native call 要求 wire/callable schema 集合精确一致；`run_code` PTC call 绑定 root model call header，nested dispatch 继承 root catalog；
 - `src/dsh/stock-tools.ts`：alpha.2 stock 工具名与 schema 指纹的闭集审批目录（`argumentSemanticsId: dsh-0.1.2-alpha.2-stock-v1`）+ shell/filesystem/network/opaque 语义投影；未识别工具进入 opaque 语义，永不自动授权；
 - 缺历史、歧义 header、late/HMR drift、schema 指纹不一致均 fail-closed；cold resume 只消费 durable commitment，不回退全局 `tools.schemas()`。
+
+### Guardian route catalog 绑定（完成）
+
+- `src/dsh/reviewer-model-catalog.ts` 直接消费 `ctx.llm.listProviders()` / `listModels()`，按 DSH 稳定 provider/model id 解析 route；
+- provider 不存在、model 不属于 provider、model 声明固定 provider 不匹配或 reasoning effort 不受支持时失败关闭；
+- `src/plugin.ts` 等待异步 catalog 验证完成后才注册 machine policy，成功路径仍由 `installModelSelection()` 使用 DSH adapter、凭据与 retry；
+- descriptor 继续只持久化稳定 route id，不复制 provider secret 或私有配置。
 
 ### P2 裁决管线（完成）
 
@@ -65,17 +72,20 @@
 ## 验证
 
 ```bash
-npm run check                       # typecheck + 41 files / 324 tests + build
-npm run verify:managed-source       # sibling source tree 摘要 = reviewed lock
+npm run check                       # typecheck + 42 files / 329 tests + build
+npm run verify:managed-source       # sibling clean HEAD/remote/tree = reviewed lock
 npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host
 npm run package:smoke               # 本插件 tarball 内容与泄漏检查
-npm run profile:artifact-smoke      # 已发布 CLI + 三个部署 tarball 的一次性 Profile
+npm run build:demo-kit              # 三个预封存 artifact + manifest/source identity
+npm run profile:artifact-smoke      # 已发布 CLI + 封存 kit 的一次性 Profile
+DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 ```
 
-- 宿主闭包不再本地重打包：`pnpm install --frozen-lockfile` 直接安装 registry 上的 `0.1.2-alpha.2`，lock 的 integrity 就是复现锚点；
-- `build:managed-artifact`/`package:smoke`/`profile:artifact-smoke` 会自动解析可用 pnpm：`PNPM` env > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`（优先 `packageManager` 固定的 11.7.0）；
-- `profile:artifact-smoke` 使用临时 `DSH_HOME` 与临时 CLI prefix，不会触碰本机正在运行的 Profile，也不需要宿主 checkout。
+- 宿主闭包由 `pnpm-lock.yaml` integrity 锁定；三原子 release set 另由 demo-kit manifest 锁定文件名、SHA-256 与 source identity；
+- `build:demo-kit` 仅接受 clean AFM checkout、与 `managed-agent-source.lock.json` 完全一致的 clean managed checkout，以及已验证 fork；
+- `profile:artifact-smoke` 只消费预封存 kit，使用临时 `DSH_HOME` 与临时 CLI prefix，不触碰本机正在运行的 Profile，也不需要宿主 checkout；
+- `demo:prepare` 把同一 kit 安装到用户指定的新 `DSH_HOME`，打印真实 Web/模型测试启动步骤但不会自行启动第二个 server。
 
 ## 当前未执行/仍待人工
 

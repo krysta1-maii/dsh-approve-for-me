@@ -45,6 +45,7 @@ import { hashAction, REVIEWER_PROVIDER } from './domain/protocol.js'
 import type { RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
 import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
+import { resolveReviewerModelRouteFromDshCatalog } from './dsh/reviewer-model-catalog.js'
 
 export interface ApproveForMePlugin {
   readonly config: NormalizedConfig
@@ -394,7 +395,9 @@ export function installApproveForMe(
  * Loader entrypoint. The Cordis effect exclusively owns the provider disposer,
  * so unload and HMR revoke the Controller before a replacement can register.
  */
-export function apply(ctx: Context, config: ApproveForMeConfig): void {
+export async function apply(ctx: Context, config: ApproveForMeConfig): Promise<void> {
+  const normalized = normalizeConfig(config)
+  await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
   ctx.effect(() => {
     const plugin = installApproveForMe(ctx, config)
     return () => plugin.dispose()

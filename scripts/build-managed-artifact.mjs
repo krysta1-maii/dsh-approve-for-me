@@ -15,20 +15,26 @@ execFileSync(process.execPath, [join(root, 'scripts/verify-managed-agent-source.
 })
 rmSync(out, { recursive: true, force: true }); mkdirSync(out, { recursive: true })
 runPnpm(['pack', '--pack-destination', out], { cwd: sibling, stdio: 'inherit' })
+// `prepack` is executable source code. Re-run the full identity/cleanliness gate
+// after packing so an artifact can never be published after source drift.
+execFileSync(process.execPath, [join(root, 'scripts/verify-managed-agent-source.mjs')], {
+  cwd: root,
+  env: { ...process.env, MANAGED_AGENT_SOURCE: sibling },
+  stdio: 'inherit',
+})
 const files = readdirSync(out).filter(file => file.endsWith('.tgz'))
 if (files.length !== 1) throw new Error(`expected one managed-agent tarball, found ${files.join(', ')}`)
 const tarball = join(out, files[0])
 const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
 for (const required of ['package/dist/index.js', 'package/dist/index.d.ts', 'package/cordis.patch.yml']) if (!entries.includes(required)) throw new Error(`managed artifact lacks ${required}`)
-const sourceCommit = execFileSync('git', ['-C', sibling, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
-const dirty = execFileSync('git', ['-C', sibling, 'status', '--porcelain'], { encoding: 'utf8' }).trim() !== ''
 const sha256 = createHash('sha256').update(readFileSync(tarball)).digest('hex')
 const sourceLock = JSON.parse(readFileSync(join(root, 'managed-agent-source.lock.json'), 'utf8'))
 writeFileSync(join(out, 'artifact.json'), JSON.stringify({
-  sourceCommit,
+  sourceRemote: sourceLock.remote,
+  sourceCommit: sourceLock.sourceCommit,
   sourceTreeSha256: sourceLock.sourceTreeSha256,
-  dirty,
+  dirty: false,
   file: files[0],
   sha256,
 }, null, 2) + '\n')
-console.log(`managed-agent artifact ${sha256} from ${sourceCommit}${dirty ? ' (dirty source)' : ''}`)
+console.log(`managed-agent artifact ${sha256} from ${sourceLock.sourceCommit} (clean source)`)

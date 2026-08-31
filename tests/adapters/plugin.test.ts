@@ -66,6 +66,11 @@ interface InstallHarness {
     tools: { schemas(agent: unknown): readonly unknown[] }
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
+    llm: {
+      listProviders(): Array<{ id: string; name: string }>
+      listModels(provider: string): Promise<Array<{ provider: string; id: string; name: string }>>
+      resolveModelInfo(provider: string, model: string): Promise<{ provider: string; id: string; name: string }>
+    }
   }
   registered: ManagedAgentProvider | undefined
   machinePolicy: unknown | undefined
@@ -185,6 +190,11 @@ function harness(): InstallHarness {
       },
     },
     tools: { schemas: vi.fn(() => []) },
+    llm: {
+      listProviders: vi.fn(() => [{ id: 'deepseek', name: 'DeepSeek' }]),
+      listModels: vi.fn(async () => [{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }]),
+      resolveModelInfo: vi.fn(async () => ({ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' })),
+    },
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
@@ -313,12 +323,21 @@ describe('installApproveForMe composition root', () => {
     const unwrapped = loader.unwrapExports(approveForMe) as typeof approveForMe
     expect(unwrapped).toBe(approveForMe)
     expect(unwrapped.name).toBe('dsh-approve-for-me')
-    expect(unwrapped.inject).toEqual(['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'])
-    unwrapped.apply(loaderContext as unknown as Context, config)
+    expect(unwrapped.inject).toEqual(['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain', 'llm'])
+    await unwrapped.apply(loaderContext as unknown as Context, config)
     expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
     expect(schemas).not.toHaveBeenCalled()
     expect(h.listeners.preExecute).toBeTypeOf('function')
     expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
+  })
+
+  it('fails loader mounting before registration when the Guardian route is stale in DSH', async () => {
+    const h = harness()
+    h.ctx.llm.listProviders = vi.fn(() => [])
+    await expect(approveForMe.apply(h.ctx as unknown as Context, config))
+      .rejects.toThrow(/Guardian provider .*not present exactly once/)
+    expect(h.registered).toBeUndefined()
+    expect(h.machinePolicy).toBeUndefined()
   })
 
   it('mounts a supported non-empty stock catalog through the loader without programmatic projector options', async () => {
@@ -331,7 +350,7 @@ describe('installApproveForMe composition root', () => {
     expect(stockCatalog.descriptors).toHaveLength(2)
     const loader = Object.create(Loader.prototype) as Loader
     const unwrapped = loader.unwrapExports(approveForMe) as typeof approveForMe
-    expect(() => unwrapped.apply(h.ctx as unknown as Context, { ...config, toolCatalog: stockCatalog })).not.toThrow()
+    await expect(unwrapped.apply(h.ctx as unknown as Context, { ...config, toolCatalog: stockCatalog })).resolves.toBeUndefined()
     expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
   })
 

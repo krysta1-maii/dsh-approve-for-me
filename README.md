@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），采用机器决策槽 v2。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.2` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.2 实现检查点通过 41 个测试文件、324 项测试。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 与跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），采用机器决策槽 v2。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.2` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.2 实现检查点通过 42 个测试文件、329 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -98,17 +98,23 @@ npm run check
 # 校验本插件发布包内容
 npm run package:smoke
 
-# 用已发布的 dsh CLI、已 materialize 的 managed tarball 和临时 DSH_HOME 安装并启动 Profile
+# 从 clean、锁定来源构造三原子 demo kit
+npm run build:demo-kit
+
+# 只消费封存 kit，在临时 DSH_HOME 安装并启动脚本化验收 Profile
 npm run profile:artifact-smoke
+
+# 把三件套安装到仓库内新的隔离 DSH_HOME；ID 直接取自目标 DSH provider/model 列表
+DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 ```
 
-`build:approval-fork` 在 `.build/upstream-clone` 中检出固定 commit 并构建，上游 checkout 只被 `git clone` 读取；`verify:target-host` 再校验该 commit、tag、版本与 fork 标记。宿主闭包本身不再有本地 artifact lock，其可复现性由 `pnpm-lock.yaml` 承担。
+`build:approval-fork` 在 `.build/upstream-clone` 中检出固定 commit 并构建，上游 checkout 只被 `git clone` 读取；`verify:target-host` 再校验该 commit、tag、版本与 fork 标记。`build:demo-kit` 只接受 clean、锁定的两个源码仓库，生成 `.build/demo-kit/demo-kit.json`；已验收 release set 同步冻结在 tracked `deployment-artifacts.lock.json`。两者逐一记录三个 tarball 的 SHA-256、source identity 与输入 lock 摘要。`demo:prepare` 不启动 server，不接触当前实例；它把稳定 route ID 写入隔离 Profile，并输出启动命令。provider credential 与 adapter 配置仍由该 DSH Profile 管理。
 
 ## 自动 Profile smoke 证明什么
 
 `profile:artifact-smoke` 在 disposable `DSH_HOME` 中（CLI 也来自已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2`，无需宿主 checkout）：
 
-- 校验 `.artifacts/managed-agent/artifact.json` 的 digest，并安装这一个已经 materialize/安装过的 managed-agent tarball，而不是从 source 二次 repack；
+- 完整校验 demo kit manifest、artifact digest 与 source identity，只消费三份预封存部署 tarball；
 - 安装 approval fork、managed-agent、本插件三个部署 tarball，并加入独立 probe tarball；
 - 通过真实 `dsh plugin --profile ... add --save-exact` 生成 Profile package/lock；
 - 用 `--dump-config` 确认 managed host、本插件和 probe 已 compose；

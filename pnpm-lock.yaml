@@ -796,7 +796,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-managed-agent@file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz:
-    resolution: {integrity: sha512-OMQc2WsFtJs1feRRjyVmhQMUHJ3GrXWXGNPA5nm4k7QCREvl8P2zAO9HZRFXz2Or0aq2dC5P0dal8Gas3BXfyg==, tarball: file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz}
+    resolution: {integrity: sha512-AgqvH608PNd13k8AdqAs4o7WJfu5JBSl+03BYvBnHiYb5QTf9LHLt37HnhU3dz6g5YVnDXrc7e7/2Izv1FmYGA==, tarball: file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz}
     version: 0.1.0-dev.0
     engines: {node: ^22.19.0 || >=24.0.0}
     peerDependencies:

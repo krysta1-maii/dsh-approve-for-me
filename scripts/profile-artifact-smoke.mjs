@@ -18,10 +18,8 @@ import { pnpmShellInvocation, runPnpm } from './lib/pnpm.mjs'
 const root = resolve(new URL('..', import.meta.url).pathname)
 const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/upstream.json'), 'utf8'))
 const hostVersion = upstream.upstreamVersion
-const managedArtifactDir = resolve(process.env.MANAGED_AGENT_ARTIFACT_DIR ?? join(root, '.artifacts/managed-agent'))
-const managedArtifactManifest = join(managedArtifactDir, 'artifact.json')
-const forkTarball = resolve(process.env.APPROVAL_FORK_TARBALL
-  ?? join(root, `.build/dsh-user-approval-afm-${hostVersion}.tgz`))
+const demoKitDir = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
+const demoKitManifest = join(demoKitDir, 'demo-kit.json')
 const output = resolve(process.env.PROFILE_SMOKE_OUTPUT ?? join(root, '.build/profile-smoke'))
 const profile = 'approve-for-me-artifact-smoke'
 const temp = mkdtempSync(join(tmpdir(), 'dsh-approve-profile-'))
@@ -78,18 +76,53 @@ function installTargetCli() {
 }
 
 try {
-  if (!existsSync(forkTarball)) throw new Error(`approval fork tarball is missing at ${forkTarball}`)
-  if (!existsSync(managedArtifactManifest)) throw new Error(`managed-agent artifact manifest is missing at ${managedArtifactManifest}`)
-  const managedManifest = JSON.parse(readFileSync(managedArtifactManifest, 'utf8'))
-  if (typeof managedManifest.file !== 'string' || basename(managedManifest.file) !== managedManifest.file
-    || typeof managedManifest.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(managedManifest.sha256)) {
-    throw new Error('managed-agent artifact manifest has an invalid file or sha256 field')
+  if (!existsSync(demoKitManifest)) throw new Error(`three-package demo kit is missing at ${demoKitManifest}`)
+  const demoKit = JSON.parse(readFileSync(demoKitManifest, 'utf8'))
+  if (demoKit.atomicPackageCount !== 3 || demoKit.target?.version !== hostVersion
+    || demoKit.target?.tag !== upstream.upstreamTag || demoKit.target?.commit !== upstream.upstreamCommit
+    || demoKit.locks?.pnpmLockSha256 !== sha256(join(root, 'pnpm-lock.yaml'))
+    || demoKit.locks?.approvalUpstreamSha256 !== sha256(join(root, 'patch/dsh-user-approval/upstream.json'))
+    || demoKit.locks?.managedSourceSha256 !== sha256(join(root, 'managed-agent-source.lock.json'))
+    || !Array.isArray(demoKit.artifacts) || demoKit.artifacts.length !== 3) {
+    throw new Error('invalid or stale three-package demo kit manifest')
   }
-  const materializedManagedTarball = join(managedArtifactDir, managedManifest.file)
-  if (!existsSync(materializedManagedTarball)) throw new Error(`materialized managed-agent tarball is missing at ${materializedManagedTarball}`)
-  const managedDigest = sha256(materializedManagedTarball)
-  if (managedDigest !== managedManifest.sha256) {
-    throw new Error(`managed-agent artifact digest mismatch: expected ${managedManifest.sha256}, got ${managedDigest}`)
+  const byRole = new Map()
+  const sourceByRole = new Map()
+  for (const artifact of demoKit.artifacts) {
+    if (typeof artifact.role !== 'string' || typeof artifact.file !== 'string'
+      || basename(artifact.file) !== artifact.file || typeof artifact.sha256 !== 'string') {
+      throw new Error('demo kit contains an invalid artifact row')
+    }
+    if (artifact.source === null || typeof artifact.source !== 'object'
+      || typeof artifact.source.repository !== 'string' || artifact.source.repository === ''
+      || typeof artifact.source.commit !== 'string' || !/^[0-9a-f]{40}$/u.test(artifact.source.commit)) {
+      throw new Error(`demo kit source identity is invalid for ${artifact.role}`)
+    }
+    const source = join(demoKitDir, artifact.file)
+    if (!existsSync(source) || sha256(source) !== artifact.sha256) {
+      throw new Error(`demo kit artifact digest mismatch: ${artifact.file}`)
+    }
+    if (byRole.has(artifact.role)) throw new Error(`duplicate demo kit role: ${artifact.role}`)
+    byRole.set(artifact.role, source)
+    sourceByRole.set(artifact.role, artifact.source)
+  }
+  for (const role of ['dsh-plugin-family-patch', 'managed-agent-plugin', 'approval-guardian-plugin']) {
+    if (!byRole.has(role)) throw new Error(`demo kit is missing role ${role}`)
+  }
+  const managedSourceLock = JSON.parse(readFileSync(join(root, 'managed-agent-source.lock.json'), 'utf8'))
+  const patchSource = sourceByRole.get('dsh-plugin-family-patch')
+  const managedSource = sourceByRole.get('managed-agent-plugin')
+  const approveSource = sourceByRole.get('approval-guardian-plugin')
+  if (patchSource.upstreamCommit !== upstream.upstreamCommit || patchSource.patchVersion !== upstream.patchVersion) {
+    throw new Error('approval patch source identity does not match the reviewed upstream lock')
+  }
+  if (managedSource.repository !== managedSourceLock.remote
+    || managedSource.commit !== managedSourceLock.sourceCommit
+    || managedSource.treeSha256 !== managedSourceLock.sourceTreeSha256) {
+    throw new Error('managed-agent source identity does not match the reviewed source lock')
+  }
+  if (patchSource.repository !== approveSource.repository || patchSource.commit !== approveSource.commit) {
+    throw new Error('approval patch and approve-for-me artifacts do not share one source identity')
   }
 
   rmSync(output, { recursive: true, force: true })
@@ -102,16 +135,14 @@ try {
 
   const cli = installTargetCli()
 
-  copyFileSync(materializedManagedTarball, join(output, basename(materializedManagedTarball)))
-  copyFileSync(managedArtifactManifest, join(output, 'managed-agent-artifact.json'))
-  runPnpm(['pack', '--pack-destination', output], { cwd: root, stdio: 'inherit' })
+  for (const source of byRole.values()) copyFileSync(source, join(output, basename(source)))
+  copyFileSync(demoKitManifest, join(output, 'demo-kit.json'))
   runPnpm(['pack', '--pack-destination', output], { cwd: join(root, 'tests/fixtures/profile-probe'), stdio: 'inherit' })
-  copyFileSync(forkTarball, join(output, basename(forkTarball)))
 
-  const managedTarball = onlyTarball(output, 'dsh-managed-agent-0.1.0-dev.0')
-  const approveTarball = onlyTarball(output, 'dsh-approve-for-me-0.1.0-dev.0')
+  const deployedFork = join(output, basename(byRole.get('dsh-plugin-family-patch')))
+  const managedTarball = join(output, basename(byRole.get('managed-agent-plugin')))
+  const approveTarball = join(output, basename(byRole.get('approval-guardian-plugin')))
   const probeTarball = onlyTarball(output, 'dsh-approve-for-me-profile-probe-0.0.0')
-  const deployedFork = join(output, basename(forkTarball))
   const env = {
     ...process.env,
     DSH_HOME: dshHome,
@@ -125,8 +156,8 @@ try {
     'add', '--save-exact',
     deployedFork,
     managedTarball,
-    approveTarball,
     probeTarball,
+    approveTarball,
   ], { cwd: temp, env })
 
   const profileDir = join(dshHome, 'profiles', profile)

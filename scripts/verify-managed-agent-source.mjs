@@ -29,11 +29,23 @@ if (process.argv.includes('--print')) {
 
 const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
 if (lock.version !== 1 || lock.repository !== 'krysta1-maii/dsh-managed-agent'
+  || typeof lock.remote !== 'string' || lock.remote.length === 0
+  || typeof lock.sourceCommit !== 'string' || !/^[0-9a-f]{40}$/.test(lock.sourceCommit)
   || typeof lock.sourceTreeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(lock.sourceTreeSha256)
   || !Number.isSafeInteger(lock.fileCount) || lock.fileCount < 1) {
   throw new Error(`invalid managed-agent source lock: ${lockPath}`)
 }
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim()
+const sourceRemote = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: source, encoding: 'utf8' }).trim()
+const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' }).trim()
+if (dirty !== '') throw new Error('managed-agent reviewed source must be clean before artifact construction')
+if (sourceCommit !== lock.sourceCommit) {
+  throw new Error(`managed-agent source commit differs from reviewed lock: expected ${lock.sourceCommit}, got ${sourceCommit}`)
+}
+if (sourceRemote !== lock.remote) {
+  throw new Error(`managed-agent source remote differs from reviewed lock: expected ${lock.remote}, got ${sourceRemote}`)
+}
 if (actual.sha256 !== lock.sourceTreeSha256 || actual.files !== lock.fileCount) {
   throw new Error(`managed-agent source differs from reviewed lock: expected ${lock.sourceTreeSha256}/${lock.fileCount}, got ${actual.sha256}/${actual.files}`)
 }
-console.log(`managed-agent reviewed source ${actual.sha256} (${actual.files} files)`)
+console.log(`managed-agent reviewed source ${sourceCommit} ${actual.sha256} (${actual.files} files)`)
