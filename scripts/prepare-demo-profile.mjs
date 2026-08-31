@@ -18,6 +18,10 @@ if (output !== allowedRoot && !output.startsWith(`${allowedRoot}${sep}`)) {
 }
 const kitDir = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
 const kit = JSON.parse(readFileSync(join(kitDir, 'demo-kit.json'), 'utf8'))
+const trackedKit = JSON.parse(readFileSync(join(root, 'deployment-artifacts.lock.json'), 'utf8'))
+if (JSON.stringify(kit) !== JSON.stringify(trackedKit)) {
+  throw new Error('demo kit does not match tracked deployment-artifacts.lock.json')
+}
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex')
 if (kit.atomicPackageCount !== 3 || !Array.isArray(kit.artifacts) || kit.artifacts.length !== 3
   || !Array.isArray(kit.installOrder) || kit.installOrder.length !== 3

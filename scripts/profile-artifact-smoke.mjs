@@ -20,6 +20,7 @@ const upstream = JSON.parse(readFileSync(join(root, 'patch/dsh-user-approval/ups
 const hostVersion = upstream.upstreamVersion
 const demoKitDir = resolve(process.env.DEMO_KIT_OUTPUT ?? join(root, '.build/demo-kit'))
 const demoKitManifest = join(demoKitDir, 'demo-kit.json')
+const deploymentLock = join(root, 'deployment-artifacts.lock.json')
 const output = resolve(process.env.PROFILE_SMOKE_OUTPUT ?? join(root, '.build/profile-smoke'))
 const profile = 'approve-for-me-artifact-smoke'
 const temp = mkdtempSync(join(tmpdir(), 'dsh-approve-profile-'))
@@ -77,7 +78,12 @@ function installTargetCli() {
 
 try {
   if (!existsSync(demoKitManifest)) throw new Error(`three-package demo kit is missing at ${demoKitManifest}`)
+  if (!existsSync(deploymentLock)) throw new Error(`tracked deployment artifact lock is missing at ${deploymentLock}`)
   const demoKit = JSON.parse(readFileSync(demoKitManifest, 'utf8'))
+  const trackedKit = JSON.parse(readFileSync(deploymentLock, 'utf8'))
+  if (JSON.stringify(demoKit) !== JSON.stringify(trackedKit)) {
+    throw new Error('demo kit does not match tracked deployment-artifacts.lock.json')
+  }
   if (demoKit.atomicPackageCount !== 3 || demoKit.target?.version !== hostVersion
     || demoKit.target?.tag !== upstream.upstreamTag || demoKit.target?.commit !== upstream.upstreamCommit
     || demoKit.locks?.pnpmLockSha256 !== sha256(join(root, 'pnpm-lock.yaml'))
