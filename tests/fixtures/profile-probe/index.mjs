@@ -53,6 +53,18 @@ class ProfileSmokeAdapter extends LlmAdapter {
     this.reviewCalls = 0
   }
 
+  providerInfo(provider) {
+    return { id: provider, name: 'Approve-for-me profile smoke' }
+  }
+
+  async listModels(provider) {
+    return [{ provider, id: 'profile-smoke-model', name: 'Profile smoke model' }]
+  }
+
+  async resolveModel(provider, model) {
+    return { provider, id: model, name: 'Profile smoke model' }
+  }
+
   async *stream(options) {
     const packet = reviewPacket(options.messages)
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
