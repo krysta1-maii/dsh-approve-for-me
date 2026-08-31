@@ -35,6 +35,9 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
   deliveries: Delivery[] = []
   interrupts: Array<{ authority: ParentAuthority<Parent, string>; childId: string }> = []
   rotates: Array<{ authority: ParentAuthority<Parent, string>; childId: string }> = []
+  renews: Array<{ authority: ParentAuthority<Parent, string>; childId: string }> = []
+  onList?: () => void | Promise<void>
+  onRenew?: () => void | Promise<void>
   onDeliver?: (delivery: Delivery) => void | Promise<void>
   deliveryError?: Error
 
@@ -50,12 +53,15 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
       label: options.label,
       providerData: snapshotJson(options.providerData),
       activity: 'inactive',
+      deliveryAttempts: 0,
+      retired: false,
       contaminated: false,
     })
     return id
   }
 
   async list(parentSessionId: string): Promise<ManagedOwnedReviewer<string>[]> {
+    await this.onList?.()
     return this.children.filter(child => child.parentSessionId === parentSessionId)
   }
 
@@ -69,6 +75,8 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
     const raw = JSON.parse(encoded) as { version?: unknown }
     const packet = raw.version === 2 ? parseApprovalReviewPacketV2(raw) : parseApprovalReviewPacketV1(raw)
     const delivery = { authority, childId, request: packet.request, packetVersion: packet.version }
+    const childIndex = this.children.findIndex(child => child.id === childId)
+    if (childIndex >= 0) this.children[childIndex] = { ...this.children[childIndex]!, deliveryAttempts: this.children[childIndex]!.deliveryAttempts + 1 }
     this.deliveries.push(delivery)
     await this.onDeliver?.(delivery)
     return `message-${this.deliveries.length}`
@@ -82,7 +90,7 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
     this.rotates.push({ authority, childId })
     const index = this.children.findIndex(child => child.id === childId)
     if (index >= 0) {
-      this.children[index] = { ...this.children[index]!, contaminated: true }
+      this.children[index] = { ...this.children[index]!, contaminated: true, retired: true }
     }
     return this.create(authority, {
       label: 'Approval Reviewer',
@@ -92,6 +100,19 @@ class FakePort implements ManagedReviewerPort<Parent, string> {
         policyVersion: 'policy-1',
         toolsetVersion: 1,
       }),
+    })
+  }
+
+  async renew(authority: ParentAuthority<Parent, string>, childId: string): Promise<string> {
+    this.renews.push({ authority, childId })
+    await this.onRenew?.()
+    const index = this.children.findIndex(child => child.id === childId)
+    const child = index < 0 ? undefined : this.children[index]
+    if (child === undefined || child.providerData === undefined) throw new Error('missing child to renew')
+    this.children[index] = { ...child, retired: true }
+    return this.create(authority, {
+      label: child.label,
+      providerData: child.providerData as unknown as ReviewerProviderDataV1,
     })
   }
 }
@@ -139,6 +160,7 @@ function makeCoordinator(port: FakePort, overrides: {
   reviewId?: () => string
   submit?: (payload: unknown, actualId: string) => ReturnType<DefaultDecisionChannel['submit']>
   telemetry?: ReviewerTelemetrySink
+  maxDeliveryAttemptsPerChild?: number
 } = {}) {
   const channel = new DefaultDecisionChannel(overrides.clock)
   const submit = overrides.submit ?? ((payload: unknown, actualId: string) => channel.submit(payload, { actualReviewerSessionId: actualId }))
@@ -146,11 +168,12 @@ function makeCoordinator(port: FakePort, overrides: {
     channel,
     coordinator: new DefaultReviewCoordinator({
       port,
-      directory: new DefaultReviewerDirectory(port),
+      directory: new DefaultReviewerDirectory(port, REVIEWER_PROVIDER, overrides.maxDeliveryAttemptsPerChild ?? 64),
       channel,
       lane: new SerialLanes(),
       timeoutMs: overrides.timeoutMs ?? 1_000,
       preset: providerData(),
+      ...overrides.clock === undefined ? {} : { clock: overrides.clock },
       ...overrides.now === undefined ? {} : { now: overrides.now },
       ...overrides.reviewId === undefined ? {} : { reviewId: overrides.reviewId },
       ...overrides.telemetry === undefined ? {} : { telemetry: overrides.telemetry },
@@ -183,6 +206,71 @@ describe('DefaultReviewCoordinator', () => {
     expect(port.creates).toBe(1)
     expect(port.deliveries.map(item => item.childId)).toEqual(['parent-1-reviewer-1', 'parent-1-reviewer-1'])
     expect(port.deliveries[0]!.request.action).toEqual(action())
+  })
+
+  it('renews a Reviewer after the durable per-child review quota', async () => {
+    const port = new FakePort()
+    const ids = ['review-1', 'review-2']
+    const { coordinator, submit } = makeCoordinator(port, {
+      reviewId: () => ids.shift()!,
+      maxDeliveryAttemptsPerChild: 1,
+    })
+    port.onDeliver = ({ childId, request }) => {
+      expect(submit(decision(request), childId).status).toBe('accepted')
+    }
+    const parent = { id: 'parent-1' }
+    await coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })
+    await coordinator.review({ authority: authority(parent), action: action(), verifiedDossier: verifiedDossier() })
+
+    expect(port.renews).toEqual([{ authority: authority(parent), childId: 'parent-1-reviewer-1' }])
+    expect(port.deliveries.map(item => item.childId)).toEqual(['parent-1-reviewer-1', 'parent-1-reviewer-2'])
+    expect(port.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'parent-1-reviewer-1', deliveryAttempts: 1, retired: true }),
+      expect.objectContaining({ id: 'parent-1-reviewer-2', deliveryAttempts: 1, retired: false }),
+    ]))
+  })
+
+  it('times out a never-resolving Reviewer discovery at the absolute deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    const port = new FakePort()
+    let listStarted = false
+    port.onList = () => {
+      listStarted = true
+      return new Promise<void>(() => undefined)
+    }
+    const { coordinator } = makeCoordinator(port, { timeoutMs: 50 })
+    const pending = coordinator.review({
+      authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier(),
+    })
+    await waitFor(() => listStarted)
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'timed-out' })
+    await vi.advanceTimersByTimeAsync(50)
+    await rejected
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toEqual([])
+  })
+
+  it('times out a never-resolving capacity renewal at the absolute deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    const port = new FakePort()
+    port.children.push({
+      id: 'parent-1-reviewer-1', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER,
+      label: 'Approval Reviewer', providerData: snapshotJson(providerData()), activity: 'inactive',
+      deliveryAttempts: 1, retired: false, contaminated: false,
+    })
+    port.onRenew = () => new Promise<void>(() => undefined)
+    const { coordinator } = makeCoordinator(port, { timeoutMs: 50, maxDeliveryAttemptsPerChild: 1 })
+    const pending = coordinator.review({
+      authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier(),
+    })
+    await waitFor(() => port.renews.length === 1)
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'timed-out' })
+    await vi.advanceTimersByTimeAsync(50)
+    await rejected
+    expect(port.creates).toBe(0)
+    expect(port.deliveries).toEqual([])
   })
 
   it('observes a settled reviewer outcome without changing it', async () => {
@@ -246,7 +334,7 @@ describe('DefaultReviewCoordinator', () => {
     const old = providerData('generation-old')
     port.children.push({
       id: 'old-reviewer', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER,
-      label: 'Approval Reviewer', providerData: snapshotJson(old), activity: 'inactive', contaminated: false,
+      label: 'Approval Reviewer', providerData: snapshotJson(old), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: false,
     })
     const { coordinator, submit } = makeCoordinator(port)
     port.onDeliver = ({ childId, request }) => { submit(decision(request), childId) }
@@ -259,8 +347,8 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     const data = providerData()
     port.children.push(
-      { id: 'r1', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
-      { id: 'r2', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
+      { id: 'r1', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: false },
+      { id: 'r2', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Reviewer', providerData: snapshotJson(data), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: false },
     )
     const { coordinator } = makeCoordinator(port)
     await expect(coordinator.review({ authority: authority({ id: 'parent-1' }), action: action(), verifiedDossier: verifiedDossier() }))
@@ -411,7 +499,7 @@ describe('DefaultReviewCoordinator', () => {
     const data = providerData()
     port.children.push({
       id: 'bad-contaminated', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER,
-      label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: true,
+      label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: true,
     })
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
     port.onDeliver = ({ childId, request }) => {
@@ -428,8 +516,8 @@ describe('DefaultReviewCoordinator', () => {
     const port = new FakePort()
     const data = providerData()
     port.children.push(
-      { id: 'old-contaminated', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: true },
-      { id: 'clean-replacement', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', contaminated: false },
+      { id: 'old-contaminated', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: true },
+      { id: 'clean-replacement', parentSessionId: 'parent-1', provider: REVIEWER_PROVIDER, label: 'Approval Reviewer', providerData: snapshotJson(data), activity: 'inactive', deliveryAttempts: 0, retired: false, contaminated: false },
     )
     const { coordinator, submit } = makeCoordinator(port, { reviewId: () => 'review-1' })
     port.onDeliver = ({ childId, request }) => {

@@ -124,6 +124,7 @@ export type {
   ApprovalDecision,
   ApprovalDecisionKind,
   DecisionAuthorizationAssessmentV1,
+  SandboxDenialRelationV1,
   ApprovalOutcome,
   ApprovalResolution,
   ApprovalReviewRequest,
@@ -140,7 +141,7 @@ export type {
 } from './domain/protocol.js'
 
 export { assessVerifiedActionV1, permitsAutomaticFastPath, RISK_RULES_V1, validateDecisionAssessmentV1 } from './domain/risk-assessment.js'
-export type { AuthorizationAssessmentV1, RiskAssessmentV1, RiskCategoryV1, RiskEvidenceV1, RiskRuleV1, DecisionAssessmentValidityV1 } from './domain/risk-assessment.js'
+export type { AuthorizationAssessmentV1, DirectUserAuthorizationEvidenceV1, RiskAssessmentV1, RiskCategoryV1, RiskEvidenceV1, RiskRuleV1, DecisionAssessmentValidityV1 } from './domain/risk-assessment.js'
 
 // Application services (no DSH imports).
 export {
@@ -239,6 +240,25 @@ export {
   createShellProcessActionProjector,
 } from './dsh/action-capture.js'
 export type { CaptureBridge, FilesystemToolNames, NetworkToolNames } from './dsh/action-capture.js'
+export {
+  DSH_ALPHA1_ARGUMENT_SEMANTICS_ID,
+  DSH_ALPHA1_FILESYSTEM_FAMILY,
+  DSH_ALPHA1_FILESYSTEM_PROJECTOR_ID,
+  DSH_ALPHA1_NETWORK_FAMILY,
+  DSH_ALPHA1_NETWORK_PROJECTOR_ID,
+  DSH_ALPHA1_OPAQUE_FAMILY,
+  DSH_ALPHA1_OPAQUE_PROJECTOR_ID,
+  DSH_ALPHA1_SHELL_FAMILY,
+  DSH_ALPHA1_SHELL_PROJECTOR_ID,
+  createDshAlpha1DossierCatalog,
+  createDshAlpha1StockProjectorRegistry,
+  createDshAlpha1StockToolCatalog,
+} from './dsh/stock-tools.js'
+export {
+  DshScopedEffectiveCatalogResolver,
+  createDshAlpha1EffectiveCatalog,
+} from './dsh/effective-tool-catalog.js'
+export type { DshAlpha1EffectiveCatalog, ScopedToolSchemas } from './dsh/effective-tool-catalog.js'
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'

@@ -46,6 +46,79 @@ interface ReviewerTelemetryRunState {
   rotations: number
 }
 
+const systemReviewClock: ReviewClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+}
+
+/** One cancellation source and race shared by every await in a business review. */
+class ReviewDeadlineScope {
+  readonly signal: AbortSignal
+  private readonly controller = new AbortController()
+  private readonly timer: unknown
+  private deadlineExpired = false
+  private disposed = false
+  private readonly onCallerAbort?: () => void
+
+  constructor(
+    private readonly deadlineAt: number,
+    callerSignal: AbortSignal | undefined,
+    private readonly clock: ReviewClock,
+  ) {
+    this.signal = this.controller.signal
+    if (callerSignal !== undefined) {
+      this.onCallerAbort = () => { this.controller.abort() }
+      callerSignal.addEventListener('abort', this.onCallerAbort, { once: true })
+    }
+    const remaining = Math.max(0, deadlineAt - clock.now())
+    this.timer = clock.setTimeout(() => {
+      this.deadlineExpired = true
+      this.controller.abort()
+    }, remaining)
+    if (callerSignal?.aborted) this.controller.abort()
+  }
+
+  async wait<T>(operation: PromiseLike<T>): Promise<T> {
+    this.throwIfAborted()
+    return new Promise<T>((resolve, reject) => {
+      let settled = false
+      const finish = (callback: () => void): void => {
+        if (settled) return
+        settled = true
+        this.signal.removeEventListener('abort', onAbort)
+        callback()
+      }
+      const onAbort = (): void => finish(() => reject(this.failure()))
+      this.signal.addEventListener('abort', onAbort, { once: true })
+      Promise.resolve(operation).then(
+        value => finish(() => resolve(value)),
+        error => finish(() => reject(error)),
+      )
+      if (this.signal.aborted) onAbort()
+    })
+  }
+
+  throwIfAborted(): void {
+    if (this.signal.aborted) throw this.failure()
+  }
+
+  close(callerSignal?: AbortSignal): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.clock.clearTimeout(this.timer)
+    if (callerSignal !== undefined && this.onCallerAbort !== undefined) {
+      callerSignal.removeEventListener('abort', this.onCallerAbort)
+    }
+  }
+
+  private failure(): ReviewProtocolError {
+    return this.deadlineExpired || this.clock.now() >= this.deadlineAt
+      ? new ReviewProtocolError('timed-out', 'review reached its absolute business deadline')
+      : new ReviewProtocolError('aborted', 'review lifecycle was cancelled')
+  }
+}
+
 /** Bounded, content-free execution summary for the sealed audit boundary. */
 export interface ReviewExecutionSummaryV1 {
   readonly attempts: number
@@ -114,6 +187,8 @@ export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
   readonly lane: SerialLanes
   readonly timeoutMs: number
   readonly preset: ReviewerProviderDataV1
+  /** Scheduler shared with the decision channel for deterministic absolute deadlines. */
+  readonly clock?: ReviewClock
   readonly now?: () => number
   readonly reviewId?: () => string
   readonly buildContent?: (packet: ApprovalReviewPacketV1 | ApprovalReviewPacketV2) => readonly ReviewerTextBlock[]
@@ -128,6 +203,7 @@ export interface ReviewCoordinatorOptions<Parent, SessionId extends string> {
  */
 export class DefaultReviewCoordinator<Parent, SessionId extends string>
   implements ReviewCoordinator<Parent, SessionId> {
+  private readonly clock: ReviewClock
   private readonly now: () => number
   private readonly reviewId: () => string
   private readonly buildContent: (packet: ApprovalReviewPacketV1 | ApprovalReviewPacketV2) => readonly ReviewerTextBlock[]
@@ -136,7 +212,8 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) {
       throw new TypeError('timeoutMs must be a positive safe integer')
     }
-    this.now = options.now ?? Date.now
+    this.clock = options.clock ?? systemReviewClock
+    this.now = options.now ?? this.clock.now
     this.reviewId = options.reviewId ?? randomUUID
     this.buildContent = options.buildContent ?? approvalReviewPacketContent
   }
@@ -175,7 +252,9 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       return Promise.reject(new ReviewProtocolError('timed-out', 'review deadline is absent or already expired'))
     }
     const telemetry: ReviewerTelemetryRunState = { attempts: 0, rotationAttempts: 0, rotations: 0 }
-    const run = this.options.lane.run(input.authority.sessionId, async () => {
+    const deadline = new ReviewDeadlineScope(deadlineAt, input.signal, this.clock)
+    const laneRun = this.options.lane.run(input.authority.sessionId, async () => {
+      deadline.throwIfAborted()
       // At most two business attempts may share the immutable evidence and
       // deadline. Child contamination is separate infrastructure recovery and
       // never consumes one of those attempts.
@@ -183,7 +262,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       for (let attempt = 0; attempt < 2; attempt += 1) {
         telemetry.attempts += 1
         try {
-          return await this.reviewAttempt(input, action, deadlineAt, telemetry)
+          return await this.reviewAttempt(input, action, deadlineAt, deadline, telemetry)
         } catch (error: unknown) {
           lastError = error
           if (attempt === 0 && isRetryableAttemptFailure(error)) continue
@@ -192,6 +271,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       }
       throw lastError
     })
+    const run = deadline.wait(laneRun)
     return run.then(
       decision => {
         this.observeTelemetry({
@@ -216,7 +296,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
         })
         throw error
       },
-    )
+    ).finally(() => { deadline.close(input.signal) })
   }
 
   /** Recover a freshly discovered contaminated child at most once. */
@@ -234,12 +314,13 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     },
     action: ActionSnapshot,
     deadlineAt: number,
+    deadline: ReviewDeadlineScope,
     telemetry: ReviewerTelemetryRunState,
   ): Promise<ApprovalDecision> {
     let lastError: unknown
     for (let recovery = 0; recovery < 2; recovery += 1) {
       try {
-        return await this.reviewOnce(input, action, deadlineAt, telemetry)
+        return await this.reviewOnce(input, action, deadlineAt, deadline, telemetry)
       } catch (error: unknown) {
         lastError = error
         if (recovery === 0 && isContaminationError(error)) continue
@@ -261,19 +342,18 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     },
     action: ActionSnapshot,
     deadlineAt: number,
+    deadline: ReviewDeadlineScope,
     telemetry: ReviewerTelemetryRunState,
   ): Promise<ApprovalDecision> {
-    if (input.signal?.aborted) {
-      throw new ReviewProtocolError('aborted', 'review was aborted before an attempt started')
-    }
+    deadline.throwIfAborted()
     if (this.now() >= deadlineAt) {
       throw new ReviewProtocolError('timed-out', 'review reached its business deadline before an attempt started')
     }
-    const childId = await this.options.directory.ensure(
+    const childId = await deadline.wait(this.options.directory.ensure(
       input.authority,
       this.options.preset,
-      input.signal,
-    )
+      deadline.signal,
+    ))
     const issuedAt = this.now()
     if (issuedAt >= deadlineAt) {
       throw new ReviewProtocolError('timed-out', 'review reached its business deadline before delivery')
@@ -307,32 +387,36 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
           },
           baseline: input.assessment,
         })
-    const result = this.options.channel.arm(request, input.signal)
+    const result = this.options.channel.arm(request, deadline.signal)
     // A very fast scoped tool may settle before deliver()'s acceptance promise
     // resumes this task. Attach containment immediately while preserving the
     // original promise for the authoritative await below.
     void result.catch(() => undefined)
     try {
-      await this.options.port.deliver(
+      await deadline.wait(this.options.port.deliver(
         input.authority,
         childId,
         this.buildContent(packet),
-        input.signal === undefined ? {} : { signal: input.signal },
-      )
+        { signal: deadline.signal },
+      ))
     } catch (error: unknown) {
-      this.options.channel.cancel(request.reviewId, 'delivery-failed', `review ${request.reviewId} delivery failed`)
+      if (!(error instanceof ReviewProtocolError && (error.code === 'timed-out' || error.code === 'aborted'))) {
+        this.options.channel.cancel(request.reviewId, 'delivery-failed', `review ${request.reviewId} delivery failed`)
+      }
       await result.catch(() => undefined)
       if (isContaminationError(error)) {
         // Drain the contaminated child and reserve a clean replacement before
         // the retry selects a child from the durable catalog.
         telemetry.rotationAttempts += 1
-        await this.options.port.rotate(input.authority, childId, input.signal)
+        await deadline.wait(this.options.port.rotate(input.authority, childId, deadline.signal))
         telemetry.rotations += 1
+      } else if (error instanceof ReviewProtocolError && error.code !== 'disposed') {
+        this.options.port.interrupt(input.authority, childId)
       }
       throw error
     }
     try {
-      return await result
+      return await deadline.wait(result)
     } catch (error: unknown) {
       if (error instanceof ReviewProtocolError && error.code !== 'disposed') {
         this.options.port.interrupt(input.authority, childId)

@@ -2,7 +2,7 @@
 
 > 状态：2026-08-28，**宿主设计 v2 候选契约**。v2 只 patch 官方 `@deepseek-ai/dsh-user-approval`，增加 `ApprovalRequestEvent.requestId` 与 `ApprovalService.registerMachinePolicy()`；机器裁决在 `never` 之后、`approval/request` waterfall 之前执行，拥有与 listener 顺序无关的确定性优先级。已废弃的 v1 companion Host Profile／thin composer adapter／mutation gate／attestation 方案见 [archive/README.md](archive/README.md) 与旧版契约。
 >
-> 本文定义 `dsh-approve-for-me` 的审批组合、裁决映射、Review Run、生命周期、持久化与失败关闭边界。当前仓库尚未实现本文全部接口；已实现骨架与待迁移项见 [implementation.md](implementation.md)。Guardian 材料本身由 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 定义，文档权威顺序见 [文档地图](README.md)。
+> 本文定义 `dsh-approve-for-me` 的审批组合、裁决映射、Review Run、生命周期、持久化与失败关闭边界。当前代码实现状态见 [implementation.md](implementation.md)：机器决策槽、source-backed dossier、R4 基线、Storage Domain 决策行与 disposable Profile smoke 已落地；真实 LLM/Web/cold-process E2E 仍待执行。Guardian 材料本身由 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 定义，文档权威顺序见 [文档地图](README.md)。
 
 ## 1. 定稿范围与固定决策
 
@@ -160,6 +160,7 @@ interface ReviewRunIdentityV2 {
 ## 7. trustEnvelope 与 breaker
 
 - `trustEnvelope` 是确定性快路径：闭集工具族、`maxRequestedMode`、workspace 边界、justification、严格阶梯变宽全部满足才允许；默认关闭。
+  - 当前实现尚未接线 host-backed environment projector：编译器把 `pendingApproval.confinement` 固定为 `unconfined-composition`，因此即使配置启用 trustEnvelope 也不会产生 envelope input（恒为 outside）。上线前必须先接入 `sandbox-policy` 环境投影。
 - `deny breaker`：只有同 parent lifecycle/turn/direct-user-frontier/`actionHash` 的 Guardian deny 建立 entry；命中返回 `rejected`，永不 allow。
 - `allow-cache`（v1.1）：同 session + 同 `actionHash` + 同配置指纹/generation + 用户 frontier 未变的既往 Guardian allow 可复用；新直接用户消息、配置或代际变化即失效；丢失缓存最多多一次裁决。
 - 语义等价、跨工具绕过、目标重叠均不属于 v2 验收目标。
@@ -182,14 +183,14 @@ type ApproveForMeHostStateV2 = 'starting' | 'ready' | 'draining' | 'disposed' | 
 
 ## 9. 持久化与案例留存
 
-Storage Domain 固定 `approve_for_me`：
+Storage Domain 固定 `approve_for_me`（facts）与 `afm_decision_records`（决策行）：
 
-| Table | 内容 | 影响自动 allow |
+| Domain / table | 内容 | 影响自动 allow |
 |---|---|---|
-| `executions` | pre-execute action projection、durable-result join、safe receipt | 是 |
-| `approval_snapshots` | 每次 ask 的 immutable environment snapshot（含 requestId） | 是 |
-| `review_records` | 默认最小决策记录 | 自动 allow 前必须 durable |
-| `case_artifacts` | opt-in 完整 packet／policy／attempt 结果 | 否 |
+| `approve_for_me` / `executions` | pre-execute action projection、durable-result join、safe receipt | 是 |
+| `approve_for_me` / `approval_snapshots` | 每次 ask 的 immutable environment snapshot（含 requestId） | 是 |
+| `afm_decision_records` / `records` | 默认最小决策记录 | 自动 allow 前必须 durable |
+| `case_artifacts` | opt-in 完整 packet／policy／attempt 结果 | 否（后端尚未接线，full 模式拒绝安装） |
 
 记录不复制 `HumanApprovalPort` 返回值；权威 final outcome 从匹配的 `approval/decided` 读取。schema、key、quota、TTL、GC 与隐私规则见卷宗规范第 12、13.4 节。
 
@@ -215,9 +216,9 @@ function apply(ctx: Context, config: ApproveForMeHostConfigV2): void {
 
 ## 12. 当前代码差距
 
-已就位：patch 包结构（overlay/构建/校验/测试）、`src/approval-gate` 端口骨架、原 0.1.1-rc.2 的 channel/lanes/directory/provider/decision-tool 骨架。
+已就位：fork overlay/构建/校验、机器策略 adapter、`DefaultGatePipeline` 全管线、scoped effective tool catalog、source-backed dossier compiler/projector、R4 基线、Storage Domain execution facts/approval snapshots/decision records、Reviewer deadline/attempts/污染轮换语义。
 
-尚待：0.1.2 迁移；机器策略 adapter 与管线实现；trustEnvelope/breaker/allow-cache；dossier compiler；记录/案例；真实验收。
+尚待：真实 LLM Guardian 与 Web approval panel E2E、pending approval 与 Reviewer child 的跨进程 cold-resume 验收、full case capture durable 后端、R4 完整规则与 target/side-effect matcher、未实现工具族的 exact semantic adapter。
 
 ## 13. 最低验收条件
 

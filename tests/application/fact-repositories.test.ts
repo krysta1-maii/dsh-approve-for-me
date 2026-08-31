@@ -9,18 +9,23 @@ import type {
   SessionLifecycleIdentityV1,
   ToolExecutionFactRecordV1,
 } from '../../src/index.js'
+import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 const session: SessionLifecycleIdentityV1 = { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 1_000 }
+const schemas = [{ name: 'bash', description: 'shell', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+const effective = createDshAlpha1EffectiveCatalog(schemas)
+const commitment = createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas)
 
 function executionFact(): ToolExecutionFactRecordV1 {
   return {
     version: 1,
+    catalogCommitment: commitment,
     session,
     request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
     toolClassification: {
-      classificationCatalogFingerprint: hash('c'),
-      descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' },
+      classificationCatalogFingerprint: effective.dossier.fingerprint,
+      descriptor: effective.dossier.descriptors[0]!,
     },
     projection: {
       projectorId: 'default-v1',
@@ -37,7 +42,7 @@ function approvalSnapshot(): ApprovalSnapshotRecordV1 {
     session,
     approvalRequestId: 'ask-1',
     approvalAskedSeq: 5,
-    execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
+    execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId: 'default-v1' },
     environment: { version: 1, kind: 'native-header-only' },
   }
 }

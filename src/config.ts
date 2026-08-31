@@ -22,10 +22,10 @@ const TRUST_ENVELOPE_TOOLS: readonly TrustEnvelopeToolFamily[] = [
 export const name = 'dsh-approve-for-me'
 
 /**
- * Cordis service injects. All four services are REQUIRED: a missing service
+ * Cordis service injects. Every listed service is REQUIRED: a missing service
  * means this plugin cannot mount, never a silently degraded Reviewer.
  */
-export const inject = ['managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'] as const
+export const inject = ['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'] as const
 
 /**
  * Serializable plugin configuration (YAML/JSON-loader expressible). Code-level
@@ -35,7 +35,7 @@ export const inject = ['managedAgents', 'tools', 'systemPrompt', 'approval', 'st
 export interface Config {
   readonly mode?: 'auto' | 'auto-then-user'
   readonly timeoutMs?: number
-  readonly maxReviewsPerChild?: number
+  readonly maxDeliveryAttemptsPerChild?: number
   /** Maximum UTF-8 bytes of a complete serialized Guardian dossier. */
   readonly maxDossierBytes?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
@@ -54,7 +54,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   mode: z.union(['auto', 'auto-then-user'] as const).default('auto'),
   timeoutMs: z.number().default(30_000),
-  maxReviewsPerChild: z.number().min(1),
+  maxDeliveryAttemptsPerChild: z.number().min(1),
   maxDossierBytes: z.number().min(1),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
@@ -76,7 +76,7 @@ export const Config: z<Config> = z.object({
 export interface NormalizedConfig {
   readonly mode: ReviewMode
   readonly timeoutMs: number
-  readonly maxReviewsPerChild: number
+  readonly maxDeliveryAttemptsPerChild: number
   readonly maxDossierBytes: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
@@ -84,7 +84,7 @@ export interface NormalizedConfig {
   readonly preset: ReviewerProviderDataV1
 }
 
-const DEFAULT_MAX_REVIEWS_PER_CHILD = 64
+const DEFAULT_MAX_DELIVERY_ATTEMPTS_PER_CHILD = 64
 /** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
 const DEFAULT_MAX_DOSSIER_BYTES = 256_000
 
@@ -137,7 +137,13 @@ function normalizeToolCatalog(input?: ApprovalToolCatalog): ApprovalToolCatalog 
     version: 1 as const,
     argumentSemanticsId: input.argumentSemanticsId,
     fingerprint: input.fingerprint,
-    descriptors: Object.freeze([...input.descriptors]),
+    descriptors: Object.freeze(input.descriptors.map(descriptor => Object.freeze({
+      toolName: descriptor.toolName,
+      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+      classification: descriptor.classification,
+      actionSemanticsFamily: descriptor.actionSemanticsFamily,
+      actionProjectorId: descriptor.actionProjectorId,
+    }))),
   }
   const expectedFingerprint = fingerprintApprovalToolCatalogV1(normalized)
   if (expectedFingerprint === undefined || input.fingerprint !== expectedFingerprint) {
@@ -194,9 +200,9 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new TypeError('timeoutMs must be a positive safe integer')
   }
-  const maxReviewsPerChild = config.maxReviewsPerChild ?? DEFAULT_MAX_REVIEWS_PER_CHILD
-  if (!Number.isSafeInteger(maxReviewsPerChild) || maxReviewsPerChild < 1) {
-    throw new TypeError('maxReviewsPerChild must be a positive safe integer')
+  const maxDeliveryAttemptsPerChild = config.maxDeliveryAttemptsPerChild ?? DEFAULT_MAX_DELIVERY_ATTEMPTS_PER_CHILD
+  if (!Number.isSafeInteger(maxDeliveryAttemptsPerChild) || maxDeliveryAttemptsPerChild < 1) {
+    throw new TypeError('maxDeliveryAttemptsPerChild must be a positive safe integer')
   }
   const maxDossierBytes = config.maxDossierBytes ?? DEFAULT_MAX_DOSSIER_BYTES
   if (!Number.isSafeInteger(maxDossierBytes) || maxDossierBytes < 1) {
@@ -217,7 +223,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   return Object.freeze({
     mode,
     timeoutMs,
-    maxReviewsPerChild,
+    maxDeliveryAttemptsPerChild,
     maxDossierBytes,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),

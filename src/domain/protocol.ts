@@ -102,11 +102,18 @@ export type ApprovalRisk = typeof RISKS[number]
 export type UserAuthorization = typeof AUTHORIZATIONS[number]
 
 /** Model claim carried only by the R5 policy-v2 decision schema. */
+export interface SandboxDenialRelationV1 {
+  readonly sourceRef: string
+  readonly relation: 'same-action-legitimate-retry'
+}
+
 export interface DecisionAuthorizationAssessmentV1 {
   readonly version: 1
   readonly targetCovered: boolean
   readonly sideEffectsCovered: boolean
   readonly sourceRefs: readonly string[]
+  /** Guardian-selected candidate; never source-derived authorization by itself. */
+  readonly sandboxDenialRelation?: SandboxDenialRelationV1
   readonly rationale: string
 }
 
@@ -365,7 +372,7 @@ export function parseApprovalReviewRequest(input: unknown): ApprovalReviewReques
 
 function parseDecisionAuthorizationAssessment(input: unknown): DecisionAuthorizationAssessmentV1 {
   const value = record(input, 'decision.assessment')
-  exactKeys(value, ['version', 'targetCovered', 'sideEffectsCovered', 'sourceRefs', 'rationale'], [], 'decision.assessment')
+  exactKeys(value, ['version', 'targetCovered', 'sideEffectsCovered', 'sourceRefs', 'rationale'], ['sandboxDenialRelation'], 'decision.assessment')
   if (value.version !== 1) throw new TypeError('decision.assessment.version must be 1')
   if (typeof value.targetCovered !== 'boolean' || typeof value.sideEffectsCovered !== 'boolean') {
     throw new TypeError('decision.assessment coverage must be boolean')
@@ -373,7 +380,26 @@ function parseDecisionAuthorizationAssessment(input: unknown): DecisionAuthoriza
   if (!Array.isArray(value.sourceRefs) || value.sourceRefs.length > 32) throw new TypeError('decision.assessment.sourceRefs must be an array with at most 32 entries')
   const sourceRefs = Object.freeze(value.sourceRefs.map((ref, index) => identifier(ref, `decision.assessment.sourceRefs[${index}]`)))
   if (new Set(sourceRefs).size !== sourceRefs.length) throw new TypeError('decision.assessment.sourceRefs must be unique')
-  return Object.freeze({ version: 1, targetCovered: value.targetCovered, sideEffectsCovered: value.sideEffectsCovered, sourceRefs, rationale: boundedString(value.rationale, 'decision.assessment.rationale', 4096) })
+  let sandboxDenialRelation: SandboxDenialRelationV1 | undefined
+  if (value.sandboxDenialRelation !== undefined) {
+    const relation = record(value.sandboxDenialRelation, 'decision.assessment.sandboxDenialRelation')
+    exactKeys(relation, ['sourceRef', 'relation'], [], 'decision.assessment.sandboxDenialRelation')
+    if (relation.relation !== 'same-action-legitimate-retry') {
+      throw new TypeError('decision.assessment.sandboxDenialRelation.relation must be same-action-legitimate-retry')
+    }
+    sandboxDenialRelation = Object.freeze({
+      sourceRef: identifier(relation.sourceRef, 'decision.assessment.sandboxDenialRelation.sourceRef'),
+      relation: 'same-action-legitimate-retry',
+    })
+  }
+  return Object.freeze({
+    version: 1,
+    targetCovered: value.targetCovered,
+    sideEffectsCovered: value.sideEffectsCovered,
+    sourceRefs,
+    ...(sandboxDenialRelation === undefined ? {} : { sandboxDenialRelation }),
+    rationale: boundedString(value.rationale, 'decision.assessment.rationale', 4096),
+  })
 }
 
 /** Parse the only model-owned terminal payload accepted by the plugin. */

@@ -76,7 +76,18 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           requestId: request.requestId,
           toolName: request.toolName,
         })
-        if (actionHash.length === 0 || signal.aborted) return signal.aborted ? 'cancelled' : 'unavailable'
+        if (actionHash.length === 0 || signal.aborted) {
+          if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
+            console.error('[approve-for-me machine-policy] request identity unavailable', {
+              requestId: request.requestId,
+              callId,
+              toolName: request.toolName,
+              actionHashPresent: actionHash.length > 0,
+              aborted: signal.aborted,
+            })
+          }
+          return signal.aborted ? 'cancelled' : 'unavailable'
+        }
         const gateRequest: GateMachineRequestV1 = {
           requestId: request.requestId,
           parentSessionId,
@@ -87,13 +98,23 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           mode: options.mode,
           signal,
         }
-        return options.gate.decide(gateRequest)
+        const outcome = await options.gate.decide(gateRequest)
+        if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
+          console.error('[approve-for-me machine-policy] gate outcome', {
+            requestId: request.requestId,
+            callId,
+            toolName: request.toolName,
+            outcome,
+          })
+        }
+        return outcome
       }
       try {
         return options.lifecycle === undefined
           ? await execute(request.signal ?? new AbortController().signal)
           : await options.lifecycle.run(request.signal, execute)
       } catch (error: unknown) {
+        if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me machine-policy]', error)
         return gateFailureOutcome(error, options.mode)
       }
     },

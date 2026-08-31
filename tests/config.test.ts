@@ -20,7 +20,7 @@ const valid = () => ({
 describe('plugin config', () => {
   it('exposes the stable plugin identity and required injects', () => {
     expect(name).toBe('dsh-approve-for-me')
-    expect([...inject]).toEqual(['managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'])
+    expect([...inject]).toEqual(['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'])
   })
 
   it('normalizes defaults and derives the Reviewer preset', () => {
@@ -49,9 +49,9 @@ describe('plugin config', () => {
     expect(normalized.timeoutMs).toBe(5_000)
   })
 
-  it('normalizes maxReviewsPerChild and trust-envelope defaults', () => {
+  it('normalizes maxDeliveryAttemptsPerChild and trust-envelope defaults', () => {
     const normalized = normalizeConfig(valid())
-    expect(normalized.maxReviewsPerChild).toBe(64)
+    expect(normalized.maxDeliveryAttemptsPerChild).toBe(64)
     expect(normalized.trustEnvelope).toEqual({
       version: 1,
       enabled: false,
@@ -79,6 +79,14 @@ describe('plugin config', () => {
     })
     expect(normalized.toolCatalog.descriptors).toHaveLength(1)
     expect(Object.isFrozen(normalized.toolCatalog.descriptors)).toBe(true)
+    expect(Object.isFrozen(normalized.toolCatalog.descriptors[0])).toBe(true)
+  })
+
+  it('deep-clones configured descriptors across the install boundary', () => {
+    const descriptor = { toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classification: 'body-escalation' as const, actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' }
+    const normalized = normalizeConfig({ ...valid(), toolCatalog: toolCatalog([descriptor]) })
+    ;(descriptor as { classification: string }).classification = 'ordinary'
+    expect(normalized.toolCatalog.descriptors[0]?.classification).toBe('body-escalation')
   })
 
   it('commits each descriptor semantic family and projector identity', () => {
@@ -139,10 +147,10 @@ describe('plugin config', () => {
     })).toThrow(/positive safe integer/)
   })
 
-  it('accepts explicit maxReviewsPerChild and a partial trust envelope', () => {
+  it('accepts explicit maxDeliveryAttemptsPerChild and a partial trust envelope', () => {
     const normalized = normalizeConfig({
       ...valid(),
-      maxReviewsPerChild: 16,
+      maxDeliveryAttemptsPerChild: 16,
       trustEnvelope: {
         enabled: true,
         tools: ['bash'],
@@ -150,7 +158,7 @@ describe('plugin config', () => {
         requireJustification: true,
       },
     })
-    expect(normalized.maxReviewsPerChild).toBe(16)
+    expect(normalized.maxDeliveryAttemptsPerChild).toBe(16)
     expect(normalized.trustEnvelope).toMatchObject({
       enabled: true,
       tools: ['bash'],
@@ -164,7 +172,7 @@ describe('plugin config', () => {
   it('rejects invalid loader configuration before provider registration', () => {
     expect(() => normalizeConfig({ ...valid(), timeoutMs: 0 })).toThrow(/timeoutMs/)
     expect(() => normalizeConfig({ ...valid(), mode: 'never' as never })).toThrow(/mode/)
-    expect(() => normalizeConfig({ ...valid(), maxReviewsPerChild: 0 })).toThrow(/maxReviewsPerChild/)
+    expect(() => normalizeConfig({ ...valid(), maxDeliveryAttemptsPerChild: 0 })).toThrow(/maxDeliveryAttemptsPerChild/)
     expect(() => normalizeConfig({ ...valid(), maxDossierBytes: 0 })).toThrow(/maxDossierBytes/)
     expect(() => normalizeConfig({ ...valid(), trustEnvelope: { tools: ['unknown'] as never } }))
       .toThrow(/unknown tool family/)

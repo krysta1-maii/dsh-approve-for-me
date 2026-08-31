@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   DefaultDossierCompiler,
+  DefaultPrincipalDelegationProjector,
   createActionSnapshot,
   effectiveToolBindingFromSchemaV1,
+  fingerprintApprovalToolCatalogV1,
   fingerprintDelegationToolCatalogV1,
   hashAction,
   recomputeDossierHash,
@@ -11,6 +13,7 @@ import type {
   GuardianDossierCompilerDependencies,
   ParentSessionFactSnapshotV1,
 } from '../../src/index.js'
+import { createDshAlpha1CatalogCommitment } from '../../src/dsh/effective-tool-catalog.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 
@@ -42,6 +45,23 @@ function catalog() {
   return { ...unsealed, fingerprint: fingerprintDelegationToolCatalogV1(unsealed)! }
 }
 
+function commitment() {
+  const unsealedApproval = {
+    version: 1 as const,
+    argumentSemanticsId: 'default-v1',
+    fingerprint: '',
+    descriptors: [{
+      toolName: 'bash',
+      toolSchemaFingerprint: bashToolSchemaFingerprint,
+      classification: 'ordinary' as const,
+      actionSemanticsFamily: 'generic-raw',
+      actionProjectorId: 'dsh-approve-for-me/generic-raw-v1',
+    }],
+  }
+  const approval = { ...unsealedApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedApproval)! }
+  return createDshAlpha1CatalogCommitment({ schemas: headerTools, approval, dossier: catalog() }, 'native', 3, headerTools)
+}
+
 function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSessionFactSnapshotV1 {
   const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
   return {
@@ -59,6 +79,7 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
     delegationReceipts: [],
     executionFacts: [{
       version: 1,
+      catalogCommitment: commitment(),
       session,
       request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
       toolClassification: {
@@ -82,7 +103,6 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
 const deps: GuardianDossierCompilerDependencies = {
   maxDossierBytes: 256_000,
   delegationProjector: {
-    catalog: catalog(),
     project() {
       return { kind: 'invalid', reason: 'not-used' }
     },
@@ -100,7 +120,9 @@ describe('DefaultDossierCompiler', () => {
     const base = facts()
     const complete = {
       ...base,
-      approvalBinding: { ...base.approvalBinding, event: { seq: 8, type: 'approval/asked', turn: 1, step: 0 } },
+      // Real ApprovalService audit events carry no turn/step; placement is
+      // derived from the uniquely bound tool request.
+      approvalBinding: { ...base.approvalBinding, event: { seq: 8, type: 'approval/asked' } },
       throughSeq: 8,
       events: [
         { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
@@ -122,6 +144,36 @@ describe('DefaultDossierCompiler', () => {
     }
     const result = new DefaultDossierCompiler(deps).compile({ facts: complete })
     expect(result.kind).toBe('ready')
+
+    const withApprovalPolicy = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 9, type: 'approval/asked' as const } },
+      throughSeq: 9,
+      events: [
+        { seq: 0, time: 1, type: 'approval/policy' as const, retention: 'included' as const, data: { policy: 'ask', source: 'delegation' } },
+        ...complete.events.map(event => ({ ...event, seq: event.seq + 1, time: event.time + 1 })),
+      ],
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        request: { ...complete.executionFacts[0]!.request, eventSeq: 8 },
+        projection: { ...complete.executionFacts[0]!.projection, observedAt: 9 },
+      }],
+      approvalSnapshots: [{
+        ...complete.approvalSnapshots[0]!,
+        approvalAskedSeq: 9,
+        execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 8 },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: withApprovalPolicy })).toMatchObject({ kind: 'ready' })
+    expect(new DefaultDossierCompiler(deps).compile({
+      facts: {
+        ...withApprovalPolicy,
+        events: withApprovalPolicy.events.map(event => event.seq === 0
+          ? { ...event, data: { policy: 'never' } }
+          : event),
+      },
+    })).toEqual({ kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' })
+
     const withCompletedDelivery = {
       ...complete,
       approvalBinding: { ...complete.approvalBinding, event: { seq: 12, type: 'approval/asked' as const, turn: 1, step: 0 } },
@@ -151,6 +203,271 @@ describe('DefaultDossierCompiler', () => {
         { turn: 0, delivery: { messageId: 'assistant-0', surfaceState: 'superseded' } }, { turn: 1 },
       ] } } },
     })
+    const priorAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })
+    const multiTurnEvents = [
+      { seq: 0, time: 1, type: 'turn/start' as const, retention: 'included' as const, data: { turn: 0 } },
+      { seq: 1, time: 2, type: 'user/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-0', source: { kind: 'user' }, content: [{ type: 'text', text: 'inspect first' }] } },
+      { seq: 2, time: 3, type: 'step/start' as const, retention: 'included' as const, data: { turn: 0, step: 0 } },
+      { seq: 3, time: 4, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' as const } },
+      { seq: 4, time: 5, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+      { seq: 5, time: 6, type: 'assistant/chunk' as const, retention: 'included' as const, data: { turn: 0, step: 0, chunk: { type: 'tool-call-delta' } } },
+      { seq: 6, time: 7, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 0, step: 0, message: { id: 'assistant-tool-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'reasoning', text: 'private chain' }, { type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"ls"}' }] } } },
+      { seq: 7, time: 8, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 0, step: 0, callId: 'call-0', name: 'bash', arguments: '{"command":"ls"}' } },
+      { seq: 8, time: 9, type: 'tool/result' as const, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const, sourceEventSeqs: [7] },
+      { seq: 9, time: 10, type: 'step/end' as const, retention: 'included' as const, data: { turn: 0, step: 0 } },
+      { seq: 10, time: 11, type: 'step/start' as const, retention: 'included' as const, data: { turn: 0, step: 1 } },
+      { seq: 11, time: 12, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'resume' as const } },
+      { seq: 12, time: 13, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+      { seq: 13, time: 14, type: 'assistant/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { turn: 0, step: 1, message: { id: 'assistant-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'reasoning', text: 'private final chain' }, { type: 'text', text: 'inspection done' }] } } },
+      { seq: 14, time: 15, type: 'step/end' as const, retention: 'included' as const, data: { turn: 0, step: 1 } },
+      { seq: 15, time: 16, type: 'turn/end' as const, retention: 'included' as const, data: { turn: 0, reason: 'completed' as const } },
+      ...complete.events.map(event => ({ ...event, seq: event.seq + 16, time: event.time + 16 })),
+    ]
+    const multiTurn = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 24, type: 'approval/asked' as const, turn: 1, step: 0 } },
+      throughSeq: 24,
+      events: multiTurnEvents,
+      executionFacts: [
+        {
+          ...complete.executionFacts[0]!,
+          request: { ...complete.executionFacts[0]!.request, eventSeq: 7, callId: 'call-0' },
+          projection: { ...complete.executionFacts[0]!.projection, action: priorAction, actionHash: hashAction(priorAction), observedAt: 8 },
+          result: { eventSeq: 8, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } },
+        },
+        { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 23 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 24 } },
+      ],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 24, execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 23 } }],
+    }
+    const multiTurnResult = new DefaultDossierCompiler(deps).compile({ facts: multiTurn })
+    expect(multiTurnResult).toMatchObject({
+      kind: 'ready',
+      verified: { dossier: { interaction: {
+        turns: [{ turn: 0, delivery: { textBlocks: ['inspection done'] } }, { turn: 1 }],
+        historicalTools: [{ turn: 0, attempts: [{ request: { callId: 'call-0', blockIndex: 1 }, outcome: { kind: 'completed' } }] }],
+      } } },
+    })
+    if (multiTurnResult.kind === 'ready') expect(JSON.stringify(multiTurnResult.verified.dossier)).not.toContain('private chain')
+
+    const deniedAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
+    const escalationArguments = { command: 'pwd', sandbox_permissions: 'workspace-write', justification: 'retry exact denied command' }
+    const escalationAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: escalationArguments,
+      requestedPermissions: [{ kind: 'sandbox', scope: 'workspace-write' }],
+    })
+    const denialHistory = {
+      ...multiTurn,
+      events: multiTurn.events.map(event => {
+        if (event.seq === 6 || event.seq === 22) return {
+          ...event,
+          data: {
+            ...event.data,
+            message: {
+              ...(event.data as { message: { content: unknown[] } }).message,
+              content: [{ type: 'tool-call', id: event.seq === 6 ? 'call-0' : 'call-1', name: 'bash', arguments: JSON.stringify(event.seq === 6 ? deniedAction.arguments : escalationArguments) }],
+            },
+          },
+        }
+        if (event.seq === 7 || event.seq === 23) return {
+          ...event,
+          data: { ...(event.data as object), arguments: JSON.stringify(event.seq === 7 ? deniedAction.arguments : escalationArguments) },
+        }
+        return event
+      }),
+      executionFacts: [
+        {
+          ...multiTurn.executionFacts[0]!,
+          projection: { ...multiTurn.executionFacts[0]!.projection, action: deniedAction, actionHash: hashAction(deniedAction) },
+          result: { eventSeq: 8, eventType: 'tool/result' as const, outcome: { kind: 'sandbox-denied' as const, mode: 'read-only' as const } },
+        },
+        {
+          ...multiTurn.executionFacts[1]!,
+          projection: { ...multiTurn.executionFacts[1]!.projection, action: escalationAction, actionHash: hashAction(escalationAction) },
+        },
+      ],
+      approvalSnapshots: [{
+        ...multiTurn.approvalSnapshots[0]!,
+        execution: { ...multiTurn.approvalSnapshots[0]!.execution, actionHash: hashAction(escalationAction) },
+      }],
+    }
+    const denialResult = new DefaultDossierCompiler(deps).compile({ facts: denialHistory })
+    expect(denialResult).toMatchObject({
+      kind: 'ready',
+      verified: { dossier: { pendingApproval: {
+        requestedSandboxMode: 'workspace-write',
+        earlierSandboxDenials: [],
+      } } },
+    })
+    const differentDeniedAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })
+    const currentTurnDenial = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 14, type: 'approval/asked' as const, turn: 1, step: 1 } },
+      throughSeq: 14,
+      events: [
+        { seq: 0, time: 1, type: 'turn/start' as const, retention: 'included' as const, data: { turn: 1 } },
+        { seq: 1, time: 2, type: 'user/message' as const, retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'retry with access' }] } },
+        { seq: 2, time: 3, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
+        { seq: 3, time: 4, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' as const } },
+        { seq: 4, time: 5, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 5, time: 6, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-denied', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-denied', name: 'bash', arguments: '{"command":"ls"}' }] } } },
+        { seq: 6, time: 7, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-denied', name: 'bash', arguments: '{"command":"ls"}' } },
+        { seq: 7, time: 8, type: 'tool/result' as const, retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const, sourceEventSeqs: [6] },
+        { seq: 8, time: 9, type: 'step/end' as const, retention: 'included' as const, data: { turn: 1, step: 0 } },
+        { seq: 9, time: 10, type: 'step/start' as const, retention: 'included' as const, data: { turn: 1, step: 1 } },
+        { seq: 10, time: 11, type: 'request/header' as const, retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'resume' as const } },
+        { seq: 11, time: 12, type: 'request/context' as const, retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 12, time: 13, type: 'assistant/message' as const, retention: 'included' as const, data: { turn: 1, step: 1, message: { id: 'assistant-pending', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: JSON.stringify(escalationArguments) }] } } },
+        { seq: 13, time: 14, type: 'tool/call' as const, retention: 'included' as const, data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: JSON.stringify(escalationArguments) } },
+        { seq: 14, time: 15, type: 'approval/asked' as const, retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+      ],
+      executionFacts: [
+        {
+          ...complete.executionFacts[0]!,
+          request: { ...complete.executionFacts[0]!.request, eventSeq: 6, callId: 'call-denied' },
+          projection: { ...complete.executionFacts[0]!.projection, action: differentDeniedAction, actionHash: hashAction(differentDeniedAction), observedAt: 7 },
+          result: { eventSeq: 7, eventType: 'tool/result' as const, outcome: { kind: 'sandbox-denied' as const, mode: 'read-only' as const } },
+        },
+        {
+          ...complete.executionFacts[0]!,
+          request: { ...complete.executionFacts[0]!.request, eventSeq: 13 },
+          projection: { ...complete.executionFacts[0]!.projection, action: escalationAction, actionHash: hashAction(escalationAction), observedAt: 14 },
+        },
+      ],
+      approvalSnapshots: [{
+        ...complete.approvalSnapshots[0]!,
+        approvalAskedSeq: 14,
+        execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 13, actionHash: hashAction(escalationAction) },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: currentTurnDenial })).toMatchObject({
+      kind: 'ready', verified: { dossier: { pendingApproval: { earlierSandboxDenials: [{
+        source: { event: { seq: 7, type: 'tool/result' }, requestEventSeq: 6, callId: 'call-denied' },
+      }] } } },
+    })
+    const ordinaryPendingAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'echo ready' } })
+    const ordinaryPending = {
+      ...currentTurnDenial,
+      events: currentTurnDenial.events.map(event => event.seq === 12
+        ? { ...event, data: { ...event.data, message: { ...(event.data as { message: { content: unknown[] } }).message, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: JSON.stringify(ordinaryPendingAction.arguments) }] } } }
+        : event.seq === 13
+          ? { ...event, data: { ...(event.data as object), arguments: JSON.stringify(ordinaryPendingAction.arguments) } }
+          : event),
+      executionFacts: currentTurnDenial.executionFacts.map((fact, index) => index === 1
+        ? { ...fact, projection: { ...fact.projection, action: ordinaryPendingAction, actionHash: hashAction(ordinaryPendingAction) } }
+        : fact),
+      approvalSnapshots: currentTurnDenial.approvalSnapshots.map(snapshot => ({
+        ...snapshot, execution: { ...snapshot.execution, actionHash: hashAction(ordinaryPendingAction) },
+      })),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: ordinaryPending })).toMatchObject({
+      kind: 'ready', verified: { dossier: { pendingApproval: {
+        earlierSandboxDenials: [{ source: { event: { seq: 7 }, requestEventSeq: 6, callId: 'call-denied' } }],
+      } } },
+    })
+
+    const unrelatedDenial = {
+      ...denialHistory,
+      events: denialHistory.events.map(event => {
+        if (event.seq === 6) return {
+          ...event,
+          data: { ...event.data, message: { ...(event.data as { message: { content: unknown[] } }).message, content: [{ type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"ls"}' }] } },
+        }
+        if (event.seq === 7) return { ...event, data: { ...(event.data as object), arguments: '{"command":"ls"}' } }
+        return event
+      }),
+      executionFacts: denialHistory.executionFacts.map((fact, index) => index === 0
+        ? { ...fact, projection: { ...fact.projection, action: differentDeniedAction, actionHash: hashAction(differentDeniedAction) } }
+        : fact),
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: unrelatedDenial })).toMatchObject({
+      kind: 'ready', verified: { dossier: { pendingApproval: { earlierSandboxDenials: [] } } },
+    })
+
+    const subagentSchema = { name: 'subagent', description: 'Start a focused child agent.', parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' } } } }
+    const subagentArguments = '{"description":"inspect","prompt":"Review the code."}'
+    const subagentBinding = effectiveToolBindingFromSchemaV1(subagentSchema)!
+    const delegationDescriptor = {
+      classification: 'delegation' as const,
+      projectorId: 'stock-subagent-v1',
+      toolName: 'subagent',
+      toolSchemaFingerprint: subagentBinding.toolSchemaFingerprint,
+      operation: 'start' as const,
+      receiptPolicy: { kind: 'required-on-completed' as const, receiptKinds: ['continuable-child-started' as const] },
+    }
+    const expandedUnsealed = {
+      ...catalog(),
+      fingerprint: '',
+      descriptors: [...catalog().descriptors, delegationDescriptor],
+    }
+    const delegationCatalog = { ...expandedUnsealed, fingerprint: fingerprintDelegationToolCatalogV1(expandedUnsealed)! }
+    const baseApproval = commitment().approvalCatalog
+    const unsealedDelegationApproval = {
+      ...baseApproval,
+      fingerprint: '',
+      descriptors: [...baseApproval.descriptors, {
+        toolName: 'subagent',
+        toolSchemaFingerprint: subagentBinding.toolSchemaFingerprint,
+        classification: 'ordinary' as const,
+        actionSemanticsFamily: 'generic-raw',
+        actionProjectorId: 'dsh-approve-for-me/generic-raw-v1',
+      }],
+    }
+    const delegationApproval = { ...unsealedDelegationApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedDelegationApproval)! }
+    const delegationCommitment = createDshAlpha1CatalogCommitment(
+      { schemas: [...headerTools, subagentSchema], approval: delegationApproval, dossier: delegationCatalog },
+      'native', 3, [...headerTools, subagentSchema],
+    )
+    const receipt = {
+      session,
+      requestEventSeq: 7,
+      resultEvent: { seq: 8, type: 'tool/result' as const, turn: 0, step: 0 },
+      callId: 'call-0',
+      classificationCatalogFingerprint: delegationCatalog.fingerprint,
+      projectorId: delegationDescriptor.projectorId,
+      receipt: { kind: 'continuable-child-started' as const, childSessionId: 'child-1', directParentSessionId: 'parent-1' },
+    }
+    const delegatedAction = createActionSnapshot({ toolName: 'subagent', arguments: JSON.parse(subagentArguments) })
+    const delegatedHistory = {
+      ...multiTurn,
+      eventProjection: { ...multiTurn.eventProjection, classificationCatalog: delegationCatalog },
+      events: multiTurn.events.map(event => {
+        if (event.type === 'request/header') return { ...event, data: { ...event.data, header: { ...(event.data as { header: object }).header, tools: [...headerTools, subagentSchema] } } }
+        if (event.seq === 6) return { ...event, data: { ...event.data, message: { ...(event.data as { message: { content: unknown[] } }).message, content: [{ type: 'reasoning', text: 'private chain' }, { type: 'tool-call', id: 'call-0', name: 'subagent', arguments: subagentArguments }] } } }
+        if (event.seq === 7) return { ...event, data: { turn: 0, step: 0, callId: 'call-0', name: 'subagent', arguments: subagentArguments } }
+        return event
+      }),
+      delegationReceipts: [receipt],
+      executionFacts: [
+        {
+          ...multiTurn.executionFacts[0]!,
+          catalogCommitment: delegationCommitment,
+          request: { ...multiTurn.executionFacts[0]!.request, toolName: 'subagent' },
+          toolClassification: { classificationCatalogFingerprint: delegationCatalog.fingerprint, descriptor: delegationDescriptor },
+          projection: { ...multiTurn.executionFacts[0]!.projection, projectorId: delegatedAction.projectorId, action: delegatedAction, actionHash: hashAction(delegatedAction) },
+          delegationReceipt: receipt,
+        },
+        {
+          ...multiTurn.executionFacts[1]!,
+          catalogCommitment: delegationCommitment,
+          toolClassification: { classificationCatalogFingerprint: delegationCatalog.fingerprint, descriptor: delegationCatalog.descriptors[0]! },
+        },
+      ],
+      approvalSnapshots: [{
+        ...multiTurn.approvalSnapshots[0]!,
+        execution: { ...multiTurn.approvalSnapshots[0]!.execution, classificationCatalogFingerprint: delegationCatalog.fingerprint },
+      }],
+    }
+    const delegatedResult = new DefaultDossierCompiler({
+      ...deps,
+      delegationProjector: new DefaultPrincipalDelegationProjector(delegationCatalog),
+    }).compile({ facts: delegatedHistory })
+    expect(delegatedResult).toMatchObject({
+      kind: 'ready',
+      verified: { dossier: { interaction: { delegations: { entries: [{ operation: 'start', receipt: { childSessionId: 'child-1' } }] } } } },
+      metrics: { delegationEntryCount: 1 },
+    })
+
     const nestedTurn = {
       ...withCompletedDelivery,
       approvalBinding: { ...withCompletedDelivery.approvalBinding, event: { seq: 13, type: 'approval/asked' as const, turn: 1, step: 0 } },
@@ -375,8 +692,15 @@ describe('DefaultDossierCompiler', () => {
       ],
       approvalSnapshots: [{ ...twoPending.approvalSnapshots[0]!, approvalAskedSeq: 10, execution: { ...twoPending.approvalSnapshots[0]!.execution, requestEventSeq: 9 } }],
     }
-    expect(new DefaultDossierCompiler(deps).compile({ facts: duplicatePriorCallId }))
-      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+    const reusedCallId = new DefaultDossierCompiler(deps).compile({ facts: duplicatePriorCallId })
+    expect(reusedCallId.kind).toBe('ready')
+    if (reusedCallId.kind === 'ready') {
+      const currentTurnTools = reusedCallId.verified.dossier.currentTurnTools as unknown as {
+        attempts: Array<{ request: { kind: 'model-tool-call'; callEvent?: { seq: number } } | { kind: 'code-dispatch'; dispatchStart: { seq: number } } }>
+      }
+      expect(currentTurnTools.attempts.map(attempt =>
+        attempt.request.kind === 'model-tool-call' ? attempt.request.callEvent?.seq : attempt.request.dispatchStart.seq)).toEqual([7, 8])
+    }
     const completedFirst = {
       ...twoPending,
       approvalBinding: { ...twoPending.approvalBinding, event: { seq: 10, type: 'approval/asked', turn: 1, step: 0 } },
@@ -423,7 +747,7 @@ describe('DefaultDossierCompiler', () => {
     }
     const readDeps = { ...deps, delegationProjector: { ...deps.delegationProjector, catalog: expandedCatalog } }
     const duplicateIdResult = new DefaultDossierCompiler(readDeps).compile({ facts: duplicateIdDifferentTool })
-    expect(duplicateIdResult).toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
+    expect(duplicateIdResult).toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const overflow = new DefaultDossierCompiler({ ...deps, maxDossierBytes: 1 }).compile({ facts: complete })
     expect(overflow).toMatchObject({ kind: 'incomplete', reason: 'budget-overflow' })
     if (overflow.kind === 'incomplete' && overflow.reason === 'budget-overflow' && 'metrics' in overflow) {
@@ -522,12 +846,11 @@ describe('DefaultDossierCompiler', () => {
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: afterCallAssistantChunk }))
       .toEqual({ kind: 'incomplete', reason: 'invalid-current-assistant-message' })
-    const mismatchedProjectorCatalog = {
+    const legacyProjectorCatalogDecoration = {
       ...deps,
       delegationProjector: { ...deps.delegationProjector, catalog: { ...catalog(), fingerprint: hash('d') } },
     }
-    expect(new DefaultDossierCompiler(mismatchedProjectorCatalog).compile({ facts: complete }))
-      .toEqual({ kind: 'incomplete', reason: 'event-projection-policy-mismatch' })
+    expect(new DefaultDossierCompiler(legacyProjectorCatalogDecoration).compile({ facts: complete }).kind).toBe('ready')
     const malformedHeader = {
       ...complete,
       events: complete.events.map(event => event.seq === 3 ? { ...event, data: { header: { tools: headerTools }, reason: 'initial' } } : event),
@@ -563,12 +886,12 @@ describe('DefaultDossierCompiler', () => {
         : event),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: mismatchedCallLifecycle }))
-      .toEqual({ kind: 'incomplete', reason: 'missing-current-turn' })
+      .toEqual({ kind: 'incomplete', reason: 'invalid-current-assistant-message' })
     const nonCanonicalExecutionEvent = {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventType: 'tool/code-dispatch-start' as const } }],
     }
-    expect(new DefaultDossierCompiler(deps).compile({ facts: nonCanonicalExecutionEvent }))
+    expect(new DefaultDossierCompiler(deps).compile({ facts: nonCanonicalExecutionEvent as unknown as ParentSessionFactSnapshotV1 }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-event' })
     const duplicateExecutionFact = {
       ...complete,
@@ -728,6 +1051,173 @@ describe('DefaultDossierCompiler', () => {
       approvalSnapshots: [{ ...base.approvalSnapshots[0]!, approvalAskedSeq: 3, execution: { ...base.approvalSnapshots[0]!.execution, requestEventSeq: 2 } }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: incomplete })).toEqual({ kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' })
+  })
+
+  it('compiles a real alpha.1 PTC sub-dispatch approval against the root run_code message', () => {
+    const runCodeSchema = {
+      name: 'run_code',
+      description: 'Run a program against the tool SDK.',
+      parameters: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] },
+    }
+    const runCodeFingerprint = effectiveToolBindingFromSchemaV1(runCodeSchema)!.toolSchemaFingerprint
+    const unsealedCatalog = {
+      version: 1 as const,
+      eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
+      argumentSemanticsId: 'dsh-0.1.2-alpha.1-stock-v1',
+      fingerprint: '',
+      descriptors: [
+        { classification: 'ordinary' as const, toolName: 'run_code', toolSchemaFingerprint: runCodeFingerprint, classificationId: 'stock/run-code' },
+        { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'stock/bash' },
+      ],
+    }
+    const codeCatalog = { ...unsealedCatalog, fingerprint: fingerprintDelegationToolCatalogV1(unsealedCatalog)! }
+    const unsealedApproval = {
+      version: 1 as const,
+      argumentSemanticsId: unsealedCatalog.argumentSemanticsId,
+      fingerprint: '',
+      descriptors: unsealedCatalog.descriptors.map(descriptor => ({
+        toolName: descriptor.toolName,
+        toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+        classification: 'ordinary' as const,
+        actionSemanticsFamily: 'generic-raw',
+        actionProjectorId: 'dsh-approve-for-me/generic-raw-v1',
+      })),
+    }
+    const codeApproval = { ...unsealedApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedApproval)! }
+    const ptcCommitment = createDshAlpha1CatalogCommitment(
+      { schemas: [runCodeSchema, headerTools[0]!], approval: codeApproval, dossier: codeCatalog },
+      'ptc', 3, [runCodeSchema],
+    )
+    const rootArguments = { code: 'await tools.bash({ command: "pwd" })' }
+    const subArguments = { command: 'pwd' }
+    const rootAction = createActionSnapshot({ toolName: 'run_code', arguments: rootArguments })
+    const subAction = createActionSnapshot({ toolName: 'bash', arguments: subArguments })
+    const ptcFacts: ParentSessionFactSnapshotV1 = {
+      version: 1,
+      session,
+      eventProjection: { policyId: 'dsh-session-facts-v1', classificationCatalog: codeCatalog },
+      approvalBinding: {
+        event: { seq: 8, type: 'approval/asked' },
+        approvalRequestId: 'ask-code-1',
+        callId: 'root-1:code:1',
+        toolName: 'bash',
+      },
+      throughSeq: 8,
+      events: [
+        { seq: 0, time: 1, type: 'turn/start', retention: 'included', data: { turn: 1 } },
+        { seq: 1, time: 2, type: 'user/message', retention: 'included', surfaceState: 'visible', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+        { seq: 2, time: 3, type: 'step/start', retention: 'included', data: { turn: 1, step: 0 } },
+        { seq: 3, time: 4, type: 'request/header', retention: 'included', data: { header: { config: { model: 'model-1' }, tools: [runCodeSchema] }, reason: 'initial' } },
+        { seq: 4, time: 5, type: 'request/context', retention: 'included', data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 5, time: 6, type: 'assistant/message', retention: 'included', data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'root-1', name: 'run_code', arguments: JSON.stringify(rootArguments) }] } } },
+        { seq: 6, time: 7, type: 'tool/call', retention: 'included', data: { turn: 1, step: 0, callId: 'root-1', name: 'run_code', arguments: JSON.stringify(rootArguments) } },
+        { seq: 7, time: 8, type: 'tool/code-dispatch-start', retention: 'included', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'root-1:code:1', name: 'bash', arguments: subArguments } },
+        { seq: 8, time: 9, type: 'approval/asked', retention: 'included', data: { id: 'ask-code-1', callId: 'root-1:code:1', toolName: 'bash' } },
+      ],
+      delegationReceipts: [],
+      executionFacts: [
+        {
+          version: 1,
+          catalogCommitment: ptcCommitment,
+          session,
+          request: { kind: 'model-tool-call', eventSeq: 6, eventType: 'tool/call', callId: 'root-1', toolName: 'run_code' },
+          toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[0]! },
+          projection: { projectorId: rootAction.projectorId, action: rootAction, actionHash: hashAction(rootAction), observedAt: 7 },
+        },
+        {
+          version: 1,
+          catalogCommitment: ptcCommitment,
+          session,
+          request: { kind: 'code-dispatch', eventSeq: 7, eventType: 'tool/code-dispatch-start', rootCallId: 'root-1', rootRequestEventSeq: 6, parentCallId: 'root-1', parentRequestEventSeq: 6, callId: 'root-1:code:1', toolName: 'bash', arguments: subArguments },
+          toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[1]! },
+          projection: { projectorId: subAction.projectorId, action: subAction, actionHash: hashAction(subAction), observedAt: 8 },
+        },
+      ],
+      approvalSnapshots: [{
+        version: 1,
+        session,
+        approvalRequestId: 'ask-code-1',
+        approvalAskedSeq: 8,
+        execution: { requestEventSeq: 7, callId: 'root-1:code:1', toolName: 'bash', actionHash: hashAction(subAction), classificationCatalogFingerprint: codeCatalog.fingerprint, projectorId: subAction.projectorId },
+        environment: { version: 1, kind: 'native-header-only' },
+      }],
+    }
+    const compiler = new DefaultDossierCompiler({
+      ...deps,
+      delegationProjector: deps.delegationProjector,
+    })
+    const result = compiler.compile({ facts: ptcFacts })
+    expect(result.kind === 'incomplete' ? result.reason : 'ready').toBe('ready')
+    if (result.kind === 'ready') {
+      expect(result.verified.dossier).toMatchObject({
+        currentTurnTools: {
+          attempts: [{ request: { kind: 'model-tool-call', callId: 'root-1', toolName: 'run_code' }, outcome: { kind: 'pending' } }],
+          excludedPendingRequest: { callId: 'root-1:code:1', requestEventSeq: 7 },
+        },
+        pendingApproval: {
+          request: { kind: 'code-dispatch', rootCallId: 'root-1', parentCallId: 'root-1', callId: 'root-1:code:1', toolName: 'bash', arguments: subArguments },
+        },
+      })
+    }
+
+    const targetArguments = { command: 'echo done' }
+    const targetAction = createActionSnapshot({ toolName: 'bash', arguments: targetArguments })
+    const historicalFacts: ParentSessionFactSnapshotV1 = {
+      ...ptcFacts,
+      approvalBinding: {
+        event: { seq: 19, type: 'approval/asked' },
+        approvalRequestId: 'ask-native-2',
+        callId: 'native-2',
+        toolName: 'bash',
+      },
+      throughSeq: 19,
+      events: [
+        ...ptcFacts.events.slice(0, 8),
+        { seq: 8, time: 9, type: 'tool/code-dispatch', retention: 'excluded-content', exclusion: 'tool-result-content' },
+        { seq: 9, time: 10, type: 'tool/result', retention: 'excluded-content', exclusion: 'tool-result-content', sourceEventSeqs: [6] },
+        { seq: 10, time: 11, type: 'step/end', retention: 'included', data: { turn: 1, step: 0 } },
+        { seq: 11, time: 12, type: 'turn/end', retention: 'included', data: { turn: 1, reason: { kind: 'completed' } } },
+        { seq: 12, time: 13, type: 'turn/start', retention: 'included', data: { turn: 2 } },
+        { seq: 13, time: 14, type: 'user/message', retention: 'included', surfaceState: 'visible', data: { id: 'user-2', source: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] } },
+        { seq: 14, time: 15, type: 'step/start', retention: 'included', data: { turn: 2, step: 0 } },
+        { seq: 15, time: 16, type: 'request/header', retention: 'included', data: { header: { config: { model: 'model-1' }, tools: [headerTools[0]!] }, reason: 'series' } },
+        { seq: 16, time: 17, type: 'request/context', retention: 'included', data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+        { seq: 17, time: 18, type: 'assistant/message', retention: 'included', data: { turn: 2, step: 0, message: { id: 'assistant-2', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'native-2', name: 'bash', arguments: JSON.stringify(targetArguments) }] } } },
+        { seq: 18, time: 19, type: 'tool/call', retention: 'included', data: { turn: 2, step: 0, callId: 'native-2', name: 'bash', arguments: JSON.stringify(targetArguments) } },
+        { seq: 19, time: 20, type: 'approval/asked', retention: 'included', data: { id: 'ask-native-2', callId: 'native-2', toolName: 'bash' } },
+      ],
+      executionFacts: [
+        { ...ptcFacts.executionFacts[0]!, result: { eventSeq: 9, eventType: 'tool/result', outcome: { kind: 'completed' } } },
+        { ...ptcFacts.executionFacts[1]!, result: { eventSeq: 8, eventType: 'tool/code-dispatch', outcome: { kind: 'tool-error' } } },
+        {
+          version: 1,
+          catalogCommitment: ptcCommitment,
+          session,
+          request: { kind: 'model-tool-call', eventSeq: 18, eventType: 'tool/call', callId: 'native-2', toolName: 'bash' },
+          toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[1]! },
+          projection: { projectorId: targetAction.projectorId, action: targetAction, actionHash: hashAction(targetAction), observedAt: 19 },
+        },
+      ],
+      approvalSnapshots: [{
+        version: 1,
+        session,
+        approvalRequestId: 'ask-native-2',
+        approvalAskedSeq: 19,
+        execution: { requestEventSeq: 18, callId: 'native-2', toolName: 'bash', actionHash: hashAction(targetAction), classificationCatalogFingerprint: codeCatalog.fingerprint, projectorId: targetAction.projectorId },
+        environment: { version: 1, kind: 'native-header-only' },
+      }],
+    }
+    const historicalResult = compiler.compile({ facts: historicalFacts })
+    expect(historicalResult.kind === 'incomplete' ? historicalResult.reason : 'ready').toBe('ready')
+    if (historicalResult.kind === 'ready') {
+      expect(historicalResult.verified.dossier).toMatchObject({ interaction: { historicalTools: [{
+        turn: 1,
+        attempts: [
+          { request: { kind: 'model-tool-call', callId: 'root-1' }, outcome: { kind: 'completed' } },
+          { request: { kind: 'code-dispatch', callId: 'root-1:code:1' }, outcome: { kind: 'tool-error' } },
+        ],
+      }] } })
+    }
   })
 
   it('is deterministically incomplete for the same frozen facts', () => {

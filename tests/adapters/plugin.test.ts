@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ManagedAgentProvider, ManagedProviderRegistration } from 'dsh-managed-agent'
@@ -9,11 +10,13 @@ import {
   fingerprintApprovalToolCatalogV1,
   createFilesystemActionProjector,
   createShellProcessActionProjector,
+  createDshAlpha1StockToolCatalog,
   ToolFamilyActionProjectorRegistry,
   installApproveForMe,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
 import type { Config } from '../../src/index.js'
+import * as approveForMe from '../../src/index.js'
 
 type CtxEvent = 'tools/pre-execute' | 'tools/result'
 
@@ -60,6 +63,7 @@ interface InstallHarness {
   ctx: {
     managedAgents: { registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration }
     approval: { registerMachinePolicy(policy: unknown): () => void }
+    tools: { schemas(agent: unknown): readonly unknown[] }
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
   }
@@ -144,6 +148,7 @@ function harness(): InstallHarness {
             },
             async list() { return [] },
             async rotate() { return SessionId('reviewer-1') },
+            async renew() { return SessionId('reviewer-1') },
             async deliver(_parent: unknown, _childId: unknown, content: readonly unknown[]) {
               const raw = (content[0] as { text: string } | undefined)?.text.split('\n').at(-1)
               if (raw === undefined) throw new Error('approval request was not delivered')
@@ -179,6 +184,7 @@ function harness(): InstallHarness {
         return disposeMachinePolicy
       },
     },
+    tools: { schemas: vi.fn(() => []) },
     on(event: CtxEvent, listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
@@ -277,7 +283,7 @@ describe('installApproveForMe composition root', () => {
     const h = harness()
     const catalogConfig: Config = { ...config, toolCatalog: validToolCatalog() }
     expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig))
-      .toThrow(/closed-world toolFamilyActionProjectors registry/)
+      .toThrow(/loader stock projectors require argumentSemanticsId/)
     expect(h.registered).toBeUndefined()
 
     const wrongTool = new ToolFamilyActionProjectorRegistry([createShellProcessActionProjector(['sh'])])
@@ -289,6 +295,44 @@ describe('installApproveForMe composition root', () => {
     expect(() => installApproveForMe(h.ctx as unknown as Context, catalogConfig, { toolFamilyActionProjectors: extraTool }))
       .toThrow(/absent from toolCatalog/)
     expect(h.registered).toBeUndefined()
+  })
+
+  it('mounts through the normal loader path without taking an unscoped schema snapshot', async () => {
+    const h = harness()
+    const loaderContext = h.ctx as InstallHarness['ctx'] & {
+      tools: { schemas(agent: unknown): readonly unknown[] }
+    }
+    const schemas = vi.fn((_agent: unknown) => [
+      { name: 'bash', description: 'Execute a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } },
+      { name: 'todo_write', description: 'Record tasks', parameters: { type: 'object', properties: { todos: { type: 'array' } } } },
+    ])
+    loaderContext.tools = { schemas }
+
+    expect('default' in approveForMe).toBe(false)
+    const loader = Object.create(Loader.prototype) as Loader
+    const unwrapped = loader.unwrapExports(approveForMe) as typeof approveForMe
+    expect(unwrapped).toBe(approveForMe)
+    expect(unwrapped.name).toBe('dsh-approve-for-me')
+    expect(unwrapped.inject).toEqual(['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain'])
+    unwrapped.apply(loaderContext as unknown as Context, config)
+    expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
+    expect(schemas).not.toHaveBeenCalled()
+    expect(h.listeners.preExecute).toBeTypeOf('function')
+    expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
+  })
+
+  it('mounts a supported non-empty stock catalog through the loader without programmatic projector options', async () => {
+    const h = harness()
+    const stockSchemas = [
+      { name: 'bash', description: 'Execute a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+      { name: 'read', description: 'Read a text file', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } },
+    ]
+    const stockCatalog = createDshAlpha1StockToolCatalog(stockSchemas)
+    expect(stockCatalog.descriptors).toHaveLength(2)
+    const loader = Object.create(Loader.prototype) as Loader
+    const unwrapped = loader.unwrapExports(approveForMe) as typeof approveForMe
+    expect(() => unwrapped.apply(h.ctx as unknown as Context, { ...config, toolCatalog: stockCatalog })).not.toThrow()
+    expect(h.registered?.name).toBe(REVIEWER_PROVIDER)
   })
 
   it('accepts every explicitly-bound tool family in a closed catalog', async () => {

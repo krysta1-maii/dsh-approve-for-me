@@ -14,6 +14,8 @@ import type { ActionProjector } from './ports/action-projector.js'
 import { ToolFamilyActionProjectorRegistry } from './ports/tool-family-action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
+import { DshScopedEffectiveCatalogResolver } from './dsh/effective-tool-catalog.js'
+import { createDshAlpha1StockProjectorRegistry } from './dsh/stock-tools.js'
 import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
@@ -21,7 +23,6 @@ import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from '
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
 import type { ReviewerTelemetrySink, ReviewerTelemetrySnapshotV1 } from './ports/reviewer-telemetry.js'
-import { fingerprintDelegationToolCatalogV1 } from './domain/dossier.js'
 import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
@@ -38,10 +39,9 @@ import {
 } from './dsh/storage-domain-fact-repositories.js'
 import { DefaultPreReviewCoordinator } from './application/pre-review-coordinator.js'
 import { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
-import { createToolApprovalClassifier } from './application/tool-classifier.js'
 import { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
 import { createReviewerProvider } from './reviewer/provider.js'
-import { hashAction } from './domain/protocol.js'
+import { hashAction, REVIEWER_PROVIDER } from './domain/protocol.js'
 import type { RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
 import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
@@ -115,6 +115,14 @@ export function installApproveForMe(
   options: ApproveForMeInstallOptions = {},
 ): ApproveForMePlugin {
   const normalized = normalizeConfig(config)
+  const toolRuntime = (ctx as unknown as { tools?: { schemas?: (agent: Agent) => readonly unknown[] } }).tools
+  if (typeof toolRuntime?.schemas !== 'function') {
+    throw new TypeError('dsh-approve-for-me requires scoped ctx.tools.schemas(agent)')
+  }
+  const scopedCatalogs = new DshScopedEffectiveCatalogResolver(
+    { schemas: agent => toolRuntime.schemas!(agent) },
+    normalized.toolCatalog.descriptors.length === 0 ? undefined : normalized.toolCatalog,
+  )
   // Full case capture requires a host-private durable store with lifecycle-bound
   // TTL, quota reconciliation, deletion, and redacted-export controls. This
   // composition has no such adapter yet, so accepting it would falsely imply
@@ -125,24 +133,35 @@ export function installApproveForMe(
   const channel = new DefaultDecisionChannel()
   const lifecycle = new ApprovalRunLifecycle()
   const captures = new DefaultActionCapture<Agent, string>()
-  const registeredProjectors = options.toolFamilyActionProjectors
+  const configuredProjectors = options.toolFamilyActionProjectors
+    ?? (normalized.toolCatalog.descriptors.length === 0
+      ? undefined
+      : createDshAlpha1StockProjectorRegistry(normalized.toolCatalog))
   if (normalized.toolCatalog.descriptors.length > 0) {
-    if (registeredProjectors === undefined) {
+    const registered = configuredProjectors
+    if (registered === undefined) {
       throw new TypeError('a non-empty toolCatalog requires a closed-world toolFamilyActionProjectors registry')
     }
     const catalogToolNames = new Set(normalized.toolCatalog.descriptors.map(descriptor => descriptor.toolName))
     for (const descriptor of normalized.toolCatalog.descriptors) {
-      if (!registeredProjectors.matches(descriptor.toolName, descriptor.actionSemanticsFamily, descriptor.actionProjectorId)) {
+      if (!registered.matches(descriptor.toolName, descriptor.actionSemanticsFamily, descriptor.actionProjectorId)) {
         throw new TypeError(`toolCatalog descriptor ${descriptor.toolName} has no matching registered semantic projector`)
       }
     }
-    for (const toolName of registeredProjectors.registeredToolNames()) {
+    for (const toolName of registered.registeredToolNames()) {
       if (!catalogToolNames.has(toolName)) {
         throw new TypeError(`registered semantic projector tool ${toolName} is absent from toolCatalog`)
       }
     }
   }
-  const actionProjector = registeredProjectors ?? options.actionProjector ?? createDefaultActionProjector(options.projectPermissions)
+  // Loader installations project through the same per-execution catalog that
+  // durable execution facts consume. Programmatic projectors remain supported,
+  // but they are still corroborated against the scoped/header catalog below.
+  const actionProjector = configuredProjectors
+    ?? options.actionProjector
+    ?? (options.projectPermissions === undefined
+      ? scopedCatalogs.actionProjector
+      : createDefaultActionProjector(options.projectPermissions))
   const bridge = createCaptureBridge(actionProjector, captures)
 
   const registration = ctx.managedAgents.registerProvider(createReviewerProvider({
@@ -162,14 +181,13 @@ export function installApproveForMe(
   }
   const coordinator = new DefaultReviewCoordinator({
     port,
-    directory: new DefaultReviewerDirectory(port),
+    directory: new DefaultReviewerDirectory(port, REVIEWER_PROVIDER, normalized.maxDeliveryAttemptsPerChild),
     channel,
     lane: lanes,
     timeoutMs: normalized.timeoutMs,
     preset: normalized.preset,
     telemetry: reviewerTelemetrySink,
   })
-  const classifier = createToolApprovalClassifier(normalized.toolCatalog)
   const trustEnvelope = createTrustEnvelopeEvaluator(normalized.trustEnvelope)
   const breaker = new InMemoryExactDenialBreaker()
   const allowCache = new InMemoryAllowCache()
@@ -182,37 +200,13 @@ export function installApproveForMe(
   )
   const executionFacts = new DshStorageDomainExecutionFactRepository(durableFacts)
   const approvalSnapshots = new DshStorageDomainApprovalSnapshotRepository(durableFacts)
-  // The dossier catalog deliberately originates from the normalized descriptor
-  // set, but the resolver does not authorize from it: the source adapter must
-  // corroborate it against the historical Session request header.
-  const unsealedDossierCatalog = {
-    version: 1 as const,
-    eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
-    argumentSemanticsId: normalized.toolCatalog.argumentSemanticsId,
-    fingerprint: '',
-    descriptors: Object.freeze(normalized.toolCatalog.descriptors.map(descriptor => Object.freeze({
-      classification: 'ordinary' as const,
-      toolName: descriptor.toolName,
-      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
-      classificationId: `approval-class:${descriptor.classification}`,
-    }))),
-  }
-  const dossierCatalog = Object.freeze({
-    ...unsealedDossierCatalog,
-    fingerprint: fingerprintDelegationToolCatalogV1(unsealedDossierCatalog)!,
-  })
   const factSource = new DshParentSessionFactSource({
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
   })
   const dossierMetrics = new InMemoryDossierCompilationMetrics()
   const compiler = new InstrumentedDossierCompiler(
     new DefaultDossierCompiler({
-      delegationProjector: new DefaultPrincipalDelegationProjector(dossierCatalog),
-      semanticActionBindings: Object.freeze(normalized.toolCatalog.descriptors.map(descriptor => Object.freeze({
-        toolName: descriptor.toolName,
-        family: descriptor.actionSemanticsFamily,
-        projectorId: descriptor.actionProjectorId,
-      }))),
+      delegationProjector: new DefaultPrincipalDelegationProjector(),
       maxDossierBytes: normalized.maxDossierBytes,
     }),
     {
@@ -226,9 +220,8 @@ export function installApproveForMe(
     factSource,
     compiler,
     projector: new DossierGateFactProjector(
-      classifier,
-      'dsh-approve-for-me/v1',
-      normalized.toolCatalog.fingerprint,
+      normalized.preset.generation,
+      normalized.preset.configurationFingerprint,
       normalized.preset.policyVersion,
     ),
     async snapshotInput(pending, signal) {
@@ -253,7 +246,6 @@ export function installApproveForMe(
         approvalRequestId: pending.requestId,
         callId: pending.callId,
         toolName: pending.toolName,
-        classificationCatalog: dossierCatalog,
         executionFacts: await executionFacts.list(lifecycle),
         approvalSnapshots: await approvalSnapshots.list(lifecycle),
         ...signal === undefined ? {} : { signal },
@@ -262,7 +254,7 @@ export function installApproveForMe(
   })
   const executionProjection = new DshExecutionFactProjectionBridge(
     actionProjector,
-    dossierCatalog,
+    exec => scopedCatalogs.forExecution(exec),
     executionFacts,
     approvalSnapshots,
     captures,
@@ -301,7 +293,6 @@ export function installApproveForMe(
   }
 
   const pipeline = new DefaultGatePipeline({
-    classifier,
     trustEnvelope,
     breaker,
     allowCache,
@@ -361,14 +352,22 @@ export function installApproveForMe(
 
   const stopPreExecute = ctx.on('tools/pre-execute', (exec, next) =>
     bridge.preExecute(exec, () => executionProjection.preExecute(exec, next)), { prepend: true })
+  const stopPostExecute = ctx.on('tools/post-execute', (exec, result, next) =>
+    executionProjection.postExecute(exec, result, next), { prepend: true })
   const stopResult = ctx.on('tools/result', (exec, result) => {
     bridge.observeResult(exec)
     executionProjection.observeResult(exec, result)
+    scopedCatalogs.release(exec)
   })
   const stopSessionEvent = ctx.on('session/event', (session, event) => {
     const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
     const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)
-    if (agent !== undefined) void executionProjection.observeSessionEvent(agent, event as never)
+    if (agent !== undefined) {
+      void executionProjection.observeSessionEvent(agent, event as never).catch(() => {
+        // A failed observer write is non-authorizing; an unhandled rejection
+        // must not be able to take down the Host process.
+      })
+    }
   })
 
   return {
@@ -380,6 +379,7 @@ export function installApproveForMe(
       stopSessionEvent()
       await lifecycle.dispose()
       stopResult()
+      stopPostExecute()
       stopPreExecute()
       await lanes.drain()
       await durableFacts.drain()

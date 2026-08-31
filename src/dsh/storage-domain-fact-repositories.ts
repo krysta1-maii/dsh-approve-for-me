@@ -1,8 +1,11 @@
 import { canonicalJson, snapshotJson } from '../domain/json.js'
-import { isApprovalEnvironmentEvidenceV1 } from '../domain/dossier.js'
+import { hashAction, parseActionSnapshot } from '../domain/protocol.js'
+import type { ActionSnapshot } from '../domain/protocol.js'
+import { isApprovalEnvironmentEvidenceV1, validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
 import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
+import { GateFailure } from '../application/gate-failure.js'
 import type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './storage-domain-decision-record.js'
 
 type StoredRow = { readonly version: 1; readonly canonical: string; readonly record: unknown }
@@ -41,6 +44,39 @@ function validSession(value: unknown): value is SessionLifecycleIdentityV1 {
     && (session.cwd === undefined || (typeof session.cwd === 'string' && session.cwd.length > 0))
 }
 
+function validReceipt(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const receipt = value as Record<string, unknown>
+  switch (receipt.kind) {
+    case 'continuable-child-started':
+      return Object.keys(receipt).length === 3
+        && typeof receipt.childSessionId === 'string' && receipt.childSessionId.length > 0
+        && typeof receipt.directParentSessionId === 'string' && receipt.directParentSessionId.length > 0
+    case 'foreground-run-settled':
+      return Object.keys(receipt).length === 2 && typeof receipt.runId === 'string' && receipt.runId.length > 0
+    case 'background-job-started':
+      return Object.keys(receipt).length === 2 && typeof receipt.jobId === 'string' && receipt.jobId.length > 0
+    case 'followup-delivered':
+      return Object.keys(receipt).length === 2 && typeof receipt.messageId === 'string' && receipt.messageId.length > 0
+    case 'interrupt-accepted':
+      return Object.keys(receipt).length === 1
+    default:
+      return false
+  }
+}
+
+function validToolOutcome(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const outcome = value as Record<string, unknown>
+  if (outcome.kind === 'completed' || outcome.kind === 'tool-error') return Object.keys(outcome).length === 1
+  if (outcome.kind !== 'sandbox-denied'
+    || !['read-only', 'workspace-write', 'danger-full-access'].includes(outcome.mode as string)
+    || (outcome.enforcement !== undefined && outcome.enforcement !== 'full' && outcome.enforcement !== 'partial')) return false
+  const keys = Object.keys(outcome)
+  return keys.length === (outcome.enforcement === undefined ? 2 : 3)
+    && keys.every(key => key === 'kind' || key === 'mode' || key === 'enforcement')
+}
+
 function parseRow(value: unknown): StoredRow {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('invalid dossier fact row')
   const row = value as Partial<StoredRow>
@@ -73,16 +109,16 @@ function parseIndex(value: unknown): StoredIndex {
 export class DshStorageDomainFactRepositories {
   private readonly tails = new Map<string, Promise<void>>()
   private admissionOpen = true
-  private readonly ready: Promise<StorageDomainHandle | undefined>
+  private opening: Promise<StorageDomainHandle> | undefined
 
-  constructor(facility: StorageDomainFacility | undefined) {
-    this.ready = facility === undefined ? Promise.resolve(undefined) : facility.open(factDomainSpec).catch(() => undefined)
-  }
+  constructor(private readonly facility: StorageDomainFacility | undefined) {}
 
   async drain(): Promise<void> {
     this.admissionOpen = false
     await Promise.all(this.tails.values())
-    const domain = await this.ready
+    const opening = this.opening
+    if (opening === undefined) return
+    const domain = await opening.catch(() => undefined)
     if (domain !== undefined) await domain.close()
   }
 
@@ -104,14 +140,45 @@ export class DshStorageDomainFactRepositories {
     return row
   }
 
-  async attachResult(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly result: NonNullable<ToolExecutionFactRecordV1['result']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+  async stageTerminal(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly terminalEvidence: NonNullable<ToolExecutionFactRecordV1['terminalEvidence']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
     const key = this.executionKey(input.session, input.callId, input.requestEventSeq)
     return this.serial(input.session, async () => {
       const existing = await this.readRow('executions', key)
       if (!this.validExecution(existing) || !sameLifecycle(existing.session, input.session)
         || existing.request.callId !== input.callId || existing.request.eventSeq !== input.requestEventSeq) return 'missing'
-      if (existing.result !== undefined) return canonicalJson(existing.result) === canonicalJson(input.result) ? 'identical' : 'conflict'
-      const updated: ToolExecutionFactRecordV1 = Object.freeze({ ...existing, result: Object.freeze({ ...input.result }) })
+      const updated: ToolExecutionFactRecordV1 = Object.freeze({
+        ...existing,
+        terminalEvidence: Object.freeze({
+          isError: input.terminalEvidence.isError,
+          outcome: Object.freeze({ ...input.terminalEvidence.outcome }),
+          ...input.terminalEvidence.receipt === undefined
+            ? {}
+            : { receipt: Object.freeze({ ...input.terminalEvidence.receipt }) },
+        }),
+      })
+      if (!this.validExecution(updated)) return 'conflict'
+      if (existing.terminalEvidence !== undefined) {
+        return canonicalJson(existing) === canonicalJson(updated) ? 'identical' : 'conflict'
+      }
+      return await this.replaceExact('executions', key, updated) ? 'updated' : 'conflict'
+    })
+  }
+
+  async attachResult(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly result: NonNullable<ToolExecutionFactRecordV1['result']>; readonly delegationReceipt?: NonNullable<ToolExecutionFactRecordV1['delegationReceipt']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+    const key = this.executionKey(input.session, input.callId, input.requestEventSeq)
+    return this.serial(input.session, async () => {
+      const existing = await this.readRow('executions', key)
+      if (!this.validExecution(existing) || !sameLifecycle(existing.session, input.session)
+        || existing.request.callId !== input.callId || existing.request.eventSeq !== input.requestEventSeq) return 'missing'
+      const updated: ToolExecutionFactRecordV1 = Object.freeze({
+        ...existing,
+        result: Object.freeze({ ...input.result }),
+        ...input.delegationReceipt === undefined ? {} : { delegationReceipt: Object.freeze({ ...input.delegationReceipt }) },
+      })
+      if (!this.validExecution(updated)) return 'conflict'
+      if (existing.result !== undefined || existing.delegationReceipt !== undefined) {
+        return canonicalJson(existing) === canonicalJson(updated) ? 'identical' : 'conflict'
+      }
       return await this.replaceExact('executions', key, updated) ? 'updated' : 'conflict'
     })
   }
@@ -143,7 +210,7 @@ export class DshStorageDomainFactRepositories {
   private async createOnce(tableName: string, indexName: string, session: SessionLifecycleIdentityV1, key: string, record: unknown): Promise<'created' | 'identical' | 'conflict'> {
     return this.serial(session, async () => {
       if (!this.admissionOpen) return 'conflict'
-      const domain = await this.ready
+      const domain = await this.domain()
       if (domain === undefined) return 'conflict'
       try {
         const table = domain.table(tableName)
@@ -165,7 +232,7 @@ export class DshStorageDomainFactRepositories {
 
   private async replaceExact(tableName: string, key: string, record: unknown): Promise<boolean> {
     if (!this.admissionOpen) return false
-    const domain = await this.ready
+    const domain = await this.domain()
     if (domain === undefined) return false
     try {
       const canonical = canonicalJson(record)
@@ -176,7 +243,7 @@ export class DshStorageDomainFactRepositories {
   }
 
   private async index(indexName: string, session: SessionLifecycleIdentityV1, key: string): Promise<boolean> {
-    const domain = await this.ready
+    const domain = await this.domain()
     if (domain === undefined) return false
     const indexKey = this.lifecycleKey(session)
     const table = domain.table(indexName)
@@ -196,10 +263,10 @@ export class DshStorageDomainFactRepositories {
   }
 
   private async listRows(tableName: string, indexName: string, session: SessionLifecycleIdentityV1): Promise<readonly unknown[] | undefined> {
-    if (!this.admissionOpen) return undefined
+    if (!this.admissionOpen) throw new GateFailure('lifecycle', 'approval fact storage is draining')
     try {
-      const domain = await this.ready
-      if (domain === undefined) return undefined
+      const domain = await this.domain()
+      if (domain === undefined) throw new GateFailure('retryable-capability', 'approval fact storage is unavailable')
       const index = domain.table(indexName).get(this.lifecycleKey(session))
       if (index === undefined) return Object.freeze([])
       const parsed = parseIndex(index)
@@ -211,15 +278,38 @@ export class DshStorageDomainFactRepositories {
         rows.push(row)
       }
       return Object.freeze(rows)
-    } catch { return undefined }
+    } catch (cause: unknown) {
+      throw this.readFailure(cause)
+    }
   }
 
   private async readRow(tableName: string, key: string): Promise<unknown | undefined> {
     try {
-      const domain = await this.ready
-      if (domain === undefined) return undefined
-      return parseRow(domain.table(tableName).get(key)).record
-    } catch { return undefined }
+      const domain = await this.domain()
+      if (domain === undefined) throw new GateFailure('retryable-capability', 'approval fact storage is unavailable')
+      const stored = domain.table(tableName).get(key)
+      return stored === undefined ? undefined : parseRow(stored).record
+    } catch (cause: unknown) {
+      throw this.readFailure(cause)
+    }
+  }
+
+  private readFailure(cause: unknown): GateFailure {
+    if (cause instanceof GateFailure) return cause
+    if (cause instanceof TypeError) return new GateFailure('integrity', 'approval fact storage contains an invalid durable record', { cause })
+    return new GateFailure('retryable-capability', 'approval fact storage read failed', { cause })
+  }
+
+  private async domain(): Promise<StorageDomainHandle | undefined> {
+    if (this.facility === undefined) return undefined
+    const opening = this.opening ?? this.facility.open(factDomainSpec)
+    this.opening = opening
+    try {
+      return await opening
+    } catch (cause: unknown) {
+      if (this.opening === opening) this.opening = undefined
+      throw new GateFailure('retryable-capability', 'approval fact storage is temporarily unavailable', { cause })
+    }
   }
 
   private serial<T>(session: SessionLifecycleIdentityV1, operation: () => Promise<T>): Promise<T> {
@@ -240,12 +330,21 @@ export class DshStorageDomainFactRepositories {
     const record = value as Partial<ToolExecutionFactRecordV1>
     if (record.version !== 1 || !validSession(record.session)
       || record.request === null || typeof record.request !== 'object' || Array.isArray(record.request)
+      || record.catalogCommitment === null || typeof record.catalogCommitment !== 'object' || Array.isArray(record.catalogCommitment)
       || record.toolClassification === null || typeof record.toolClassification !== 'object' || Array.isArray(record.toolClassification)
       || record.toolClassification.descriptor === null || typeof record.toolClassification.descriptor !== 'object' || Array.isArray(record.toolClassification.descriptor)
       || record.projection === null || typeof record.projection !== 'object' || Array.isArray(record.projection)
       || record.projection.action === null || typeof record.projection.action !== 'object' || Array.isArray(record.projection.action)
       || !['model-tool-call', 'code-dispatch'].includes(record.request.kind)
       || !['tool/call', 'tool/code-dispatch-start'].includes(record.request.eventType)
+      || (record.request.kind === 'model-tool-call' && record.request.eventType !== 'tool/call')
+      || (record.request.kind === 'code-dispatch' && (
+        record.request.eventType !== 'tool/code-dispatch-start'
+        || typeof record.request.rootCallId !== 'string' || record.request.rootCallId.length === 0
+        || typeof record.request.parentCallId !== 'string' || record.request.parentCallId.length === 0
+        || !Number.isSafeInteger(record.request.rootRequestEventSeq) || (record.request.rootRequestEventSeq as number) < 0
+        || !Number.isSafeInteger(record.request.parentRequestEventSeq) || (record.request.parentRequestEventSeq as number) < 0
+        || record.request.arguments === undefined))
       || typeof record.request.callId !== 'string' || record.request.callId.length === 0
       || typeof record.request.toolName !== 'string' || record.request.toolName.length === 0
       || !Number.isSafeInteger(record.request.eventSeq) || (record.request.eventSeq as number) < 0
@@ -253,13 +352,62 @@ export class DshStorageDomainFactRepositories {
       || typeof record.projection.projectorId !== 'string' || record.projection.projectorId.length === 0
       || typeof record.projection.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
       || !Number.isSafeInteger(record.projection.observedAt) || (record.projection.observedAt as number) < 0
+      || (record.terminalEvidence !== undefined && (record.terminalEvidence === null
+        || typeof record.terminalEvidence !== 'object' || Array.isArray(record.terminalEvidence)
+        || Object.keys(record.terminalEvidence).some(key => key !== 'isError' && key !== 'outcome' && key !== 'receipt')
+        || typeof record.terminalEvidence.isError !== 'boolean'
+        || !validToolOutcome(record.terminalEvidence.outcome)
+        || (record.terminalEvidence.outcome.kind === 'completed' && record.terminalEvidence.isError)
+        || (record.terminalEvidence.outcome.kind === 'tool-error' && !record.terminalEvidence.isError)
+        || (record.terminalEvidence.receipt !== undefined
+          && (record.toolClassification.descriptor.classification !== 'delegation'
+            || record.terminalEvidence.outcome.kind !== 'completed'
+            || !validReceipt(record.terminalEvidence.receipt)))))
       || (record.result !== undefined && (record.result === null || typeof record.result !== 'object' || Array.isArray(record.result)
+        || Object.keys(record.result).some(key => key !== 'eventSeq' && key !== 'eventType' && key !== 'outcome')
         || !Number.isSafeInteger(record.result.eventSeq) || (record.result.eventSeq as number) <= record.request.eventSeq
-        || record.result.eventType !== 'tool/result'
-        || record.result.outcome === null || typeof record.result.outcome !== 'object' || Array.isArray(record.result.outcome)
-        || record.result.outcome.kind !== 'completed'))) return false
+        || (record.request.kind === 'model-tool-call' ? record.result.eventType !== 'tool/result' : record.result.eventType !== 'tool/code-dispatch')
+        || !validToolOutcome(record.result.outcome)))
+      || (record.delegationReceipt !== undefined && (record.result === undefined
+        || record.delegationReceipt === null || typeof record.delegationReceipt !== 'object' || Array.isArray(record.delegationReceipt)
+        || !sameLifecycle(record.delegationReceipt.session, record.session)
+        || record.delegationReceipt.requestEventSeq !== record.request.eventSeq
+        || record.delegationReceipt.callId !== record.request.callId
+        || record.delegationReceipt.resultEvent?.seq !== record.result.eventSeq
+        || record.delegationReceipt.resultEvent?.type !== record.result.eventType
+        || record.delegationReceipt.classificationCatalogFingerprint !== record.toolClassification.classificationCatalogFingerprint
+        || record.toolClassification.descriptor.classification !== 'delegation'
+        || record.delegationReceipt.projectorId !== record.toolClassification.descriptor.projectorId
+        || !validReceipt(record.delegationReceipt.receipt)))) return false
+    let action: ActionSnapshot
+    try {
+      action = parseActionSnapshot(record.projection.action)
+    } catch {
+      return false
+    }
+    if (hashAction(action) !== record.projection.actionHash
+      || action.toolName !== record.request.toolName
+      || action.projectorId !== record.projection.projectorId) return false
+    const commitment = record.catalogCommitment
+    if (validateDurableToolCatalogCommitmentV1(commitment).kind !== 'ok') return false
+    const dossierDescriptor = commitment.classificationCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
+    const approvalDescriptor = commitment.approvalCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
+    const rootEventSeq = record.request.kind === 'model-tool-call' ? record.request.eventSeq : record.request.rootRequestEventSeq
+    if (commitment.requestHeaderEventSeq >= rootEventSeq || rootEventSeq > record.request.eventSeq
+      || (record.request.kind === 'code-dispatch'
+        && (!Number.isSafeInteger(record.request.parentRequestEventSeq)
+          || record.request.parentRequestEventSeq < rootEventSeq
+          || record.request.parentRequestEventSeq >= record.request.eventSeq))
+      || commitment.classificationCatalog.fingerprint !== record.toolClassification.classificationCatalogFingerprint
+      || dossierDescriptor === undefined || approvalDescriptor === undefined
+      || canonicalJson(dossierDescriptor) !== canonicalJson(record.toolClassification.descriptor)
+      || dossierDescriptor.toolSchemaFingerprint !== approvalDescriptor.toolSchemaFingerprint
+      || record.projection.projectorId !== approvalDescriptor.actionProjectorId) return false
     try {
       snapshotJson(record.projection.action)
+      if (record.request.kind === 'code-dispatch') snapshotJson(record.request.arguments)
+      if (record.terminalEvidence !== undefined) snapshotJson(record.terminalEvidence)
+      if (record.delegationReceipt !== undefined) snapshotJson(record.delegationReceipt)
       return true
     } catch {
       return false
@@ -289,6 +437,7 @@ export class DshStorageDomainExecutionFactRepository implements ExecutionFactRep
   constructor(private readonly shared: DshStorageDomainFactRepositories) {}
   list(session: SessionLifecycleIdentityV1) { return this.shared.list(session) }
   create(record: ToolExecutionFactRecordV1) { return this.shared.create(record) }
+  stageTerminal(input: Parameters<ExecutionFactRepository['stageTerminal']>[0]) { return this.shared.stageTerminal(input) }
   attachResult(input: Parameters<ExecutionFactRepository['attachResult']>[0]) { return this.shared.attachResult(input) }
   get(input: Parameters<ExecutionFactRepository['get']>[0]) { return this.shared.get(input) }
 }

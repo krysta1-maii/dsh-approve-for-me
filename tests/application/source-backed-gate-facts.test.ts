@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
-import { DossierGateFactProjector, SourceBackedGateFactResolver } from '../../src/application/source-backed-gate-facts.js'
-import { createToolApprovalClassifier } from '../../src/application/tool-classifier.js'
+import { DossierGateFactProjector, SourceBackedGateFactResolver, fingerprintGateConfigurationV1 } from '../../src/application/source-backed-gate-facts.js'
+import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
 
 const agent = { id: 'session-1', session: { id: 'session-1' } } as unknown as Agent
 const authority = { sessionId: 'session-1' } as unknown as ParentAuthority<Agent, string>
+const reviewerConfigurationFingerprint = `sha256:${'9'.repeat(64)}`
 const request = {
   requestId: 'ask-1', parentSessionId: 'session-1', callId: 'call-1',
   toolName: 'bash', actionHash: 'hash-1', mode: 'auto' as const,
@@ -31,36 +32,91 @@ describe('DossierGateFactProjector', () => {
   it('rebuilds cache scope from branded direct-user evidence only', () => {
     const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
     const actionHash = hashAction(action)
-    const projector = new DossierGateFactProjector(createToolApprovalClassifier({
-      version: 1, argumentSemanticsId: 'json-v1', fingerprint: 'config-1',
-      descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1', classification: 'gate-ask', actionSemanticsFamily: 'shell-process-v1', actionProjectorId: 'shell-v1' }],
-    }), 'generation-1', 'config-1')
-    const facts = projector.project({
+    const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+    const effective = createDshAlpha1EffectiveCatalog(schemas)
+    const commitment = createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas)
+    const projector = new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2')
+    const projectInput = {
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },
       facts: {
         session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
-        eventProjection: { classificationCatalog: { descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1' }] } },
+        approvalBinding: { event: { seq: 2, type: 'approval/asked' }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' },
+        approvalSnapshots: [{
+          version: 1,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          approvalRequestId: 'ask-1', approvalAskedSeq: 2,
+          execution: { requestEventSeq: 1, callId: 'call-1', toolName: 'bash', actionHash, classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId: action.projectorId },
+          environment: { version: 1, kind: 'native-header-only' },
+        }],
+        executionFacts: [{
+          version: 1, catalogCommitment: commitment,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+          toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0] },
+          projection: { projectorId: action.projectorId, action, actionHash, observedAt: 1 },
+        }],
+        eventProjection: { classificationCatalog: effective.dossier },
       },
       verifiedDossier: {
         dossier: {
           freeze: { currentTurn: 3 },
-          interaction: { turns: [{ directUserMessages: [{ event: { seq: 7 } }] }] },
-          pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash },
+          environment: { requestHeader: { tools: schemas } },
+          interaction: { delegations: { entries: [] }, turns: [{ turn: 3, directUserMessages: [{ event: { seq: 7 }, content: [{ type: 'text', text: 'Run pwd.' }], surfaceState: 'visible' }] }] },
+          currentTurnTools: { attempts: [{
+            request: { kind: 'model-tool-call', issuedIn: { seq: 0 }, blockIndex: 0, callId: 'call-1', toolName: 'bash', rawArguments: '{"command":"pwd"}', callEvent: { seq: 1 } },
+            outcome: { kind: 'pending' },
+          }] },
+          pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash, confinement: { kind: 'unconfined-composition' }, earlierSandboxDenials: [] },
+        },
+      },
+    }
+    const facts = projector.project(projectInput as never)
+    expect(facts).toMatchObject({ rootRequester: true, breakerKey: { turn: 3, directUserFrontierSeq: 7, actionHash }, policyVersion: 'policy-v2' })
+    expect(facts?.classification).toEqual({ kind: 'classified', classification: 'body-escalation' })
+    expect(facts?.configurationFingerprint).toBe(fingerprintGateConfigurationV1(reviewerConfigurationFingerprint, commitment.fingerprint))
+    expect(facts?.assessment).toMatchObject({ authorization: { level: 'absent', sourceRefs: ['event:7'] } })
+
+    const consumedByDelegation = projector.project({
+      ...projectInput,
+      verifiedDossier: {
+        ...projectInput.verifiedDossier,
+        dossier: {
+          ...projectInput.verifiedDossier.dossier,
+          interaction: {
+            ...projectInput.verifiedDossier.dossier.interaction,
+            delegations: { entries: [{ attempt: {
+              request: { kind: 'model-tool-call', issuedIn: { seq: 8 }, blockIndex: 0, callId: 'delegate-1', toolName: 'subagent', rawArguments: '{}', callEvent: { seq: 8 } },
+              outcome: { kind: 'completed' },
+            } }] },
+          },
         },
       },
     } as never)
-    expect(facts).toMatchObject({ rootRequester: true, breakerKey: { turn: 3, directUserFrontierSeq: 7, actionHash } })
-    expect(facts?.classification).toEqual({ kind: 'classified', classification: 'gate-ask' })
-    expect(facts?.assessment).toMatchObject({ authorization: { level: 'unknown', sourceRefs: ['event:7'] } })
+    expect(consumedByDelegation).toBeUndefined()
 
     const withoutUserFrontier = projector.project({
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },
       facts: {
         session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
-        eventProjection: { classificationCatalog: { descriptors: [{ toolName: 'bash', toolSchemaFingerprint: 'bash-v1' }] } },
+        approvalBinding: { event: { seq: 2, type: 'approval/asked' }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' },
+        approvalSnapshots: [{
+          version: 1,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          approvalRequestId: 'ask-1', approvalAskedSeq: 2,
+          execution: { requestEventSeq: 1, callId: 'call-1', toolName: 'bash', actionHash, classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId: action.projectorId },
+          environment: { version: 1, kind: 'native-header-only' },
+        }],
+        executionFacts: [{
+          version: 1, catalogCommitment: commitment,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+          toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0] },
+          projection: { projectorId: action.projectorId, action, actionHash, observedAt: 1 },
+        }],
+        eventProjection: { classificationCatalog: effective.dossier },
       },
       verifiedDossier: {
-        dossier: { freeze: { currentTurn: 3 }, interaction: { turns: [] }, pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash } },
+        dossier: { freeze: { currentTurn: 3 }, environment: { requestHeader: { tools: schemas } }, interaction: { delegations: { entries: [] }, turns: [] }, currentTurnTools: { attempts: [] }, pendingApproval: { callId: 'call-1', toolName: 'bash', action, actionHash, confinement: { kind: 'unconfined-composition' }, earlierSandboxDenials: [] } },
       },
     } as never)
     expect(withoutUserFrontier).toBeUndefined()

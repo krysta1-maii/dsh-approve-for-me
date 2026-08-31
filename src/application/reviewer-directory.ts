@@ -23,7 +23,12 @@ export class DefaultReviewerDirectory<Parent, SessionId extends string>
   constructor(
     private readonly port: ManagedReviewerPort<Parent, SessionId>,
     private readonly reviewerProvider: string = REVIEWER_PROVIDER,
-  ) {}
+    private readonly maxDeliveryAttemptsPerChild: number = 64,
+  ) {
+    if (!Number.isSafeInteger(maxDeliveryAttemptsPerChild) || maxDeliveryAttemptsPerChild < 1) {
+      throw new TypeError('maxDeliveryAttemptsPerChild must be a positive safe integer')
+    }
+  }
 
   async ensure(
     authority: ParentAuthority<Parent, SessionId>,
@@ -37,9 +42,12 @@ export class DefaultReviewerDirectory<Parent, SessionId extends string>
     )
     const matching = children.filter((child) => {
       if (child.provider !== this.reviewerProvider || child.parentSessionId !== authority.sessionId) return false
-      // Contaminated children are permanently unusable and must never be
-      // selected as the current Reviewer, even after a reload.
-      if (child.contaminated) return false
+      // Contaminated and capacity-retired children remain auditable but are
+      // permanently ineligible, including after a cold resume.
+      if (child.contaminated || child.retired) return false
+      if (!Number.isSafeInteger(child.deliveryAttempts) || child.deliveryAttempts < 0) {
+        throw new Error(`managed Reviewer ${String(child.id)} has an invalid durable delivery-attempt count`)
+      }
       try {
         const data = parseReviewerProviderData(child.providerData)
         return data.generation === desired.generation
@@ -54,7 +62,12 @@ export class DefaultReviewerDirectory<Parent, SessionId extends string>
       )
     }
     const existing = matching[0]
-    if (existing !== undefined) return existing.id
+    if (existing !== undefined) {
+      if (existing.deliveryAttempts >= this.maxDeliveryAttemptsPerChild) {
+        return this.port.renew(authority, existing.id, signal)
+      }
+      return existing.id
+    }
     return this.port.create(authority, {
       label: 'Approval Reviewer',
       providerData: desired,

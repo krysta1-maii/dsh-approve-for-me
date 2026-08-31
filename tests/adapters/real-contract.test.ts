@@ -101,6 +101,7 @@ describe('real guarded-continuable contract fixture', () => {
       create: async () => SessionId('reviewer-1'),
       list: async () => [],
       rotate: async () => SessionId('reviewer-2'),
+      renew: async () => SessionId('reviewer-2'),
       deliver: async (): Promise<MessageId> => MessageId('message-1'),
       interrupt: () => {},
     }

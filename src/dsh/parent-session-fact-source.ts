@@ -1,14 +1,15 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
-import { freezeJson, snapshotJson } from '../domain/json.js'
+import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type {
   EventRefV1,
   ParentSessionFactSnapshotV1,
   PrincipalSessionIdentityV1,
   SessionFactEventV1,
+  ToolExecutionFactRecordV1,
 } from '../domain/dossier.js'
-import { isApprovalEnvironmentEvidenceV1 } from '../domain/dossier.js'
+import { isApprovalEnvironmentEvidenceV1, validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
 import type { LiveAgentRegistry, ParentSessionFactSource } from '../ports/parent-session-facts.js'
 
 interface SessionEventLike {
@@ -163,53 +164,96 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     const events = bound.session.events
     if (!Array.isArray(events) || events.some((event, index) => nonNegative(event.seq) === undefined || event.seq !== index || nonNegative(event.time) === undefined
       || (index > 0 && event.time < events[index - 1]!.time))) return undefined
-    const askedEvents = events.filter(event => { 
+    const askedEvents = events.filter(event => {
       if (event.type !== 'approval/asked') return false
       const data = event.data as Record<string, unknown>
-      // The fork writes the audit id as approval/asked.data.id. The public
-      // requestId is deliberately checked against that durable event identity.
       return data?.id === input.approvalRequestId
         && data.callId === input.callId
         && data.toolName === input.toolName
     })
-    if (askedEvents.length !== 1) return undefined
+    if (askedEvents.length !== 1 || askedEvents[0] === undefined) return undefined
     const asked = askedEvents[0]
-    if (asked === undefined) return undefined
-    const matchingCalls = events.filter(event => event.seq < asked.seq && (
-      (event.type === 'tool/call' && (event.data as Record<string, unknown>).callId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
-      || (event.type === 'tool/code-dispatch-start' && (event.data as Record<string, unknown>).subCallId === input.callId && (event.data as Record<string, unknown>).name === input.toolName)
-    ))
-    // A request id must bind to exactly one canonical execution event. Ambiguous
-    // correlation is an integrity failure, not an excuse to select a first match.
-    if (matchingCalls.length !== 1) return undefined
-    const matchingCall = matchingCalls[0]
-    if (matchingCall === undefined) return undefined
     const throughSeq = asked.seq
     const sameLifecycle = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string } }): boolean =>
       item.session.sessionId === bound.identity.sessionId
       && item.session.sessionFormatVersion === bound.identity.sessionFormatVersion
       && item.session.createdAt === bound.identity.createdAt
       && item.session.cwd === bound.identity.cwd
-    const executions = input.executionFacts.filter(item => sameLifecycle(item) && item.request.eventSeq <= throughSeq)
+    // Durable sidecars are host-private but still untrusted input: every fact
+    // must bind to the exact canonical live events before it can enter the
+    // frozen snapshot. A poisoned row that points at a different call or
+    // result event is dropped here and makes the dossier incomplete.
+    const executionMatchesLiveEvents = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string } } & ToolExecutionFactRecordV1): boolean => {
+      const requestEvent = events[item.request.eventSeq]
+      if (requestEvent === undefined || requestEvent.seq !== item.request.eventSeq) return false
+      const requestData = requestEvent.data as Record<string, unknown>
+      if (item.request.kind === 'model-tool-call') {
+        if (requestEvent.type !== 'tool/call' || requestData.callId !== item.request.callId
+          || requestData.name !== item.request.toolName) return false
+      } else if (requestEvent.type !== 'tool/code-dispatch-start'
+        || requestData.subCallId !== item.request.callId || requestData.name !== item.request.toolName
+        || requestData.rootCallId !== item.request.rootCallId || requestData.parentCallId !== item.request.parentCallId) {
+        return false
+      }
+      if (item.result === undefined) return true
+      const resultEvent = events[item.result.eventSeq]
+      if (resultEvent === undefined || resultEvent.seq !== item.result.eventSeq) return false
+      const resultData = resultEvent.data as Record<string, unknown>
+      if (item.request.kind === 'model-tool-call') {
+        if (resultEvent.type !== 'tool/result' || !Array.isArray(resultEvent.sourceEventSeqs)
+          || resultEvent.sourceEventSeqs.length !== 1 || resultEvent.sourceEventSeqs[0] !== requestEvent.seq) return false
+        const message = resultData.message as Record<string, unknown> | undefined
+        const source = message?.source as Record<string, unknown> | undefined
+        const content = message?.content
+        const block = Array.isArray(content) ? content[0] as Record<string, unknown> | undefined : undefined
+        if (message === undefined || source?.kind !== 'tool' || source.callId !== item.request.callId
+          || block?.type !== 'tool-result' || block.toolCallId !== item.request.callId) return false
+      } else if (resultEvent.type !== 'tool/code-dispatch'
+        || resultData.rootCallId !== item.request.rootCallId || resultData.parentCallId !== item.request.parentCallId
+        || resultData.subCallId !== item.request.callId || resultData.name !== item.request.toolName) {
+        return false
+      }
+      return true
+    }
+    const executions = input.executionFacts.filter(item => sameLifecycle(item)
+      && item.request.eventSeq <= throughSeq
+      && (item.result === undefined || item.result.eventSeq <= throughSeq)
+      && executionMatchesLiveEvents(item))
     const approvals = input.approvalSnapshots.filter(item => sameLifecycle(item) && item.approvalAskedSeq === throughSeq)
-    if (approvals.length !== 1 || approvals.some(item => item.approvalRequestId !== input.approvalRequestId)) return undefined
-    const correlatedExecutions = executions.filter(item =>
-      item.request.eventSeq === matchingCall.seq
-      && item.request.callId === input.callId
-      && item.request.toolName === input.toolName)
-    if (correlatedExecutions.length !== 1) return undefined
+    if (approvals.length !== 1 || approvals[0]?.approvalRequestId !== input.approvalRequestId) return undefined
     const approval = approvals[0]!
+    const matchingCall = events[approval.execution.requestEventSeq]
+    if (matchingCall === undefined || matchingCall.seq >= asked.seq) return undefined
+    const matchingData = matchingCall.data as Record<string, unknown>
+    if (!((matchingCall.type === 'tool/call' && matchingData.callId === input.callId && matchingData.name === input.toolName)
+      || (matchingCall.type === 'tool/code-dispatch-start' && matchingData.subCallId === input.callId && matchingData.name === input.toolName))) return undefined
+    const correlatedExecutions = executions.filter(item => item.request.eventSeq === matchingCall.seq
+      && item.request.callId === input.callId && item.request.toolName === input.toolName)
+    if (correlatedExecutions.length !== 1) return undefined
     const execution = correlatedExecutions[0]!
+    const commitment = execution.catalogCommitment
+    const rootRequestEventSeq = execution.request.kind === 'model-tool-call'
+      ? execution.request.eventSeq
+      : execution.request.rootRequestEventSeq
+    const headerEvent = events[commitment.requestHeaderEventSeq]
+    const header = headerEvent?.type === 'request/header'
+      ? (headerEvent.data as Record<string, unknown>).header as Record<string, unknown> | undefined
+      : undefined
+    if (validateDurableToolCatalogCommitmentV1(commitment).kind !== 'ok'
+      || header === undefined || commitment.requestHeaderEventSeq >= rootRequestEventSeq
+      || rootRequestEventSeq > execution.request.eventSeq
+      || canonicalJson((header.tools ?? []) as JsonValue) !== canonicalJson(commitment.wireSchemas as unknown as JsonValue)
+      || executions.some(item => item.catalogCommitment.fingerprint !== commitment.fingerprint)) return undefined
     if (!isApprovalEnvironmentEvidenceV1(approval.environment)
       || approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
       || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId
       || approval.execution.toolName !== input.toolName || approval.execution.toolName !== execution.request.toolName
       || approval.execution.actionHash !== execution.projection.actionHash
-      || approval.execution.classificationCatalogFingerprint !== input.classificationCatalog.fingerprint
+      || approval.execution.classificationCatalogFingerprint !== commitment.classificationCatalog.fingerprint
       || approval.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
       || approval.execution.projectorId !== execution.projection.projectorId) return undefined
     const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
-    const classificationCatalog = frozenSnapshot(input.classificationCatalog)
+    const classificationCatalog = frozenSnapshot(commitment.classificationCatalog)
     const executionSnapshots = executions.map(frozenSnapshot)
     const approvalSnapshots = approvals.map(frozenSnapshot)
     if (eventSnapshots === undefined || classificationCatalog === undefined

@@ -31,7 +31,9 @@ function receiptMatchesDescriptor(
  * durable receipt already joined by the fact layer.
  */
 export class DefaultPrincipalDelegationProjector implements PrincipalDelegationProjector {
-  constructor(readonly catalog: DelegationToolClassificationCatalogV1) {}
+  // The descriptor is supplied from the per-execution durable catalog. The
+  // projection algorithm itself has no independent catalog authority.
+  constructor(_legacyCatalog?: DelegationToolClassificationCatalogV1) {}
 
   project(input: {
     readonly principalSessionId: string

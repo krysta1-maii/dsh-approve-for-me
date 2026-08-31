@@ -314,7 +314,7 @@ interface LoggedContextMessageV1 {
 - `session` 的持久字段来自父 Session header；`runtimeSubagentDepth` 来自 exact live `request.agent.options.subagentDepth`，effective depth 取 header／runtime 最大值并写入 immutable approval snapshot；
 - `requestHeader` 使用当前 step 对应的最新完整 `request/header`，字段是 DSH 的 `config`／`adapterDefaults`／`system`／`tools`；
 - `requestContext` 使用当前 route 对应的最新 `request/context`；
-- `system` 和 `requestHeader.tools` 保留父模型本次请求实际看到的版本；`effectiveTools` 由 exact live Agent scope 冻结模型调用与 Code Mode dispatch 的并集，tool name 必须唯一，每个 schema 以项目 canonical digest 绑定 classification catalog 的 `toolSchemaFingerprint`；当前 source-backed v1 已对 native `requestHeader.tools` 以 `dsh-approve-for-me/effective-tool-schema/v1\0` 指纹实施该闭集校验，Code Mode dispatch surface 仍未接入，不能生成 ready dossier；
+- `system` 和 `requestHeader.tools` 保留父模型本次请求实际看到的版本；`effectiveTools` 由 exact live Agent scope 冻结模型调用与 Code Mode dispatch 的并集，tool name 必须唯一，每个 schema 以项目 canonical digest 绑定 classification catalog 的 `toolSchemaFingerprint`；当前 source-backed v1 对 native `requestHeader.tools` 实施该闭集校验，`run_code` PTC presentation 绑定其 root model call 的 header，nested code dispatch 继承 root 冻结目录；任一模式无法绑定都失败关闭；
 - `effectiveTools`、event projection policy 和完整 classification catalog 与本次 ask 的 immutable approval snapshot 一起持久化；历史重建不得用后来 profile 的工具集替换；
 - `runtimeContexts` 收录当前 surface 中 DSH 生成的 runtime snapshot 类上下文，但排除下一段单独呈现的 `agent-instructions`；
 - approval policy 使用 DSH 正式 resolver 的当前有效值；ready dossier 必须为 `ask`；
@@ -746,6 +746,8 @@ interface PendingApprovalSectionV1 {
 DSH 没有持久 `retryOf` 关系，编译器不得根据“参数看起来相同”制造一条精确前驱边。`earlierSandboxDenials` 只列出当前 turn、冻结点之前已经确认的所有 sandbox-denied 请求，按 request event seq 排序，并通过 ref 指回第四段的完整请求和结果。
 
 该列表不声明其中任一项与当前动作等价，也不声称当前提权是一次合法重试。“是否同一动作”“升级是否必要”“请求是否最窄”全部由 Guardian 根据原始请求、denial 事实和 justification 判断。未来若工具或 sidecar 提供正式 `retryOf`／fingerprint 协议，必须以新版本显式加入。
+
+候选存在本身不得提升 authorization coverage，也不得进入 allow-cache／sealed replay 等预审 fast path。每个 sandbox expansion 都必须经过 fresh Guardian；若要 `allow`，Guardian 必须在结构化 assessment 的 `sandboxDenialRelation` 中选择一个候选 ref，并声明闭集关系 `same-action-legitimate-retry`。机器策略只接受列表内的精确 ref，且该 ref 与 direct-user authorization `sourceRefs` 分离；缺失、越界或用于非提权动作的 relation 一律 under-evidenced。`danger-full-access` 仍因 critical risk 禁止自动 allow。
 
 ## 11. 编译端口
 

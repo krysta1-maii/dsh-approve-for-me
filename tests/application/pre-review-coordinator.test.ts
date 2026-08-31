@@ -5,6 +5,7 @@ import {
   createActionSnapshot,
   hashAction,
   assessVerifiedActionV1,
+  ReviewProtocolError,
 } from '../../src/index.js'
 import { sealSourceVerifiedDossier } from '../../src/domain/dossier.js'
 import type { ApprovalDecision, ReviewCoordinator } from '../../src/index.js'
@@ -92,6 +93,36 @@ describe('DefaultPreReviewCoordinator', () => {
       .resolves.toMatchObject({ disposition: 'human' })
   })
 
+  it('seals an assessed allow when retained direct-user evidence covers the exact action', async () => {
+    const assessedAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'npm test' },
+      projectorId: 'dsh-approve-for-me/dsh-alpha1/bash-v1',
+      semantics: { family: 'shell-process-v1', value: { operation: 'bash', command: 'npm test', cwd: '/workspace' } },
+    })
+    const directive = `/approve-for-me ${JSON.stringify({ version: 1, scope: 'next-action', allow: { toolName: 'bash', arguments: { command: 'npm test' }, requestedPermissions: [] } })}`
+    const assessment = assessVerifiedActionV1(assessedAction, [{
+      seq: 1,
+      content: [{ type: 'text', text: directive }],
+      surfaceState: 'visible',
+    }])
+    const coordinator = new DefaultPreReviewCoordinator(
+      reviewReturning(decision({
+        actionHash: hashAction(assessedAction),
+        assessment: {
+          version: 1,
+          targetCovered: true,
+          sideEffectsCovered: true,
+          sourceRefs: assessment.authorization.sourceRefs,
+          rationale: 'The exact retained user directive covers this action.',
+        },
+      })),
+      new InMemorySealedDispositionRegistry(),
+    )
+    await expect(coordinator.preReview(input({ action: assessedAction, assessment })))
+      .resolves.toMatchObject({ disposition: 'allow' })
+  })
+
   it('requires a cited assessment for an assessed policy-v2 allow', async () => {
     const assessedAction = action()
     const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision()), new InMemorySealedDispositionRegistry())
@@ -152,6 +183,17 @@ describe('DefaultPreReviewCoordinator', () => {
     await expect(coordinator.preReview(input({ deadlineAt: 200 }))).rejects.toMatchObject({ code: 'deadline' })
     expect(review).not.toHaveBeenCalled()
     expect(coordinator.replay({ requestId: 'ask-1', callId: 'call-1', actionHash: hashAction(action()) }).kind).toBe('missing')
+  })
+
+  it('maps a bounded Reviewer timeout to the safe human fallback class', async () => {
+    const reviewer = {
+      review: vi.fn(async () => { throw new ReviewProtocolError('timed-out', 'deadline') }),
+    } as unknown as ReviewCoordinator<{ id: string }, string>
+    const coordinator = new DefaultPreReviewCoordinator(reviewer, new InMemorySealedDispositionRegistry())
+    await expect(coordinator.preReview(input())).rejects.toMatchObject({
+      name: 'GateFailure',
+      code: 'retryable-capability',
+    })
   })
 
   it('rejects a Guardian decision that arrives after the absolute deadline', async () => {

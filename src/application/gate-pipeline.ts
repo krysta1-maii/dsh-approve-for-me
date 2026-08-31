@@ -5,7 +5,7 @@ import type {
   ExactDenialBreakerKeyV1,
   ExactDenialBreakerV1,
 } from '../approval-gate/breaker.js'
-import type { ToolApprovalClassificationResult, ToolApprovalClassifier } from '../approval-gate/catalog.js'
+import type { ToolApprovalClassificationResult } from '../approval-gate/catalog.js'
 import type {
   GateMachineDecisionV1,
   GateMachineRequestV1,
@@ -95,7 +95,7 @@ export type GateFailureStageV1 =
  * route and normalized outcome metadata; no packet, rationale or tool arguments.
  */
 export interface GateDecisionRecord {
-  readonly version: 1
+  readonly version: 2
   /** Present only for a real Guardian/sealed review, never synthesized for fast paths. */
   readonly reviewRunId?: string
   readonly route: GateDecisionRouteV1
@@ -108,6 +108,9 @@ export interface GateDecisionRecord {
   readonly callId: string
   readonly actionHash: string
   readonly generation: string
+  /** Exact Reviewer policy contract used for this decision. */
+  readonly policyVersion: string
+  /** Composite Reviewer-configuration + effective-tool-catalog commitment. */
   readonly configurationFingerprint: string
   /** Record-local no-decision is never a sealed disposition. */
   readonly disposition: GateRecordDispositionV1
@@ -133,17 +136,22 @@ const GATE_HASH = /^sha256:[0-9a-f]{64}$/
 export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('gate decision record must be an object')
   const value = input as Record<string, unknown>
+  const legacy = value.version === 1
   const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition', 'reviewAttempts', 'contaminatedRotationAttempts', 'contaminatedRotations']
-  const allowed = new Set([...required, 'reviewRunId', 'failureStage'])
+  if (!legacy) required.push('policyVersion')
+  const allowed = new Set([...required, 'reviewRunId', 'failureStage', 'policyVersion'])
   for (const key of required) if (!Object.hasOwn(value, key)) throw new TypeError(`gate decision record.${key} is required`)
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`gate decision record.${key} is not supported`)
-  if (value.version !== 1) throw new TypeError('gate decision record.version must be 1')
+  if (!legacy && value.version !== 2) throw new TypeError('gate decision record.version must be 1 or 2')
   if (!GATE_DECISION_ROUTES.includes(value.route as GateDecisionRouteV1)) throw new TypeError('gate decision record.route is invalid')
   if (!GATE_NORMALIZED_DECISIONS.includes(value.normalizedDecision as GateDecisionRecord['normalizedDecision'])) throw new TypeError('gate decision record.normalizedDecision is invalid')
   if (!GATE_PLUGIN_DISPOSITIONS.includes(value.pluginDisposition as GatePluginDispositionV1)) throw new TypeError('gate decision record.pluginDisposition is invalid')
   if (!GATE_RECORD_DISPOSITIONS.includes(value.disposition as GateRecordDispositionV1)) throw new TypeError('gate decision record.disposition is invalid')
   for (const key of ['requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'generation'] as const) {
     if (typeof value[key] !== 'string' || value[key].length === 0) throw new TypeError(`gate decision record.${key} is invalid`)
+  }
+  if (!legacy && (typeof value.policyVersion !== 'string' || value.policyVersion.length === 0)) {
+    throw new TypeError('gate decision record.policyVersion is invalid')
   }
   for (const key of ['actionHash', 'configurationFingerprint'] as const) {
     if (typeof value[key] !== 'string' || !GATE_HASH.test(value[key])) throw new TypeError(`gate decision record.${key} must be a sha256 digest`)
@@ -186,7 +194,11 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
       throw new TypeError('gate decision record execution summary is inconsistent with its route')
     }
   }
-  return Object.freeze({ ...value }) as unknown as GateDecisionRecord
+  return Object.freeze({
+    ...value,
+    version: 2,
+    policyVersion: legacy ? 'policy-v1-legacy-unbound' : value.policyVersion,
+  }) as unknown as GateDecisionRecord
 }
 
 export interface GateDecisionRecordStore {
@@ -199,7 +211,6 @@ export interface GatePreReview {
 }
 
 export interface GatePipelineDependencies {
-  readonly classifier: ToolApprovalClassifier
   readonly trustEnvelope: TrustEnvelopeEvaluatorV1
   readonly breaker: ExactDenialBreakerV1
   readonly allowCache: AllowCacheV1
@@ -226,7 +237,7 @@ function failureRecordFor(
   failureStage: GateFailureStageV1,
 ): GateDecisionRecord {
   return {
-    version: 1,
+    version: 2,
     route: 'post-facts-failure',
     normalizedDecision: 'no-decision',
     pluginDisposition: outcome,
@@ -238,6 +249,7 @@ function failureRecordFor(
     callId: request.callId ?? '',
     actionHash: request.actionHash,
     generation: facts.generation,
+    policyVersion: facts.policyVersion ?? 'policy-v1',
     configurationFingerprint: facts.configurationFingerprint,
     reviewAttempts: 0,
     contaminatedRotationAttempts: 0,
@@ -257,7 +269,7 @@ function recordFor(
   },
 ): GateDecisionRecord {
   return {
-    version: 1,
+    version: 2,
     route,
     normalizedDecision,
     pluginDisposition,
@@ -268,6 +280,7 @@ function recordFor(
     callId: request.callId ?? '',
     actionHash: request.actionHash,
     generation: facts.generation,
+    policyVersion: facts.policyVersion ?? 'policy-v1',
     configurationFingerprint: facts.configurationFingerprint,
     disposition: normalizedDecision === 'human_review' ? 'human' : normalizedDecision,
     reviewAttempts: execution.reviewAttempts,
@@ -300,6 +313,7 @@ export class DefaultGatePipeline implements GatePipeline {
     try {
       outcome = await this.decideVerified(request)
     } catch (error: unknown) {
+      if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me gate]', error)
       outcome = gateFailureOutcome(error, this.deps.mode)
     }
     // Only a concrete user fallback is observed, after the authoritative gate
@@ -335,14 +349,18 @@ export class DefaultGatePipeline implements GatePipeline {
     if (this.deps.requireVerifiedDossier && facts.assessment === undefined) {
       return this.finishPostFactsFailure(request, facts, 'unavailable', 'assessment')
     }
-    const fastPathsAllowed = facts.assessment === undefined || permitsAutomaticFastPath(facts.assessment)
+    // A configured trust envelope is itself a standing administrative grant
+    // over a source-verified structural action. User-message authorization is
+    // still required for cache/sealed replay; it must not disable that separate
+    // deterministic envelope contract.
+    const authorizationFastPathsAllowed = facts.assessment === undefined || permitsAutomaticFastPath(facts.assessment)
 
     if (this.deps.breaker.lookup(facts.breakerKey)) {
       await this.recordBestEffortSafely(recordFor(request, facts, 'deny', 'exact-denial-breaker', 'deny'))
       return 'rejected'
     }
 
-    if (fastPathsAllowed && facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
+    if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
       if (request.signal?.aborted) return 'cancelled'
       const record = recordFor(request, facts, 'allow', 'trust-envelope', 'allow')
       const result = await this.deps.records.createConfirmed(record)
@@ -355,7 +373,7 @@ export class DefaultGatePipeline implements GatePipeline {
       return this.delegateOrUnavailable()
     }
 
-    if (fastPathsAllowed && this.deps.allowCache.lookup(facts.allowCacheKey)) {
+    if (authorizationFastPathsAllowed && this.deps.allowCache.lookup(facts.allowCacheKey)) {
       // A cache entry is only an optimization over a prior Guardian decision;
       // each distinct approval ask still needs its own durable confirmation
       // before it can receive an automatic grant.
@@ -368,7 +386,7 @@ export class DefaultGatePipeline implements GatePipeline {
       return this.delegateOrUnavailable()
     }
 
-    if (fastPathsAllowed) {
+    if (authorizationFastPathsAllowed) {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
         const now = this.deps.now?.() ?? Date.now()

@@ -1,121 +1,232 @@
-# Patched DSH 0.1.2 + 机器决策槽 集成验证清单
+# DSH 0.1.2-alpha.1 artifact 集成与验收
 
-> 状态：2026-08-28，目标验收计划（v2）。patch 包结构已成形；0.1.2 迁移、本体机器策略接入与真实 Profile／Web 验收尚未完成。
+> 当前实现基线：精确宿主 `dsh-v0.1.2-alpha.1` / `cd5ef8148158c3a752a658978873241fdf8e2bbc`，alpha.1 检查点为 41 个测试文件、324 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
-> 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准，施工顺序见 [当前施工计划](construction-plan.md)。本文只定义验收，不定义新接口。
+> 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
-## 1. 集成硬约束
+## 1. 不可变输入与部署图
 
-1. stock DSH 0.1.2-alpha.1 除 `@deepseek-ai/dsh-user-approval` 外不修改；该包由本仓库 `patch/` 产出 fork tarball 替换。
-2. fork tarball 保留上游 `name`/`version`，带 `dshApprovalPatch` 标记；`verify-fork.mjs` 全部通过。
-3. `dsh-managed-agent` 作为独立插件先安装，提供 `ctx.managedAgents`；本插件通过 peerDependencies 声明依赖。
-4. 本体通过 `ctx.approval.registerMachinePolicy()` 注册唯一机器策略；不依赖 `approval/request` listener 顺序做自动裁决。
-5. 人工兜底走官方 `api-remotes → client/ui-approval`；approve-for-me 会话不 compose ACP 机器桥（或明确接受其只影响 delegate 链）。
-6. 未授权输入、污染、超时、模型错误、工具错误和存储错误全部失败关闭。
+部署由四组 artifact 组成：
 
-## 2. 构建与安装前检查
-
-```bash
-# 本仓库
-npm run check
-patch/dsh-user-approval/scripts/build-fork.sh
-node patch/dsh-user-approval/scripts/verify-fork.mjs \
-  .build/dsh-user-approval-afm-0.1.2-alpha.1.tgz \
-  patch/dsh-user-approval/upstream.json
-
-# 依赖插件仓库
-npm run check
-npm pack --dry-run
+```text
+精确 DSH 0.1.2-alpha.1 源码闭包 tarballs
++ @deepseek-ai/dsh-user-approval fork tarball
++ dsh-managed-agent tarball
++ dsh-approve-for-me tarball
 ```
 
-两插件共同必须具备：`name`/`inject`/`Config`/`apply`、`dsh.bundle.patch`、完整 `exports` 和构建产物；本体还要求 README/tarball 声明官方包 fork 与 MIT 归属。
+硬约束：
 
-## 3. 目标 Profile 装配
+1. `deepseek-harness` 必须位于 commit `cd5ef8148158c3a752a658978873241fdf8e2bbc`，版本必须为 `0.1.2-alpha.1`。
+2. `target-host-artifacts.lock.json` 固定宿主闭包每个包的名称、版本、文件名与 SHA-256；普通 bootstrap 只验证，不更新 lock。
+3. `@deepseek-ai/dsh-user-approval` fork 固定 `patch/dsh-user-approval/upstream.json` 中同一 tag/commit 和 patch version；保留上游 package name/version，必须携带 `dshApprovalPatch`。
+4. fork 构建在 throwaway upstream worktree 中进行，overlay、测试、编译、打包、marker/API 校验及 SHA-256 sidecar 必须全部成功；构建补充依赖使用精确版本。
+5. `dsh-managed-agent` 作为独立 artifact 先于本插件挂载。其 `artifact.json` 必须记录已审查 source commit、`dirty: false` 和 tarball SHA-256。
+6. 本插件 package 不内嵌 approval fork；目标 Profile 必须显式安装 fork、managed-agent 和 approve-for-me 三个 tarball。
+7. Profile 中解析到同版本官方 approval 包、错误宿主闭包、dirty managed artifact 或摘要不符时均不得继续发布。
 
-```bash
-# 1) fork 覆盖官方审批包（安装器执行，并校验 dshApprovalPatch 标记）
-# 2) 依赖插件
-dsh plugin --profile <profile> add /path/to/dsh-managed-agent
-# 3) 本体插件
-dsh plugin --profile <profile> add /path/to/dsh-approve-for-me
+## 2. Source-artifact bootstrap
+
+预期 sibling 布局：
+
+```text
+../deepseek-harness
+../dsh-managed-agent
+../dsh-approve-for-me
 ```
 
-验证：
+从已审查源码生成完整本地安装图：
 
-- Profile 中 `@deepseek-ai/dsh-user-approval` 解析到 fork（标记字段 + 冒烟 `registerMachinePolicy` 存在）；
-- `dsh --profile <profile> --dump-config` 显示两插件；
-- `ctx.managedAgents` 服务可用；
-- Reviewer provider/model/generation/policyVersion/toolsetVersion 显式存在，非法配置在注册前失败；
-- 未 patch/官方同名包误装时本体拒绝挂载。
+```bash
+cd ../dsh-approve-for-me
 
-## 4. 基础运行时验收
+DSH_REPO=../deepseek-harness \
+MANAGED_AGENT_SOURCE=../dsh-managed-agent \
+npm run bootstrap:dependencies
+```
 
-### 4.1 首次物化
+该命令依次执行：
 
-1. `approval/request` 到达机器策略且 `requestId` 与 `approval/asked.id` 一致；
-2. Controller `create()` 持久预留 child；首次 `deliver()` armed 身份/内容 hash/nonce；
-3. pre-step guard 只允许初始请求；decision tool 产生一次结构化结果。
+1. `build:approval-fork`：从 exact host commit 生成 `.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz`，执行 overlay 测试/构建/校验并写 SHA-256 sidecar；
+2. `build:managed-artifact`：pack sibling managed-agent，检查 runtime、types、Cordis patch，并写 source/digest manifest；
+3. `bootstrap:target-host`：安装并构建 exact host，收集依赖闭包 tarballs，与 `target-host-artifacts.lock.json` 逐项比对；
+4. `pnpm install --frozen-lockfile`：只从已生成的本地 artifacts 解析 alpha.1 依赖图。
 
-### 4.2 复用与 cold resume
+维护者只有在有意审查并接受一套新的 artifact bytes 时，才运行：
 
-- 第二次审批 `followup()` 进入同一 child Session；
-- 重启后 continuation manager cold-resume 同一 Session 并重装 guard/model/tools/policy；
-- 未知或不兼容 providerData 失败关闭并轮换 generation。
+```bash
+DSH_REPO=../deepseek-harness npm run bootstrap:target-host:refresh
+```
 
-### 4.3 输入守卫矩阵
+该命令会更新 package artifact 引用、workspace overrides 和 `target-host-artifacts.lock.json`，其 diff 必须作为供应链变更审查。
 
-与 v1 相同：Web/Host prompt、`send_message`、settlement relay、直接 followup/steer/inject、过期/重复 nonce、旧 generation child 全部不能进入 transcript；允许路径只包括 armed 请求与结果工具自身。
+## 3. 构建、测试与 package 验证
 
-## 5. 机器决策槽验收
+```bash
+# 本插件：noEmit 类型检查、Vitest、发布构建
+npm run check
 
-1. 注册一个抢答 `allowed-once` 的 prepend `approval/request` listener：机器策略返回 `rejected`，请求结果为 `rejected` 且 listener 未被调用；
-2. `never` 会话：机器策略不被调用，结果 `rejected`；
-3. `'delegate'`：下一机器策略和 waterfall 依次执行；到达 `ui-approval`；
-4. 重复 `id` 注册抛错；disposer 后请求恢复 fail-closed `unavailable`；
-5. 机器策略抛错或返回非法值 → `unavailable`；
-6. abort 竞速：信号取消后迟到的机器策略结果被丢弃，审计为 `cancelled`。
+# alpha.1 实现检查点：41 files / 324 tests
 
-## 6. 审批业务验收
+# 解析安装闭包、fork marker/API 与目标版本
+npm run verify:installed-target-host
 
-1. `trustEnvelope` 命中：包络内动作 `allowed-once`，0 次 LLM、0 次人工；
-2. 包络外：走 Guardian；`deny` 两种 mode 都拒绝；`human_review` 在 `auto` 拒绝、在 `auto-then-user` 下沉；
-3. deny breaker 只命中同 lifecycle/turn/frontier/`actionHash`；命中不调 Guardian、仍 `rejected`；
-4. 身份/requestId/actionHash/generation/source 冲突在两种 mode 都不 delegate；
-5. 自动 allow 在最小记录 durable 前不生效；记录冲突不 delegate；
-6. 最多两个业务 attempts、单 deadline、迟到/重复/旧 generation 结果无副作用；
-7. per-parent 串行、跨 parent 并行。
+# fork 独立校验
+npm run verify:approval-fork
 
-## 7. 卸载、重载与污染
+# 本插件真实 pack 内容检查
+npm run package:smoke
+```
 
-1. `starting|ready → failed`、`starting|ready|failed → draining → disposed`；dispose 幂等；
-2. `draining` 中 machine policy 保持注册：新 auto 请求 unavailable，auto-then-user 在 signal 活跃时 delegate；
-3. `failed` 不 delegate；卸载先 settle 后撤销 machine policy 注册；
-4. 卸载期间建立的人工 pending 由 Profile 交互链继续，不阻塞 dispose；
-5. 污染 child 永久无 armed request；rotate 恢复不延长 deadline、不算业务 attempt；
-6. 重载后旧 pending/reviewId/迟到结果不可复用。
+package smoke 必须确认 tarball 包含：
 
-## 8. Web 验收
+- `package.json`；
+- `cordis.patch.yml`；
+- `lib/index.js`；
+- `lib/index.d.ts`；
 
-- Reviewer 出现在官方子代理树，只读 composer + Stop 由 `dsh-managed-agent` Client bundle 提供；
-- 审批面板（`ui-approval`）仅在 `delegate` 时出现；
-- 刷新/重启后 marker 与只读状态恢复。
+并且不泄漏 `src/`、`tests/`、`node_modules/`、`patch/` 或 TypeScript 构建配置。
 
-## 9. 数据与导出验收
+managed-agent artifact 还必须包含 `dist/index.js`、`dist/index.d.ts` 和 `cordis.patch.yml`。
 
-- `executions`/`approval_snapshots`/`review_records`/`case_artifacts` 遵守强持久化与隐私边界；
-- 默认最小记录不含 packet、用户/指令/参数或 rationale 正文；`caseCapture` 默认关闭；
-- artifact 丢失/过期不改变历史审批或父 Session 恢复；
-- 显式导出经过脱敏、secret scan、人工确认。
+## 4. Scoped per-Agent effective tool catalog
 
-## 10. 分级完成判定
+生产目录解析必须满足：
 
-### 10.1 可安装实测
+1. 每个 `ToolExecution` 从 exact `exec.agent` 调用 `ctx.tools.schemas(agent)`，不得使用安装时无作用域快照；
+2. 从产生当前 call 的 canonical `request/header.tools` 重建持久 schema；nested code dispatch 使用对应 root model call 的 header；
+3. live scoped schema 集合与 durable header schema 集合按 `toolName → toolSchemaFingerprint` 完全一致（数组顺序可不同；PTC `run_code` wire 只含一个 schema，callable 集合是其 root 的完整注册表）；
+4. 一次执行只冻结一个 catalog commitment，action projection、approval descriptor、dossier classification 和 durable sidecar 共同使用；
+5. late/HMR registry 变化不改变已冻结执行，新执行可观察新目录；
+6. restricted Agent 只看到其有效工具集合；missing/duplicate call、事件序列不连续、歧义 header、schema 漂移或 fingerprint 不符全部失败关闭；
+7. cold resume 只从 exact durable request/header 与 sidecar 重建，不退回全局 `tools.schemas()`。
 
-- fork 构建/校验通过；两插件在目标 Profile 正确装配；
-- 首次审批、复用、cold resume、输入守卫矩阵通过；
-- 机器决策槽与模式映射全部分支通过；
-- 卸载/重载/污染 fail-closed；Web 审批与 Stop 通过。
+自动测试应覆盖普通 call、code dispatch、restricted scope、header drift、HMR drift、空/歧义历史和 cold reconstruction。
 
-### 10.2 自动审批产品就绪
+## 5. Source-backed dossier 与 R4
 
-在 10.1 之外：D1、P2、H4 与 I1 退出条件全部成立；Reviewer 路线图 R1–R5 完成；长程 soak 包络内 0 人工、0 误放行；风险/安全评测达到另行版本化的发布门槛。宿主运行正确不能替代 Reviewer 语义成熟。
+机器策略不得从注册时 capture metadata 直接构造授权事实。每个 pending ask 仅保留：
+
+- exact live Agent；
+- requestId / callId / toolName / actionHash；
+- 与 exact parent Session 绑定的 authority。
+
+裁决时必须重新：
+
+1. 从 exact Agent/Session 和持久 projection 获取 source packet；
+2. 验证 request、call、action、ask、父系、生命周期及 event sequence 的唯一相关性；
+3. 编译 source-verified、branded dossier；
+4. 仅在 dossier 为 `ready` 时投影 breaker/cache keys、classification、generation/configuration fingerprint 和 R4；
+5. 任一冲突、不完整或 abort 均返回不可授权结果，不得回退到 capture-only facts。
+
+R4 基线：
+
+- 风险来自 verified action semantics、requested permissions 和直接来源证据；
+- 授权只接受最新可见 direct-user message 中独立且精确的 `/approve-for-me <JSON>` next-action 指令；
+- toolName、arguments 和 requestedPermissions 必须与 verified action 完全匹配；
+- natural language、模型 rationale、不可见/被替代内容或只有 event ref 而无正文的历史不构成授权；
+- unknown/critical、审批规避、冲突授权、目标/副作用未覆盖均禁止自动 allow；
+- Guardian 输出不能降低 source-derived risk、遗漏来源类别或虚构 source refs/coverage。
+
+## 6. 机器决策槽
+
+patched approval 的顺序必须是：
+
+```text
+session never
+→ exclusive machine policy
+→ approval/request waterfall
+```
+
+验收项：
+
+1. `never` 会话不调用机器策略并直接拒绝；
+2. 机器策略返回终态时，后续 waterfall 不被调用；
+3. `'delegate'` 才进入官方 waterfall，并可到达 `ui-approval`；
+4. 重复 machine-policy id、非法返回值、策略异常、abort race 与 disposer 后调用均失败关闭；
+5. `approval/asked` 与 `approval/decided` 审计事件严格绑定同一 requestId，decided 位于 asked 之后；
+6. 本插件挂载时必须验证 fork marker 和 `registerMachinePolicy()`，同版本官方包不得静默降级。
+
+## 7. Reviewer deliveryAttempts 与 deadline
+
+### 7.1 持久容量
+
+- `deliveryAttempts` 表示 child 上实际 transport delivery 的尝试次数；不表示 accepted decision 数，也不因结果被拒绝而回退。
+- 目录只复用同 parent、generation、configuration fingerprint 且未 retired/contaminated 的唯一 child。
+- `deliveryAttempts >= maxDeliveryAttemptsPerChild` 时通过 managed-agent `renew()` 创建 durable successor。
+- retired/contaminated/旧 generation child 保留审计可见性，但永久不可复用。
+- 非法或缺失的持久计数失败关闭。
+
+### 7.2 单一绝对 deadline
+
+- pre-review 创建一个 absolute `deadlineAt`；目录发现、create/renew、delivery、等待结果、污染恢复和第二次业务 attempt 共用它。
+- 一次 review 最多两个业务 attempts；污染 child rotation 是基础设施恢复，不消耗新的业务 attempt，但也不得延长 deadline。
+- 已过期或已 abort 的请求不得 deliver；运行中到期应 interrupt Reviewer。
+- deadline 后的结果、重复结果、错误 child、旧 generation 和错误 nonce 均无副作用。
+- durable confirmation 跨越 deadline 时，即使 Guardian 已返回 allow，也不得授权。
+
+## 8. Disposable Profile artifact smoke
+
+运行：
+
+```bash
+DSH_REPO=../deepseek-harness \
+npm run profile:artifact-smoke
+```
+
+`profile:artifact-smoke` 默认消费 `.artifacts/managed-agent/artifact.json` 中已 materialize 的 managed tarball；需要用另一份已安装 artifact 时再设置 `MANAGED_AGENT_ARTIFACT_DIR`。脚本会自行解析可用的 pnpm（`PNPM` 环境变量 > PATH `pnpm` > `corepack pnpm` > corepack 缓存中的 `pnpm.cjs`），无需预先激活 corepack。
+
+脚本使用真实 alpha.1 CLI 和临时 `DSH_HOME`：
+
+1. pack managed-agent、本插件和 probe；
+2. 复制已验证 approval fork；
+3. 执行真实 `dsh plugin --profile approve-for-me-artifact-smoke add --save-exact ...`；
+4. 写入最小插件配置；
+5. 用 `--dump-config` 确认 `managed-agent-host`、`dsh-approve-for-me` 和 probe 已 compose；
+6. 真正启动一次 Profile；
+7. 从 Profile package anchor 验证精确依赖闭包、fork marker 与 machine-policy API；
+8. probe 验证 managedAgents create/renew/provider API、approval machine policy 和非空 Host tool catalog；
+9. 保存 boot probe、composed config、Profile package.json、pnpm lock 和 Cordis patch 到 `.build/profile-smoke/`。
+
+### 自动 smoke 通过时证明
+
+- 三个 tarball 可通过真实 CLI 安装到 disposable Profile；
+- Profile package/lock 可生成；
+- Cordis loader 能 compose 并启动这些 artifact；
+- Profile 内解析到 patched approval，而不是源码 checkout 的偶然依赖；
+- managed service、machine-policy API 和 Host tools 服务在真实 boot 时可达。
+
+### 自动 smoke 未证明
+
+- 浏览器中官方 approval panel 的展示、点击和恢复；
+- 真实 LLM provider/model 能完成 Guardian allow/deny/human_review；
+- 真实工具执行前后的副作用阻断；
+- 进程被完全终止并重新启动后的 cold-resume；
+- 浏览器刷新、网络断开、并发卸载或存储故障下的完整行为；
+- scoped/restricted Agent 的每条运行时组合。后者由组件/集成测试覆盖，但仍应纳入真实 E2E。
+
+## 9. 仍需 Web + 真实 LLM + cold-process E2E
+
+发布验收环境必须使用已打包 artifact 和精确目标 Profile，而不是源码链接。至少执行：
+
+1. **真实 LLM Guardian**：包络外动作分别产生 allow、deny、human_review；验证 source-backed dossier、R4 floor 和 durable decision record。
+2. **Web 人工链**：`auto-then-user` 下 human_review 只经 `'delegate'` 到官方 `ui-approval`，面板可见、可批准/拒绝且不会被 managed composer 抢占。
+3. **真实工具执行**：终态 allow 只消费一次；deny、deadline、abort、错误身份和存储失败均在副作用前阻断。
+4. **cold-process**：完成一次 review 后彻底结束 DSH 进程，再从同一 Profile/Storage 启动；验证 child、generation、deliveryAttempts、request/header catalog、sidecar 和 pending state 的恢复。
+5. **污染与容量**：污染 child、达到 delivery attempt 上限、renew/rotate 和迟到旧结果在进程重启边界保持失败关闭。
+6. **卸载/重载**：machine policy、provider、pending human interaction 和 Web projection 按生命周期正确 settle/dispose/re-register。
+
+这些项目不能由 unit tests、已存在脚本、`--dump-config` 或一次正常 Profile boot 替代。
+
+## 10. 完成判定
+
+### 10.1 自动 artifact 集成通过
+
+- exact host/source artifact lock 可复现；
+- approval fork 与 managed artifact 身份/摘要通过；
+- frozen install、typecheck、tests、build、package smoke 通过；
+- disposable Profile artifact smoke 通过并产出可审查证据。
+
+### 10.2 产品级审批 E2E 通过
+
+在 10.1 之外，必须完成第 9 节的真实 Web、真实 LLM、真实工具副作用和 cold-process 场景，并确认所有 unknown/ambiguous/failure 路径均失败关闭。只有 10.1 不足以声明自动审批产品就绪。

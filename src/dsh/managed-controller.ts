@@ -28,6 +28,8 @@ export function createManagedReviewerPort(controller: ManagedAgentController): M
         label: child.label,
         ...child.providerData === undefined ? {} : { providerData: child.providerData },
         activity: child.activity,
+        deliveryAttempts: child.deliveryAttempts,
+        retired: child.retired,
         contaminated: child.contaminated,
       }))
     },
@@ -44,6 +46,13 @@ export function createManagedReviewerPort(controller: ManagedAgentController): M
     },
     async rotate(authority, childId, signal) {
       return String(await controller.rotate(
+        authority.live,
+        SessionId(childId),
+        signal,
+      ))
+    },
+    async renew(authority, childId, signal) {
+      return String(await controller.renew(
         authority.live,
         SessionId(childId),
         signal,

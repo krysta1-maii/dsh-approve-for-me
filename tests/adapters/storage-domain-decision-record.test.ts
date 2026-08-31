@@ -4,10 +4,10 @@ import type { GateDecisionRecord, StorageDomainFacility } from '../../src/index.
 
 function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord {
   return {
-    version: 1, reviewRunId: 'run-1', route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow',
+    version: 2, reviewRunId: 'run-1', route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow',
     requestId: 'ask-1', parentSessionId: 'session-1',
     parentLifecycleFingerprint: 'lifecycle-1', callId: 'call-1', actionHash: `sha256:${'a'.repeat(64)}`,
-    generation: 'gen-1', configurationFingerprint: `sha256:${'b'.repeat(64)}`,
+    generation: 'gen-1', policyVersion: 'policy-1', configurationFingerprint: `sha256:${'b'.repeat(64)}`,
     disposition: 'allow', reviewAttempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0, ...overrides,
   }
 }

@@ -1,0 +1,103 @@
+name: DSH 0.1.2-alpha.1 integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: target-host-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-target-host:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out approve-for-me
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: dsh-approve-for-me
+      - name: Check out pinned DeepSeek Harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: cd5ef8148158c3a752a658978873241fdf8e2bbc
+          path: deepseek-harness
+      - name: Check out managed-agent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: krysta1-maii/dsh-managed-agent
+          ref: main
+          path: dsh-managed-agent
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            dsh-managed-agent/pnpm-lock.yaml
+            dsh-approve-for-me/pnpm-lock.yaml
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Verify reviewed managed-agent source
+        working-directory: dsh-approve-for-me
+        env:
+          MANAGED_AGENT_SOURCE: ${{ github.workspace }}/dsh-managed-agent
+        run: node scripts/verify-managed-agent-source.mjs
+      - name: Install exact target host
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+      - name: Build target host contracts
+        working-directory: deepseek-harness
+        run: |
+          pnpm run build:lib:host
+          pnpm exec tsc -b tsconfig.client.json
+      - name: Build approval fork from pinned host
+        working-directory: dsh-approve-for-me
+        run: DSH_REPO="$GITHUB_WORKSPACE/deepseek-harness" npm run build:approval-fork
+      - name: Verify managed-agent against target host
+        working-directory: dsh-managed-agent
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run check
+      - name: Materialize reviewed target-host artifacts
+        working-directory: dsh-approve-for-me
+        env:
+          DSH_REPO: ${{ github.workspace }}/deepseek-harness
+          DSH_SKIP_BUILD: "1"
+          MANAGED_AGENT_SOURCE: ${{ github.workspace }}/dsh-managed-agent
+        run: |
+          pnpm run bootstrap:target-host
+          pnpm run build:managed-artifact
+      - name: Install approve-for-me exact closure
+        working-directory: dsh-approve-for-me
+        run: pnpm install --frozen-lockfile
+      - name: Verify installed target and peer closure
+        working-directory: dsh-approve-for-me
+        run: |
+          pnpm peers check
+          pnpm run verify:installed-target-host
+      - name: Check and package approve-for-me
+        working-directory: dsh-approve-for-me
+        run: |
+          pnpm run check
+          npm pack --dry-run --json > .build/npm-pack-dry-run.json
+      - name: Verify exact artifact Profile install and restart
+        working-directory: dsh-approve-for-me
+        env:
+          DSH_REPO: ${{ github.workspace }}/deepseek-harness
+        run: pnpm run profile:artifact-smoke
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsh-approve-for-me-target-host
+          path: |
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz
+            dsh-approve-for-me/.build/dsh-user-approval-afm-0.1.2-alpha.1.tgz.sha256
+            dsh-approve-for-me/.build/npm-pack-dry-run.json
+            dsh-approve-for-me/.artifacts/managed-agent/artifact.json
+            dsh-approve-for-me/.build/profile-smoke/

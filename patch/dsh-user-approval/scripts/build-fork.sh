@@ -33,6 +33,49 @@ UPSTREAM_COMMIT="$(node -p "require('${UPSTREAM_JSON}').upstreamCommit")"
 PATCH_VERSION="$(node -p "require('${UPSTREAM_JSON}').patchVersion")"
 TARBALL="dsh-user-approval-afm-${UPSTREAM_VERSION}.tgz"
 
+# Resolve a working pnpm before touching any checkout. The workspace pins
+# pnpm 11.x; when no shell `pnpm` exists (or corepack's vm wrapper is broken
+# on this Node install), execute the corepack cache's pnpm.cjs directly.
+PNPM_COMMAND=()
+resolve_pnpm() {
+  if [[ -n "${PNPM:-}" ]]; then
+    if [[ ! -x "${PNPM}" ]] || ! "${PNPM}" --version >/dev/null 2>&1; then
+      echo "error: PNPM=${PNPM} is not an executable pnpm" >&2
+      return 1
+    fi
+    PNPM_COMMAND=("${PNPM}")
+    return 0
+  fi
+  if command -v pnpm >/dev/null 2>&1 && pnpm --version >/dev/null 2>&1; then
+    PNPM_COMMAND=(pnpm)
+    return 0
+  fi
+  local node_bin corepack_bin cache_home candidate version
+  node_bin="$(command -v node || true)"
+  if [[ -n "${node_bin}" ]]; then
+    corepack_bin="$(dirname "${node_bin}")/corepack"
+    if [[ -x "${corepack_bin}" ]] && "${corepack_bin}" pnpm --version >/dev/null 2>&1; then
+      PNPM_COMMAND=("${corepack_bin}" pnpm)
+      return 0
+    fi
+    cache_home="${COREPACK_HOME:-${HOME:-}/.cache/node/corepack}"
+    if [[ -d "${cache_home}/pnpm" ]]; then
+      while IFS= read -r candidate; do
+        [[ -f "${candidate}" ]] || continue
+        version="$("${node_bin}" "${candidate}" --version 2>/dev/null || true)"
+        [[ "${version}" == 11.* ]] || continue
+        PNPM_COMMAND=("${node_bin}" "${candidate}")
+        return 0
+      done < <(find "${cache_home}/pnpm" -path '*/bin/pnpm.cjs' -type f 2>/dev/null | sort -Vr)
+    fi
+  fi
+  echo 'error: no usable pnpm 11 found; activate pnpm@11.7.0 via corepack or set PNPM=<path>' >&2
+  return 1
+}
+run_pnpm() { "${PNPM_COMMAND[@]}" "$@"; }
+
+resolve_pnpm
+
 echo "==> building ${PACKAGE_NAME} fork v${PATCH_VERSION} from ${UPSTREAM_COMMIT}"
 
 if [[ ! -d "${UPSTREAM_REPO}/.git" ]]; then
@@ -79,9 +122,9 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
         # hooks configuration. Dependency lifecycle scripts are irrelevant to
         # compiling this TypeScript package, so never let host hook install
         # mutate/reject this isolated build.
-        pnpm install --frozen-lockfile --ignore-scripts
+        run_pnpm install --frozen-lockfile --ignore-scripts
       else
-        pnpm install --ignore-scripts
+        run_pnpm install --ignore-scripts
       fi
     )
   fi
@@ -112,17 +155,24 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     # The 0.1.2 package has no npm build script, but it does ship a package
     # tsdown config and a project tsconfig. Build only this package rather
     # than the whole host aggregate: `tsc -b` emits lib/types and the package
-    # tsdown bundles lib/index.js + lib/invariant.js. tsdown's TS config
-    # loader requires the optional `unrun` peer; the pinned upstream lock does
-    # not install it, so add it to this throwaway worktree only.
-    if ! node -e "require.resolve('unrun')" >/dev/null 2>&1; then
-      pnpm add -D -w unrun --ignore-scripts
-    fi
+    # tsdown requires an optional loader absent from the upstream lock. Install
+    # the complete loader edge at exact versions into this throwaway worktree;
+    # do not mutate package.json or pnpm-lock.yaml.
+    run_pnpm add -Dw --ignore-scripts \
+      unrun@0.3.1 rolldown@1.1.1 synckit@0.11.12
     node node_modules/typescript/bin/tsc -b "${PKG_DIR}/tsconfig.json"
+    cat > "${PKG_DIR}/.afm-tsdown.config.mjs" <<'EOF'
+import { defineConfig } from 'tsdown'
+export default defineConfig([
+  { entry: ['lib/types/index.js'], outDir: 'lib', format: ['esm'], platform: 'node', target: 'es2024', fixedExtension: false, dts: false, clean: false },
+  { entry: ['lib/types/invariant.js'], outDir: 'lib', format: ['esm'], platform: 'node', target: 'es2024', fixedExtension: false, dts: false, clean: false },
+])
+EOF
   )
   (
     cd "${PKG_DIR}"
-    ../../../node_modules/.bin/tsdown
+    ../../../node_modules/.bin/tsdown --config .afm-tsdown.config.mjs
+    rm -f .afm-tsdown.config.mjs
   )
 
   echo "==> copying built package out of the worktree"
@@ -139,7 +189,7 @@ echo "==> packing"
 PACK_SOURCE="${WORKTREE_DIR}/${PKG_PATH}"
 (
   cd "${PACK_SOURCE}"
-  pnpm pack --pack-destination "${BUILD_ROOT}"
+  run_pnpm pack --pack-destination "${BUILD_ROOT}"
 )
 # Pack tools name the tarball from package.json; rename to the fork artifact name.
 NPM_TARBALL="${BUILD_ROOT}/$(node -p "require('${BUILD_DIR}/package.json').name.replace('@','').replace('/','-')")-${UPSTREAM_VERSION}.tgz"

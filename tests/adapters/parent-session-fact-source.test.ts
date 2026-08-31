@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DshParentSessionFactSource, createActionSnapshot } from '../../src/index.js'
+import { createDshAlpha1CatalogCommitment, createDshAlpha1EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
   DelegationToolClassificationCatalogV1,
@@ -7,25 +8,22 @@ import type {
 } from '../../src/index.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
-const catalog: DelegationToolClassificationCatalogV1 = {
-  version: 1,
-  eventProjectionPolicyId: 'dsh-session-facts-v1',
-  argumentSemanticsId: 'default-v1',
-  fingerprint: hash('c'),
-  descriptors: [{ classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' }],
-}
+const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+const effective = createDshAlpha1EffectiveCatalog(schemas)
+const catalog: DelegationToolClassificationCatalogV1 = effective.dossier
 const lifecycle = { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 100 }
-const descriptor = { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: 'bash-fp', classificationId: 'class-1' }
+const descriptor = catalog.descriptors[0]!
 const execution: ToolExecutionFactRecordV1 = {
   version: 1,
+  catalogCommitment: createDshAlpha1CatalogCommitment(effective, 'native', 0, schemas),
   session: lifecycle,
-  request: { kind: 'model-tool-call', eventSeq: 2, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
-  toolClassification: { classificationCatalogFingerprint: hash('c'), descriptor },
+  request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+  toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
   projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: hash('a'), observedAt: 101 },
 }
 const approval: ApprovalSnapshotRecordV1 = {
-  version: 1, session: lifecycle, approvalRequestId: 'ask-1', approvalAskedSeq: 3,
-  execution: { requestEventSeq: 2, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: hash('c'), projectorId: 'default-v1' },
+  version: 1, session: lifecycle, approvalRequestId: 'ask-1', approvalAskedSeq: 4,
+  execution: { requestEventSeq: 3, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'default-v1' },
   environment: { version: 1, kind: 'native-header-only' },
 }
 
@@ -37,11 +35,12 @@ function agent(overrides: object = {}) {
       id: 'parent-1',
       header: { version: 0, id: 'parent-1', createdAt: 100 },
       events: [
-        { seq: 0, time: 100, type: 'turn/start', data: { turn: 1 } },
+        { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } },
         { seq: 1, time: 101, type: 'user/message', surfaceOp: 'append', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'pwd' }] } },
-        { seq: 2, time: 102, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
-        { seq: 3, time: 103, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } },
-        { seq: 4, time: 104, type: 'tool/result', data: { turn: 1, step: 0, message: { toolCallId: 'call-1', content: [{ type: 'text', text: 'secret' }] } } },
+        { seq: 2, time: 102, type: 'assistant/message', data: { turn: 1, step: 0, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+        { seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
+        { seq: 4, time: 104, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } },
+        { seq: 5, time: 105, type: 'tool/result', data: { turn: 1, step: 0, message: { toolCallId: 'call-1', content: [{ type: 'text', text: 'secret' }] } } },
       ],
     },
     ...overrides,
@@ -57,10 +56,10 @@ describe('DshParentSessionFactSource', () => {
     const requester = agent()
     const facts = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined }).snapshot(input({ agent: requester as never }))
     expect(facts?.session.sessionId).toBe('parent-1')
-    expect(facts?.approvalBinding.event.seq).toBe(3)
+    expect(facts?.approvalBinding.event.seq).toBe(4)
     expect(facts?.executionFacts).toEqual([execution])
     expect(facts?.approvalSnapshots).toEqual([approval])
-    expect(facts?.events).toHaveLength(4)
+    expect(facts?.events).toHaveLength(5)
     expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
     ;((requester.session.events[1]!.data as { content: Array<{ text: string }> }).content[0]!).text = 'mutated after snapshot'
     expect(facts?.events[1]).toMatchObject({ data: { content: [{ text: 'pwd' }] } })
@@ -76,11 +75,11 @@ describe('DshParentSessionFactSource', () => {
       data: { id: 'user-2', source: { kind: 'user' }, content: [{ type: 'text', text: 'use ls instead' }] },
     })
     ;(requester.session.events as unknown as Array<{ seq: number }>).forEach((event, sequence) => { event.seq = sequence })
-    const shiftedExecution = { ...execution, request: { ...execution.request, eventSeq: 3 } }
+    const shiftedExecution = { ...execution, request: { ...execution.request, eventSeq: 4 } }
     const shiftedApproval = {
       ...approval,
-      approvalAskedSeq: 4,
-      execution: { ...approval.execution, requestEventSeq: 3 },
+      approvalAskedSeq: 5,
+      execution: { ...approval.execution, requestEventSeq: 4 },
     }
     const facts = new DshParentSessionFactSource({ get: () => requester as never }).snapshot(input({
       agent: requester as never,
@@ -100,7 +99,7 @@ describe('DshParentSessionFactSource', () => {
     ;(snapshotApproval.environment as { kind: string }).kind = 'after'
     ;(snapshotCatalog.descriptors[0] as { classificationId: string }).classificationId = 'after'
     expect(facts?.approvalSnapshots[0]).toMatchObject({ environment: { version: 1, kind: 'native-header-only' } })
-    expect(facts?.eventProjection.classificationCatalog.descriptors[0]).toMatchObject({ classificationId: 'class-1' })
+    expect(facts?.eventProjection.classificationCatalog.descriptors[0]).toEqual(descriptor)
     expect(Object.isFrozen(facts?.approvalSnapshots[0]?.environment as object)).toBe(true)
   })
 
@@ -128,6 +127,17 @@ describe('DshParentSessionFactSource', () => {
     ;(duplicate.session.events as unknown as Array<{ seq: number }>).forEach((event, index) => { event.seq = index })
     expect(source.snapshot(input({ agent: duplicate as never }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, request: { ...execution.request, eventSeq: 1 } }] }))).toBeUndefined()
+  })
+
+  it('drops durable execution facts whose result event does not bind the request event', () => {
+    const requester = agent()
+    const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })
+    // A poisoned sidecar claims seq 4 (approval/asked) is its tool/result.
+    const poisoned = {
+      ...execution,
+      result: { eventSeq: 4, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } },
+    }
+    expect(source.snapshot(input({ agent: requester as never, executionFacts: [poisoned] }))).toBeUndefined()
   })
 
   it('refuses mismatched ids, missing asks, conflicting projections, and unknown agents', () => {

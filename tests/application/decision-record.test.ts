@@ -6,7 +6,7 @@ const hash = (char: string) => `sha256:${char.repeat(64)}`
 
 function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord {
   return {
-    version: 1,
+    version: 2,
     reviewRunId: 'run-1',
     route: 'guardian',
     normalizedDecision: 'allow',
@@ -17,6 +17,7 @@ function record(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecord
     callId: 'call-1',
     actionHash: hash('a'),
     generation: 'generation-1',
+    policyVersion: 'policy-1',
     configurationFingerprint: hash('c'),
     disposition: 'allow',
     reviewAttempts: 1,

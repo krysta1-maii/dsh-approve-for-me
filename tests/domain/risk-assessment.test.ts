@@ -67,4 +67,114 @@ describe('assessVerifiedActionV1', () => {
     expect(assessVerifiedActionV1(action, []).categories).toEqual(['destructive-change', 'permission-expansion'])
     expect(assessVerifiedActionV1(action, []).risk).toBe('critical')
   })
+
+  it('authorizes only a standalone exact next-action command', () => {
+    const argumentsValue = { file_path: 'src/index.ts', old_string: 'old', new_string: 'new' }
+    const permissions: [] = []
+    const action = createActionSnapshot({
+      toolName: 'edit',
+      arguments: argumentsValue,
+      projectorId: 'filesystem-v1',
+      semantics: { family: 'filesystem-v1', value: { operation: 'edit', cwd: '/workspace', targets: [{ path: 'src/index.ts', role: 'target' }] } },
+      requestedPermissions: permissions,
+    })
+    const directive = `/approve-for-me ${JSON.stringify({
+      version: 1,
+      scope: 'next-action',
+      allow: { toolName: 'edit', arguments: argumentsValue, requestedPermissions: permissions },
+    })}`
+    const assessment = assessVerifiedActionV1(action, [{ seq: 12, content: [{ type: 'text', text: directive }], surfaceState: 'visible' }])
+    expect(assessment).toMatchObject({
+      risk: 'medium',
+      authorization: { level: 'explicit', targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:12'] },
+    })
+    expect(permitsAutomaticFastPath(assessment)).toBe(true)
+    const exactClaim = { version: 1 as const, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:12'], rationale: 'Exact directive covers this action.' }
+    expect(validateDecisionAssessmentV1(decision({ risk: 'medium', categories: ['destructive-change'], assessment: exactClaim }), assessment)).toEqual({ kind: 'valid' })
+    expect(validateDecisionAssessmentV1(decision({ risk: 'critical', categories: ['destructive-change'], assessment: exactClaim }), assessment)).toMatchObject({ kind: 'prohibited' })
+    expect(validateDecisionAssessmentV1(decision({ risk: 'medium', categories: ['approval-evasion', 'destructive-change'], assessment: exactClaim }), assessment)).toMatchObject({ kind: 'prohibited', reason: 'approval-evasion is an absolute denial condition' })
+    expect(validateDecisionAssessmentV1(decision({ risk: 'medium', categories: ['destructive-change'], assessment: { ...exactClaim, targetCovered: false } }), assessment)).toMatchObject({ kind: 'under-evidenced', reason: 'allow decision does not affirm validated target and side-effect coverage' })
+    expect(validateDecisionAssessmentV1(decision({ risk: 'medium', categories: ['destructive-change'], assessment: { ...exactClaim, sourceRefs: [] } }), assessment)).toMatchObject({ kind: 'under-evidenced', reason: 'allow decision does not cite the exact source-derived authorization evidence' })
+  })
+
+  it('never turns prose, questions, pasted examples, or partial commands into authorization', () => {
+    const action = createActionSnapshot({
+      toolName: 'write',
+      arguments: { file_path: 'notes/result.txt', content: 'done' },
+      projectorId: 'filesystem-v1',
+      semantics: { family: 'filesystem-v1', value: { operation: 'write', cwd: '/workspace', targets: [{ path: 'notes/result.txt', role: 'target' }] } },
+    })
+    const exact = `/approve-for-me ${JSON.stringify({ version: 1, scope: 'next-action', allow: { toolName: 'write', arguments: action.arguments, requestedPermissions: [] } })}`
+    for (const text of [
+      'Please write done to notes/result.txt.',
+      'Do we need to write notes/result.txt?',
+      `For example, send this JSON:\n${exact}`,
+      '<approve-for-me>{"version":1,"allow":{"tools":["write"]}}</approve-for-me>',
+      `/approve-for-me ${JSON.stringify({ version: 1, scope: 'next-action', allow: { toolName: 'write', arguments: { file_path: 'notes/result.txt', content: 'different' }, requestedPermissions: [] } })}`,
+    ]) {
+      const assessment = assessVerifiedActionV1(action, [{ seq: 4, content: [{ type: 'text', text }] }])
+      expect(permitsAutomaticFastPath(assessment), text).toBe(false)
+    }
+  })
+
+  it('uses only the latest visible user message and fails closed for denial or critical permission', () => {
+    const argumentsValue = { file_path: 'src/index.ts' }
+    const workspacePermissions = [{ kind: 'sandbox' as const, scope: 'workspace-write' as const }]
+    const action = createActionSnapshot({
+      toolName: 'edit',
+      arguments: argumentsValue,
+      projectorId: 'filesystem-v1',
+      semantics: { family: 'filesystem-v1', value: { operation: 'edit', cwd: '/workspace', targets: [{ path: 'src/index.ts', role: 'target' }] } },
+      requestedPermissions: workspacePermissions,
+    })
+    const allow = `/approve-for-me ${JSON.stringify({ version: 1, scope: 'next-action', allow: { toolName: 'edit', arguments: argumentsValue, requestedPermissions: workspacePermissions } })}`
+    const escalation = assessVerifiedActionV1(action, [{ seq: 1, content: [{ type: 'text', text: allow }] }])
+    expect(escalation).toMatchObject({
+      risk: 'medium',
+      categories: ['destructive-change', 'permission-expansion'],
+      authorization: { level: 'explicit', targetCovered: true, sideEffectsCovered: false },
+    })
+    expect(permitsAutomaticFastPath(escalation)).toBe(false)
+    const withDenialReceipt = assessVerifiedActionV1(action, [{ seq: 1, content: [{ type: 'text', text: allow }] }], [{
+      source: { event: { seq: 8, type: 'tool/result' }, requestEventSeq: 7, callId: 'call-0' },
+    }])
+    expect(withDenialReceipt.authorization).toMatchObject({
+      level: 'explicit', targetCovered: true, sideEffectsCovered: false, sourceRefs: ['event:1'],
+      sandboxDenialCandidateRefs: ['event:8'],
+    })
+    expect(permitsAutomaticFastPath(withDenialReceipt)).toBe(false)
+    const correlatedClaim = {
+      version: 1 as const,
+      targetCovered: true,
+      sideEffectsCovered: true,
+      sourceRefs: ['event:1'],
+      sandboxDenialRelation: { sourceRef: 'event:8', relation: 'same-action-legitimate-retry' as const },
+      rationale: 'The candidate is the same action and this is its legitimate retry.',
+    }
+    expect(validateDecisionAssessmentV1(decision({
+      risk: 'medium', categories: ['destructive-change', 'permission-expansion'], assessment: correlatedClaim,
+    }), withDenialReceipt)).toEqual({ kind: 'valid' })
+    expect(validateDecisionAssessmentV1(decision({
+      risk: 'medium', categories: ['destructive-change', 'permission-expansion'],
+      assessment: { ...correlatedClaim, sandboxDenialRelation: { ...correlatedClaim.sandboxDenialRelation, sourceRef: 'event:9' } },
+    }), withDenialReceipt)).toMatchObject({ kind: 'under-evidenced' })
+
+    const superseded = assessVerifiedActionV1(action, [{ seq: 1, content: [{ type: 'text', text: allow }], surfaceState: 'superseded' }])
+    expect(superseded.authorization).toMatchObject({ level: 'absent', targetCovered: false, sideEffectsCovered: false })
+
+    const revoked = assessVerifiedActionV1(action, [
+      { seq: 1, content: [{ type: 'text', text: allow }] },
+      { seq: 2, content: [{ type: 'text', text: '/approve-for-me {"version":1,"scope":"next-action","deny":true}' }] },
+    ])
+    expect(revoked.authorization.level).toBe('conflicting')
+    expect(permitsAutomaticFastPath(revoked)).toBe(false)
+
+    const criticalPermissions = [{ kind: 'sandbox' as const, scope: 'danger-full-access' as const }]
+    const critical = createActionSnapshot({ ...action, requestedPermissions: criticalPermissions })
+    const criticalDirective = `/approve-for-me ${JSON.stringify({ version: 1, scope: 'next-action', allow: { toolName: 'edit', arguments: argumentsValue, requestedPermissions: criticalPermissions } })}`
+    const criticalAssessment = assessVerifiedActionV1(critical, [{ seq: 3, content: [{ type: 'text', text: criticalDirective }] }])
+    expect(criticalAssessment.risk).toBe('critical')
+    expect(criticalAssessment.authorization.level).toBe('explicit')
+    expect(permitsAutomaticFastPath(criticalAssessment)).toBe(false)
+  })
 })

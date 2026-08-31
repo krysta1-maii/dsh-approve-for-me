@@ -51,21 +51,21 @@ describe('effective tool bindings', () => {
 })
 
 describe('validateDelegationToolCatalog', () => {
-  it('accepts a closed-world exact catalog', () => {
+  it('accepts an exact request view and a scoped/PTC subset of the closed host catalog', () => {
     expect(validateDelegationToolCatalog(catalog(), [
       { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
       { toolName: 'subagent', toolSchemaFingerprint: 'subagent-fp' },
     ])).toEqual({ kind: 'ok' })
+    expect(validateDelegationToolCatalog(catalog(), [
+      { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
+    ])).toEqual({ kind: 'ok' })
   })
 
-  it('rejects missing, extra, fingerprint drift, and duplicates', () => {
+  it('rejects missing effective descriptors, fingerprint drift, and duplicates', () => {
     expect(validateDelegationToolCatalog({ ...catalog(), fingerprint: `sha256:${'f'.repeat(64)}` }, [
       { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
       { toolName: 'subagent', toolSchemaFingerprint: 'subagent-fp' },
     ])).toMatchObject({ kind: 'invalid', reason: /fingerprint/ })
-    expect(validateDelegationToolCatalog(catalog(), [
-      { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
-    ])).toMatchObject({ kind: 'invalid', reason: /descriptor for subagent/ })
     expect(validateDelegationToolCatalog(catalog(), [
       { toolName: 'bash', toolSchemaFingerprint: 'bash-fp' },
       { toolName: 'subagent', toolSchemaFingerprint: 'subagent-fp' },
@@ -113,17 +113,17 @@ describe('validateToolTrajectorySection', () => {
     expect(validateToolTrajectorySection(trajectory())).toEqual({ kind: 'ok' })
   })
 
-  it('rejects duplicate call ids and malformed excluded pending key', () => {
+  it('rejects duplicate attempt identities and malformed excluded pending key', () => {
     const duplicate = trajectory({
       attempts: [
         ...trajectory().attempts,
         {
-          request: { kind: 'model-tool-call', issuedIn: { seq: 3, type: 'assistant/message' }, blockIndex: 1, callId: 'call-1', toolName: 'bash', rawArguments: '{}' },
+          request: { kind: 'model-tool-call', issuedIn: { seq: 1, type: 'assistant/message' }, blockIndex: 1, callId: 'call-1', toolName: 'bash', rawArguments: '{}' },
           outcome: { kind: 'completed' },
         },
       ],
     })
-    expect(validateToolTrajectorySection(duplicate)).toMatchObject({ kind: 'invalid', reason: /duplicate attempt callId/ })
+    expect(validateToolTrajectorySection(duplicate)).toMatchObject({ kind: 'invalid', reason: /duplicate attempt identity/ })
     expect(validateToolTrajectorySection({
       ...trajectory(),
       excludedPendingRequest: { callId: '', requestEventSeq: 0 },

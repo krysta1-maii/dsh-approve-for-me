@@ -4,6 +4,8 @@ import type { JsonValue } from './json.js'
 import { hashGuardianDossier } from './records.js'
 import type { SessionLifecycleIdentityV1 } from './records.js'
 import type { ActionSnapshot } from './protocol.js'
+import { fingerprintApprovalToolCatalogV1 } from '../approval-gate/catalog.js'
+import type { ApprovalToolCatalog } from '../approval-gate/catalog.js'
 
 export interface EventRefV1 {
   readonly seq: number
@@ -240,6 +242,14 @@ export type ConfinementProjectionV1 =
       readonly lastObservedEnforcement?: 'full' | 'partial'
     }
 
+export interface EarlierSandboxDenialV1 {
+  readonly source: {
+    readonly event: EventRefV1
+    readonly requestEventSeq: number
+    readonly callId: string
+  }
+}
+
 export interface PendingApprovalSectionV1 {
   readonly request: ToolRequestRefV1
   readonly approvalAsked: EventRefV1
@@ -254,10 +264,7 @@ export interface PendingApprovalSectionV1 {
   readonly description?: string
   readonly justification?: string
   readonly approvalReason?: string
-  readonly earlierSandboxDenials: readonly {
-    readonly callId: string
-    readonly requestEvent: EventRefV1
-  }[]
+  readonly earlierSandboxDenials: readonly EarlierSandboxDenialV1[]
 }
 
 export type DelegationToolDescriptorV1 =
@@ -308,7 +315,8 @@ export function effectiveToolBindingFromSchemaV1(input: unknown): EffectiveToolB
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
   const schema = input as Record<string, unknown>
   if (typeof schema.name !== 'string' || schema.name.length === 0 || typeof schema.description !== 'string'
-    || schema.parameters === null || typeof schema.parameters !== 'object' || Array.isArray(schema.parameters)) return undefined
+    || schema.parameters === null || typeof schema.parameters !== 'object' || Array.isArray(schema.parameters)
+    || Object.keys(schema).some(key => key !== 'name' && key !== 'description' && key !== 'parameters')) return undefined
   try {
     const canonical = canonicalJson({ name: schema.name, description: schema.description, parameters: snapshotJson(schema.parameters) })
     return Object.freeze({
@@ -393,18 +401,116 @@ export function validateDelegationToolCatalog(
     if (known.has(descriptor.toolName)) return { kind: 'invalid', reason: `duplicate descriptor for ${descriptor.toolName}` }
     known.set(descriptor.toolName, descriptor.toolSchemaFingerprint)
   }
-  const covered = new Set<string>()
+  // The durable catalog is a closed host-side superset. A request header may
+  // expose only a scoped/restricted subset, and PTC mode deliberately exposes
+  // only `run_code` while its nested dispatches still use the hidden stock
+  // descriptors. Every effective model-facing schema must therefore be covered
+  // exactly, but an unused catalog descriptor is not an omission or ambiguity.
   for (const tool of effectiveTools) {
     const fingerprint = known.get(tool.toolName)
     if (fingerprint === undefined) return { kind: 'invalid', reason: `missing descriptor for ${tool.toolName}` }
     if (fingerprint !== tool.toolSchemaFingerprint) {
       return { kind: 'invalid', reason: `schema fingerprint mismatch for ${tool.toolName}` }
     }
-    covered.add(tool.toolName)
   }
-  for (const descriptor of catalog.descriptors) {
-    if (!covered.has(descriptor.toolName)) {
-      return { kind: 'invalid', reason: `extra descriptor for ${descriptor.toolName}` }
+  return { kind: 'ok' }
+}
+
+/** Maximum canonical UTF-8 size of one durable wire/callable catalog commitment. */
+export const MAX_DURABLE_TOOL_CATALOG_COMMITMENT_BYTES = 1_000_000
+
+/**
+ * Complete per-execution catalog evidence. `wireSchemas` is the exact ordered
+ * request/header presentation; `callableSchemas` is the exact scoped registry
+ * used for native execution and hidden PTC sub-dispatches.
+ */
+export interface DurableToolCatalogCommitmentV1 {
+  readonly version: 1
+  readonly fingerprint: string
+  readonly presentation: 'native' | 'ptc'
+  readonly requestHeaderEventSeq: number
+  readonly wireSchemas: readonly JsonValue[]
+  readonly callableSchemas: readonly JsonValue[]
+  readonly approvalCatalog: ApprovalToolCatalog
+  readonly classificationCatalog: DelegationToolClassificationCatalogV1
+}
+
+const DURABLE_TOOL_CATALOG_HASH_DOMAIN = 'dsh-approve-for-me/durable-tool-catalog/v1\0'
+
+/** Recompute the whole wire/callable/catalog commitment. */
+export function fingerprintDurableToolCatalogCommitmentV1(
+  commitment: DurableToolCatalogCommitmentV1,
+): string | undefined {
+  try {
+    const core = {
+      version: commitment.version,
+      presentation: commitment.presentation,
+      requestHeaderEventSeq: commitment.requestHeaderEventSeq,
+      wireSchemas: snapshotJson(commitment.wireSchemas),
+      callableSchemas: snapshotJson(commitment.callableSchemas),
+      approvalCatalog: snapshotJson(commitment.approvalCatalog),
+      classificationCatalog: snapshotJson(commitment.classificationCatalog),
+    }
+    return `sha256:${createHash('sha256').update(DURABLE_TOOL_CATALOG_HASH_DOMAIN).update(canonicalJson(core)).digest('hex')}`
+  } catch {
+    return undefined
+  }
+}
+
+/** Validate the complete bounded commitment without consulting live host state. */
+export function validateDurableToolCatalogCommitmentV1(
+  commitment: DurableToolCatalogCommitmentV1,
+): DelegationCatalogValidationV1 {
+  if (commitment.version !== 1 || typeof commitment.fingerprint !== 'string'
+    || commitment.fingerprint !== fingerprintDurableToolCatalogCommitmentV1(commitment)
+    || (commitment.presentation !== 'native' && commitment.presentation !== 'ptc')
+    || !Number.isSafeInteger(commitment.requestHeaderEventSeq) || commitment.requestHeaderEventSeq < 0
+    || !Array.isArray(commitment.wireSchemas) || !Array.isArray(commitment.callableSchemas)
+    || commitment.approvalCatalog === null || typeof commitment.approvalCatalog !== 'object'
+    || !Array.isArray(commitment.approvalCatalog.descriptors)
+    || commitment.classificationCatalog === null || typeof commitment.classificationCatalog !== 'object'
+    || !Array.isArray(commitment.classificationCatalog.descriptors)) {
+    return { kind: 'invalid', reason: 'catalog commitment envelope is invalid' }
+  }
+  let wire: readonly EffectiveToolBindingV1[]
+  let callable: readonly EffectiveToolBindingV1[]
+  try {
+    const wireHeader = { tools: commitment.wireSchemas }
+    const callableHeader = { tools: commitment.callableSchemas }
+    const parsedWire = effectiveToolBindingsFromRequestHeaderV1(wireHeader)
+    const parsedCallable = effectiveToolBindingsFromRequestHeaderV1(callableHeader)
+    if (parsedWire === undefined || parsedCallable === undefined) {
+      return { kind: 'invalid', reason: 'catalog commitment schemas are invalid' }
+    }
+    wire = parsedWire
+    callable = parsedCallable
+    if (new TextEncoder().encode(canonicalJson(commitment as unknown as JsonValue)).byteLength
+      > MAX_DURABLE_TOOL_CATALOG_COMMITMENT_BYTES) {
+      return { kind: 'invalid', reason: 'catalog commitment exceeds its durable budget' }
+    }
+  } catch {
+    return { kind: 'invalid', reason: 'catalog commitment is not strict JSON' }
+  }
+  if (callable.length !== commitment.approvalCatalog.descriptors.length
+    || callable.length !== commitment.classificationCatalog.descriptors.length
+    || commitment.approvalCatalog.fingerprint !== fingerprintApprovalToolCatalogV1(commitment.approvalCatalog)
+    || commitment.approvalCatalog.argumentSemanticsId !== commitment.classificationCatalog.argumentSemanticsId
+    || validateDelegationToolCatalog(commitment.classificationCatalog, callable).kind !== 'ok') {
+    return { kind: 'invalid', reason: 'callable schemas do not exactly bind both durable catalogs' }
+  }
+  const approvalByName = new Map(commitment.approvalCatalog.descriptors.map(item => [item.toolName, item.toolSchemaFingerprint]))
+  if (callable.some(item => approvalByName.get(item.toolName) !== item.toolSchemaFingerprint)) {
+    return { kind: 'invalid', reason: 'callable schemas do not bind the approval catalog' }
+  }
+  const callableByName = new Map(callable.map(item => [item.toolName, item.toolSchemaFingerprint]))
+  if (commitment.presentation === 'native') {
+    if (wire.length !== callable.length || wire.some(item => callableByName.get(item.toolName) !== item.toolSchemaFingerprint)) {
+      return { kind: 'invalid', reason: 'native wire schemas are not the exact callable schema set' }
+    }
+  } else {
+    if (wire.length !== 1 || wire[0]?.toolName !== 'run_code'
+      || callableByName.get('run_code') !== wire[0].toolSchemaFingerprint) {
+      return { kind: 'invalid', reason: 'PTC wire schemas are not the exact run_code presentation' }
     }
   }
   return { kind: 'ok' }
@@ -419,8 +525,12 @@ export function validateToolTrajectorySection(section: ToolTrajectorySectionV1):
   for (const attempt of section.attempts) {
     const callId = attempt.request.callId
     if (callId.length === 0) return { kind: 'invalid', reason: 'attempt callId must be non-empty' }
-    if (seen.has(callId)) return { kind: 'invalid', reason: `duplicate attempt callId ${callId}` }
-    seen.add(callId)
+    const requestEventSeq = attempt.request.kind === 'model-tool-call'
+      ? (attempt.request.callEvent?.seq ?? attempt.request.issuedIn.seq)
+      : attempt.request.dispatchStart.seq
+    const identity = `${requestEventSeq}\0${callId}`
+    if (seen.has(identity)) return { kind: 'invalid', reason: `duplicate attempt identity ${callId}@${requestEventSeq}` }
+    seen.add(identity)
   }
   return { kind: 'ok' }
 }
@@ -492,14 +602,28 @@ export interface DelegationReceiptFactRecordV1 {
 export interface ToolExecutionFactRecordV1 {
   readonly version: 1
   readonly session: SessionLifecycleIdentityV1
-  readonly request: {
-    readonly kind: 'model-tool-call' | 'code-dispatch'
-    readonly eventSeq: number
-    readonly eventType: 'tool/call' | 'tool/code-dispatch-start'
-    readonly callId: string
-    readonly toolName: string
-    readonly parentCallId?: string
-  }
+  readonly request:
+    | {
+        readonly kind: 'model-tool-call'
+        readonly eventSeq: number
+        readonly eventType: 'tool/call'
+        readonly callId: string
+        readonly toolName: string
+      }
+    | {
+        readonly kind: 'code-dispatch'
+        readonly eventSeq: number
+        readonly eventType: 'tool/code-dispatch-start'
+        readonly rootCallId: string
+        readonly rootRequestEventSeq: number
+        readonly parentCallId: string
+        readonly parentRequestEventSeq: number
+        readonly callId: string
+        readonly toolName: string
+        readonly arguments: JsonValue
+      }
+  /** Complete bounded catalog evidence captured before this exact execution. */
+  readonly catalogCommitment: DurableToolCatalogCommitmentV1
   readonly toolClassification: {
     readonly classificationCatalogFingerprint: string
     readonly descriptor: DelegationToolDescriptorV1
@@ -510,11 +634,25 @@ export interface ToolExecutionFactRecordV1 {
     readonly actionHash: string
     readonly observedAt: number
   }
+  /**
+   * Content-free pre-commit evidence persisted by the post-execute wrapper
+   * before DSH can append the terminal Session event. It never proves
+   * settlement by itself; cold repair admits it only when the canonical result
+   * event independently confirms the same error category.
+   */
+  readonly terminalEvidence?: {
+    /** Canonical ToolExecutionResult discriminator used to authenticate cold repair. */
+    readonly isError: boolean
+    readonly outcome: Extract<ToolAttemptOutcomeV1,
+      { readonly kind: 'completed' } | { readonly kind: 'tool-error' } | { readonly kind: 'sandbox-denied' }>
+    readonly receipt?: PrincipalDelegationReceiptV1
+  }
   readonly result?: {
     readonly eventSeq: number
     readonly eventType: 'tool/result' | 'tool/code-dispatch'
-    /** Only the safe terminal outcome category; never tool output. */
-    readonly outcome: Extract<ToolAttemptOutcomeV1, { readonly kind: 'completed' }>
+    /** Only a safe terminal category; never tool output or failure text. */
+    readonly outcome: Extract<ToolAttemptOutcomeV1,
+      { readonly kind: 'completed' } | { readonly kind: 'tool-error' } | { readonly kind: 'sandbox-denied' }>
   }
   readonly delegationReceipt?: DelegationReceiptFactRecordV1
 }
@@ -577,7 +715,6 @@ export interface ParentSessionFactSnapshotV1 {
 }
 
 export interface PrincipalDelegationProjector {
-  readonly catalog: DelegationToolClassificationCatalogV1
   project(input: {
     readonly principalSessionId: string
     readonly attempt: ToolAttemptV1
@@ -676,7 +813,14 @@ export interface PrincipalDelegationLedgerV1 {
   readonly entries: readonly PrincipalDelegationEntryV1[]
 }
 
+export interface HistoricalToolTrajectoryV1 {
+  readonly turn: number
+  readonly attempts: readonly ToolAttemptV1[]
+}
+
 export interface InteractionSectionV1 {
   readonly turns: readonly InteractionTurnV1[]
+  /** Content-free terminal metadata for ordinary calls in completed prior turns. */
+  readonly historicalTools: readonly HistoricalToolTrajectoryV1[]
   readonly delegations: PrincipalDelegationLedgerV1
 }

@@ -66,6 +66,7 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
       && a.actionHash === b.actionHash
       && a.requestId === b.requestId
       && a.generation === b.generation
+      && a.policyVersion === b.policyVersion
       && a.configurationFingerprint === b.configurationFingerprint
       && a.disposition === b.disposition
       && a.reviewAttempts === b.reviewAttempts

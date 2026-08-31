@@ -152,9 +152,17 @@ describe('approval decisions', () => {
   it('strictly snapshots a structured v2 authorization claim', () => {
     const parsed = parseApprovalDecision({
       ...decision(),
-      assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'The cited message covers this action.' },
+      assessment: {
+        version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'],
+        sandboxDenialRelation: { sourceRef: 'event:8', relation: 'same-action-legitimate-retry' },
+        rationale: 'The cited message covers this action.',
+      },
     })
-    expect(parsed.assessment).toEqual({ version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'The cited message covers this action.' })
+    expect(parsed.assessment).toEqual({
+      version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'],
+      sandboxDenialRelation: { sourceRef: 'event:8', relation: 'same-action-legitimate-retry' },
+      rationale: 'The cited message covers this action.',
+    })
     expect(Object.isFrozen(parsed.assessment)).toBe(true)
     expect(() => parseApprovalDecision({ ...decision(), assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1', 'event:1'], rationale: 'duplicate' } })).toThrow(/unique/)
   })

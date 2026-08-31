@@ -14,6 +14,7 @@ import type { ParentAuthority } from '../ports/managed-reviewer.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import type { ReviewCoordinator } from './review-coordinator.js'
 import { GateFailure } from './gate-failure.js'
+import { ReviewProtocolError } from './decision-channel.js'
 import { validateDecisionAssessmentV1 } from '../domain/risk-assessment.js'
 import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
 
@@ -78,17 +79,31 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     if (typeof reviewRunId !== 'string' || reviewRunId.length === 0) {
       throw new GateFailure('integrity', 'pre-review requires a non-empty host review run id')
     }
-    const decision = await this.review.review({
-      authority: input.authority,
-      action: input.action,
-      verifiedDossier: input.verifiedDossier,
-      ...input.assessment === undefined ? {} : { assessment: input.assessment },
-      reviewRunId,
-      deadlineAt: input.deadlineAt,
-      callId: input.callId,
-      ...input.reason === undefined ? {} : { reason: input.reason },
-      ...input.signal === undefined ? {} : { signal: input.signal },
-    })
+    let decision: Awaited<ReturnType<ReviewCoordinator<Parent, SessionId>['review']>>
+    try {
+      decision = await this.review.review({
+        authority: input.authority,
+        action: input.action,
+        verifiedDossier: input.verifiedDossier,
+        ...input.assessment === undefined ? {} : { assessment: input.assessment },
+        reviewRunId,
+        deadlineAt: input.deadlineAt,
+        callId: input.callId,
+        ...input.reason === undefined ? {} : { reason: input.reason },
+        ...input.signal === undefined ? {} : { signal: input.signal },
+      })
+    } catch (error: unknown) {
+      if (input.signal?.aborted || (error instanceof ReviewProtocolError && error.code === 'aborted')) {
+        throw new GateFailure('abort', 'approval review was cancelled', { cause: error })
+      }
+      if (error instanceof ReviewProtocolError && error.code === 'timed-out') {
+        // Reviewer infrastructure exhausted its bounded window. In
+        // auto-then-user mode this typed failure selects the official human
+        // waterfall; it can never authorize the action itself.
+        throw new GateFailure('retryable-capability', 'approval reviewer reached its absolute deadline', { cause: error })
+      }
+      throw error
+    }
     if (input.signal?.aborted) {
       throw new GateFailure('abort', 'approval review completed after its lifecycle was cancelled')
     }

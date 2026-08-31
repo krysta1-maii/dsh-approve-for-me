@@ -8,5 +8,6 @@ coverage/
 !.env.example
 .DS_Store
 
-# dsh-approve-for-me fork build output
+# Reproducibly generated local package artifacts.
 .build/
+.artifacts/

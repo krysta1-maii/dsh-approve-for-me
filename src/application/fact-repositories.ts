@@ -10,12 +10,24 @@ export interface ExecutionFactRepository {
   list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]>
   /** Create once; a repeat must be byte-identical or report a conflict. */
   create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'>
+  /**
+   * Persist content-free terminal evidence before the Host can append its
+   * canonical result event. This is not settlement and is never consumed
+   * without independent Session-event corroboration.
+   */
+  stageTerminal(input: {
+    readonly session: SessionLifecycleIdentityV1
+    readonly callId: string
+    readonly requestEventSeq: number
+    readonly terminalEvidence: NonNullable<ToolExecutionFactRecordV1['terminalEvidence']>
+  }): Promise<'updated' | 'identical' | 'missing' | 'conflict'>
   /** Attach the durable matching result event without replacing request facts. */
   attachResult(input: {
     readonly session: SessionLifecycleIdentityV1
     readonly callId: string
     readonly requestEventSeq: number
     readonly result: NonNullable<ToolExecutionFactRecordV1['result']>
+    readonly delegationReceipt?: NonNullable<ToolExecutionFactRecordV1['delegationReceipt']>
   }): Promise<'updated' | 'identical' | 'missing' | 'conflict'>
   get(input: {
     session: SessionLifecycleIdentityV1
@@ -55,19 +67,51 @@ export class InMemoryExecutionFactRepository implements ExecutionFactRepository 
     return canonicalJson(existing) === canonicalJson(record) ? 'identical' : 'conflict'
   }
 
+  async stageTerminal(input: {
+    readonly session: SessionLifecycleIdentityV1
+    readonly callId: string
+    readonly requestEventSeq: number
+    readonly terminalEvidence: NonNullable<ToolExecutionFactRecordV1['terminalEvidence']>
+  }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+    const key = this.key(input.session, input.callId, input.requestEventSeq)
+    const existing = this.rows.get(key)
+    if (existing === undefined) return 'missing'
+    const next: ToolExecutionFactRecordV1 = Object.freeze({
+      ...existing,
+      terminalEvidence: Object.freeze({
+        isError: input.terminalEvidence.isError,
+        outcome: Object.freeze({ ...input.terminalEvidence.outcome }),
+        ...input.terminalEvidence.receipt === undefined
+          ? {}
+          : { receipt: Object.freeze({ ...input.terminalEvidence.receipt }) },
+      }),
+    })
+    if (existing.terminalEvidence !== undefined) {
+      return canonicalJson(existing) === canonicalJson(next) ? 'identical' : 'conflict'
+    }
+    this.rows.set(key, next)
+    return 'updated'
+  }
+
   async attachResult(input: {
     readonly session: SessionLifecycleIdentityV1
     readonly callId: string
     readonly requestEventSeq: number
     readonly result: NonNullable<ToolExecutionFactRecordV1['result']>
+    readonly delegationReceipt?: NonNullable<ToolExecutionFactRecordV1['delegationReceipt']>
   }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
     const key = this.key(input.session, input.callId, input.requestEventSeq)
     const existing = this.rows.get(key)
     if (existing === undefined) return 'missing'
-    if (existing.result !== undefined) {
-      return canonicalJson(existing.result) === canonicalJson(input.result) ? 'identical' : 'conflict'
+    const next = Object.freeze({
+      ...existing,
+      result: Object.freeze({ ...input.result }),
+      ...input.delegationReceipt === undefined ? {} : { delegationReceipt: Object.freeze({ ...input.delegationReceipt }) },
+    })
+    if (existing.result !== undefined || existing.delegationReceipt !== undefined) {
+      return canonicalJson(existing) === canonicalJson(next) ? 'identical' : 'conflict'
     }
-    this.rows.set(key, Object.freeze({ ...existing, result: Object.freeze({ ...input.result }) }))
+    this.rows.set(key, next)
     return 'updated'
   }
 

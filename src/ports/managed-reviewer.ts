@@ -21,6 +21,10 @@ export interface ManagedOwnedReviewer<SessionId> {
   readonly label: string
   readonly providerData?: JsonValue
   readonly activity: 'running' | 'inactive'
+  /** Persisted count of controller review-packet delivery attempts consumed before transport. */
+  readonly deliveryAttempts: number
+  /** Retired children remain auditable but are never selected again. */
+  readonly retired: boolean
   /** A child whose transcript received unauthorized input is permanently unusable. */
   readonly contaminated: boolean
 }
@@ -42,6 +46,12 @@ export interface ManagedReviewerPort<Parent, SessionId> {
   list(parentSessionId: SessionId, signal?: AbortSignal): Promise<ManagedOwnedReviewer<SessionId>[]>
   /** Drain a contaminated Reviewer child and reserve a fresh clean one. */
   rotate(
+    authority: ParentAuthority<Parent, SessionId>,
+    childId: SessionId,
+    signal?: AbortSignal,
+  ): Promise<SessionId>
+  /** Retire a clean capacity-limited Reviewer and reserve its successor. */
+  renew(
     authority: ParentAuthority<Parent, SessionId>,
     childId: SessionId,
     signal?: AbortSignal,

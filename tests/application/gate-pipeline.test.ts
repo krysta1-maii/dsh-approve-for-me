@@ -52,6 +52,7 @@ function facts(overrides: Partial<GateActionFacts> = {}): GateActionFacts {
     directChildOrigin: false,
     generation: 'generation-1',
     configurationFingerprint: hash('cfg'),
+    policyVersion: 'policy-v2',
     ...overrides,
   }
 }
@@ -113,7 +114,6 @@ function makePipeline(overrides: {
       ? { kind: 'inside' }
       : { kind: 'outside', reason: 'tool-family-not-covered' })
   const deps: GatePipelineDependencies = {
-    classifier: { classify: vi.fn() },
     trustEnvelope: { evaluate },
     breaker: overrides.breaker ?? {
       lookup: vi.fn(() => overrides.breakerHit === true),
@@ -197,7 +197,8 @@ describe('DefaultGatePipeline', () => {
     await expect(pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(records.createConfirmed).toHaveBeenCalledOnce()
     expect(records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
-      version: 1, route: 'trust-envelope', normalizedDecision: 'allow', pluginDisposition: 'allow',
+      version: 2, route: 'trust-envelope', normalizedDecision: 'allow', pluginDisposition: 'allow',
+      policyVersion: 'policy-v2', configurationFingerprint: hash('cfg'),
     }))
   })
 
@@ -390,7 +391,7 @@ describe('DefaultGatePipeline', () => {
     await expect(allow.pipeline.decide(request())).resolves.toBe('allowed-once')
     expect(allow.records.createConfirmed).toHaveBeenCalledOnce()
     expect(allow.records.createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
-      version: 1, route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow', reviewRunId: 'run-1',
+      version: 2, route: 'guardian', normalizedDecision: 'allow', pluginDisposition: 'allow', reviewRunId: 'run-1',
       reviewAttempts: 1, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
     }))
 
