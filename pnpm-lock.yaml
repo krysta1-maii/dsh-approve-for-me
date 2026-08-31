@@ -480,7 +480,7 @@ packages:
       '@deepseek-ai/cordis': ^4.0.2
 
   '@deepseek-ai/dsh-user-approval@file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz':
-    resolution: {integrity: sha512-pysZzUP/Mwt9VAxBr0UZIZuDAt6ags+7cbCY6/p1VJdWz8GKh+28mJ+X76iulGi8ddrjKZa/eBzvwinJzv+Tow==, tarball: file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz}
+    resolution: {integrity: sha512-rS2VpAbYoirB9CMGUaVk3C0FzMv33gyqg9z7G7eeyQZ4X8vSdYhJpqfmmVmrVWMidPOMcd+UHvQsuYQDBjZ2rg==, tarball: file:.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz}
     version: 0.1.2-alpha.2
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.2
@@ -796,7 +796,7 @@ packages:
     engines: {node: '>=8'}
 
   dsh-managed-agent@file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz:
-    resolution: {integrity: sha512-AgqvH608PNd13k8AdqAs4o7WJfu5JBSl+03BYvBnHiYb5QTf9LHLt37HnhU3dz6g5YVnDXrc7e7/2Izv1FmYGA==, tarball: file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz}
+    resolution: {integrity: sha512-mccasz29peqT8Kp8mgPsmSEBFP7+TLAohvthmxh1qiHoHL2p2rU1nTggc3gHSj38EAeS7AFe9TkyP3kq/OY9oQ==, tarball: file:.artifacts/managed-agent/dsh-managed-agent-0.1.0-dev.0.tgz}
     version: 0.1.0-dev.0
     engines: {node: ^22.19.0 || >=24.0.0}
     peerDependencies:
