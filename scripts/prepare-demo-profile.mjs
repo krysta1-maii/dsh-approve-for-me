@@ -75,9 +75,18 @@ if (managedSource.repository !== managedSourceLock.remote || managedSource.commi
   || managedSource.treeSha256 !== managedSourceLock.sourceTreeSha256) {
   throw new Error('managed-agent source does not match the reviewed source lock')
 }
-if (patchSource.repository !== approveSource.repository || patchSource.commit !== approveSource.commit
-  || patchSource.tree !== approveSource.tree) {
-  throw new Error('approval patch and Guardian plugin do not share one reviewed AFM source')
+let patchInputsUnchanged = false
+try {
+  const patchTree = execFileSync('git', ['rev-parse', `${patchSource.commit}^{tree}`], { cwd: root, encoding: 'utf8' }).trim()
+  const approveTree = execFileSync('git', ['rev-parse', `${approveSource.commit}^{tree}`], { cwd: root, encoding: 'utf8' }).trim()
+  execFileSync('git', ['merge-base', '--is-ancestor', patchSource.commit, approveSource.commit], { cwd: root })
+  execFileSync('git', ['diff', '--quiet', patchSource.commit, approveSource.commit, '--', 'patch/dsh-user-approval'], { cwd: root })
+  patchInputsUnchanged = patchTree === patchSource.tree && approveTree === approveSource.tree
+} catch {
+  // Rejected below.
+}
+if (patchSource.repository !== approveSource.repository || !patchInputsUnchanged) {
+  throw new Error('approval patch source is not an unchanged reviewed ancestor of the Guardian plugin source')
 }
 
 const provider = process.env.DSH_DEMO_PROVIDER

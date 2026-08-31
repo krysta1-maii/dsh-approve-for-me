@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "target": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.1.2-alpha.2",
+    "tag": "dsh-v0.1.2-alpha.2",
+    "commit": "0a53fb55bea101816fa226bb964ae2bed71c343b"
+  },
+  "locks": {
+    "pnpmLockSha256": "15422d5a07b6f9a26ab882d9f0aa20b5d815d2d461a49a1017d8119f1c915d9c",
+    "approvalUpstreamSha256": "82c305b6e2ab73bbc24e069d7d0e26ba15f5c930608f9cafbffd1de399fbdfed",
+    "managedSourceSha256": "06dd5d12dc648cb7348fb3bb698d01c39d0c29b9cfc28355d30ae6f51cfd14f5"
+  },
+  "atomicPackageCount": 3,
+  "installOrder": [
+    "dsh-plugin-family-patch",
+    "managed-agent-plugin",
+    "approval-guardian-plugin"
+  ],
+  "artifacts": [
+    {
+      "role": "dsh-plugin-family-patch",
+      "package": "@deepseek-ai/dsh-user-approval",
+      "version": "0.1.2-alpha.2",
+      "file": "dsh-user-approval-afm-0.1.2-alpha.2.tgz",
+      "sha256": "80a0cf33bfdc9329dbbeb8648bb476174358ab95ef88fbe3ed69aefcf1798ea6",
+      "source": {
+        "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
+        "commit": "0dce0e652ff05f6e8fa6c4b995c50dafe5647e0f",
+        "tree": "23e9b983813823bdd7194a6fb37e5245016f65d9",
+        "upstreamCommit": "0a53fb55bea101816fa226bb964ae2bed71c343b",
+        "patchVersion": 2
+      }
+    },
+    {
+      "role": "managed-agent-plugin",
+      "package": "dsh-managed-agent",
+      "version": "0.1.0-dev.0",
+      "file": "dsh-managed-agent-0.1.0-dev.0.tgz",
+      "sha256": "b1c497d83a91d1407878b7b996d926afe326b1e210121e927a29cea2a430359c",
+      "source": {
+        "repository": "https://github.com/krysta1-maii/dsh-managed-agent.git",
+        "commit": "c4ba705137185b37f3d79b7c58d94a01181a7eba",
+        "treeSha256": "25a9a38cda1afc30652d2852aa0851bfc350f42b7e7fc06c864278d4c3a66e82"
+      }
+    },
+    {
+      "role": "approval-guardian-plugin",
+      "package": "dsh-approve-for-me",
+      "version": "0.1.0-dev.0",
+      "file": "dsh-approve-for-me-0.1.0-dev.0.tgz",
+      "sha256": "65235c35d454aa383ee6bb1a021704688d1007259f45b488c664cbfb0b26b237",
+      "source": {
+        "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
+        "commit": "5f7f19c743767ecb0de1650fd132a42f6150c37e",
+        "tree": "98fb7eec96caf905475ff079e2abbe6a6e5e8917"
+      }
+    }
+  ]
+}
