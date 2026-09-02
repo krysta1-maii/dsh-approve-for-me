@@ -32,7 +32,7 @@ interface SessionLike {
     readonly parentSession?: unknown
     readonly delegationDepth?: unknown
   }
-  readonly events: readonly SessionEventLike[]
+  readonly snapshotEvents?: () => readonly SessionEventLike[]
 }
 
 function text(value: unknown): string | undefined {
@@ -161,7 +161,8 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     if (input.signal?.aborted) return undefined
     const bound = sessionIdentity(input.agent)
     if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return undefined
-    const events = bound.session.events
+    if (typeof bound.session.snapshotEvents !== 'function') return undefined
+    const events = bound.session.snapshotEvents()
     if (!Array.isArray(events) || events.some((event, index) => nonNegative(event.seq) === undefined || event.seq !== index || nonNegative(event.time) === undefined
       || (index > 0 && event.time < events[index - 1]!.time))) return undefined
     const askedEvents = events.filter(event => {

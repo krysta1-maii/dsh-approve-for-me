@@ -18,7 +18,7 @@ function agent(id: string, schemas: readonly unknown[], options: { lateHeader?: 
   ]
   if (options.lateHeader === true) events.push({ seq: 2, time: 3, type: 'request/header', data: { header: { tools: schemas } } })
   events.push({ seq: events.length, time: 4, type: 'tool/call', data: { callId: 'call-1', name: 'bash', arguments: { command: 'pwd' } } })
-  return { id, session: { events } } as unknown as Agent
+  return { id, session: { snapshotEvents: () => events } } as unknown as Agent
 }
 
 function execution(owner: Agent): ToolExecution {
@@ -68,7 +68,7 @@ describe('DshScopedEffectiveCatalogResolver', () => {
       { seq: 1, time: 2, type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'tool-call', id: 'root-1', name: 'run_code', arguments: '{"code":"await tools.bash({ command: \\"pwd\\" })"}' }] } } },
       { seq: 2, time: 3, type: 'tool/call', data: { callId: 'root-1', name: 'run_code', arguments: { code: 'await tools.bash({ command: "pwd" })' } } },
     ]
-    const owner = { id: 'ptc', session: { events } } as unknown as Agent
+    const owner = { id: 'ptc', session: { snapshotEvents: () => events } } as unknown as Agent
     const root = {
       agent: owner, callId: 'root-1', rootCallId: 'root-1', name: 'run_code', arguments: { code: 'await tools.bash({ command: "pwd" })' },
       signal: new AbortController().signal, token: Symbol('root'),
@@ -127,7 +127,7 @@ describe('DshScopedEffectiveCatalogResolver', () => {
       .forExecution(execution(agent('late', schemas, { lateHeader: true })))).toBeUndefined()
     expect(new DshScopedEffectiveCatalogResolver({ schemas: () => { throw new Error('disposed scope') } })
       .forExecution(execution(agent('throw', schemas)))).toBeUndefined()
-    const missing = { id: 'missing', session: { events: [] } } as unknown as Agent
+    const missing = { id: 'missing', session: { snapshotEvents: () => [] } } as unknown as Agent
     expect(new DshScopedEffectiveCatalogResolver({ schemas: () => schemas }).forExecution(execution(missing))).toBeUndefined()
   })
 

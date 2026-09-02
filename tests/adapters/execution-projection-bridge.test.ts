@@ -26,7 +26,7 @@ function effectiveCatalog(exec: ToolExecution) {
     classificationCatalog: baseCatalog.dossier,
   }
   const commitment = Object.freeze({ ...unsealed, fingerprint: fingerprintDurableToolCatalogCommitmentV1(unsealed)! })
-  const events = (exec.agent!.session as unknown as { events: readonly { seq: number; type: string; data: Record<string, unknown> }[] }).events
+  const events = (exec.agent!.session as unknown as { snapshotEvents: () => readonly { seq: number; type: string; data: Record<string, unknown> }[] }).snapshotEvents()
   const request = [...events].reverse().find(event => nested
     ? event.type === 'tool/code-dispatch-start' && event.data.subCallId === String(exec.callId)
     : event.type === 'tool/call' && event.data.callId === String(exec.callId))!
@@ -49,7 +49,7 @@ function agent(events: readonly unknown[], cwd?: string): Agent {
     session: {
       id: 'session-1',
       header: { id: 'session-1', version: 1, createdAt: 10, ...(cwd === undefined ? {} : { cwd }) },
-      events,
+      snapshotEvents: () => events,
     },
   } as unknown as Agent
 }
@@ -133,7 +133,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     const exec = execution(owner)
     await bridge.project(exec)
     bridge.observeResult(exec, { isError: false, value: null, content: [] })
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).snapshotEvents()[1]!)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
@@ -344,7 +344,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     const exec = execution(owner)
     await bridge.project(exec)
     bridge.observeResult(exec, { isError: false, value: null, content: [] })
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).snapshotEvents()[1]!)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
       .resolves.not.toHaveProperty('result')
   })
@@ -359,7 +359,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     const exec = execution(owner)
     await bridge.project(exec)
     bridge.observeResult(exec, { isError: true, error: { message: 'the user rejected tool "bash"' }, content: [] })
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).events[1]!)
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).snapshotEvents()[1]!)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'tool-error' } } })
   })
@@ -380,7 +380,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
     await bridge.project(nested)
     bridge.observeResult(nested, { isError: false, value: null, content: [] })
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).events[2]!)
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).snapshotEvents()[2]!)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'sub-1', requestEventSeq: 1 }))
       .resolves.toMatchObject({
         request: { kind: 'code-dispatch', eventType: 'tool/code-dispatch-start' },
@@ -423,7 +423,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
     await repository.create({ version: 1, catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 0, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: 'irrelevant', observedAt: 20 } })
     await repository.create({ version: 1, catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: 'irrelevant', observedAt: 21 } })
-    await bridge.observeSessionEvent(owner, (owner.session as unknown as { events: readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).events[2]!)
+    await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).snapshotEvents()[2]!)
     await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toEqual(expect.not.arrayContaining([expect.objectContaining({ result: expect.anything() })]))
   })
 

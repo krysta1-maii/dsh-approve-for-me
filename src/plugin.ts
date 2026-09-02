@@ -90,13 +90,17 @@ interface LiveSessionEvent {
 }
 
 function validateLiveApprovalBinding(agent: Agent, requestId: string, callId: string, toolName: string): string {
-  const session = agent.session as unknown as { id?: unknown; header?: { id?: unknown; parentSession?: unknown; delegationDepth?: unknown }; events?: readonly LiveSessionEvent[] }
+  const session = agent.session as unknown as { id?: unknown; header?: { id?: unknown; parentSession?: unknown; delegationDepth?: unknown }; snapshotEvents?: () => readonly LiveSessionEvent[] }
   const agentId = String((agent as unknown as { id?: unknown }).id ?? '')
   const sessionId = typeof session.id === 'string' ? session.id : ''
-  if (sessionId.length === 0 || agentId !== sessionId || session.header?.id !== sessionId || !Array.isArray(session.events)) {
+  if (sessionId.length === 0 || agentId !== sessionId || session.header?.id !== sessionId || typeof (session as { snapshotEvents?: unknown }).snapshotEvents !== 'function') {
     throw new GateFailure('integrity', 'approval ask is not bound to an exact live Agent/Session')
   }
-  const asked = session.events.filter(event => event.type === 'approval/asked' && (() => {
+  const events = session.snapshotEvents!()
+  if (!Array.isArray(events)) {
+    throw new GateFailure('integrity', 'approval ask is not bound to an exact live Agent/Session')
+  }
+  const asked = events.filter(event => event.type === 'approval/asked' && (() => {
     const data = event.data as Record<string, unknown>
     return data.id === requestId && data.callId === callId && data.toolName === toolName
   })())

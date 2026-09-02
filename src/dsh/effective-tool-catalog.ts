@@ -27,7 +27,7 @@ interface EventLike {
 }
 
 interface SessionLike {
-  readonly events?: readonly EventLike[]
+  readonly snapshotEvents?: () => readonly EventLike[]
 }
 
 export interface DshExecutionEventBinding {
@@ -130,7 +130,9 @@ interface ResolvedExecutionHistory {
 }
 
 function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory | undefined {
-  const events = (exec.agent?.session as unknown as SessionLike | undefined)?.events
+  const session = exec.agent?.session as unknown as SessionLike | undefined
+  if (typeof session?.snapshotEvents !== 'function') return undefined
+  const events = session.snapshotEvents()
   const validSeq = (value: unknown): value is number =>
     Number.isSafeInteger(value) && (value as number) >= 0 && !Object.is(value, -0)
   if (!Array.isArray(events) || events.some((event, index) => !validSeq(event.seq) || event.seq !== index)) return undefined

@@ -28,20 +28,21 @@ const approval: ApprovalSnapshotRecordV1 = {
 }
 
 function agent(overrides: object = {}) {
+  const events = [
+    { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } },
+    { seq: 1, time: 101, type: 'user/message', surfaceOp: 'append', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'pwd' }] } },
+    { seq: 2, time: 102, type: 'assistant/message', data: { turn: 1, step: 0, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+    { seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
+    { seq: 4, time: 104, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } },
+    { seq: 5, time: 105, type: 'tool/result', data: { turn: 1, step: 0, message: { toolCallId: 'call-1', content: [{ type: 'text', text: 'secret' }] } } },
+  ]
   return {
     id: 'parent-1',
     options: {},
     session: {
       id: 'parent-1',
       header: { version: 0, id: 'parent-1', createdAt: 100 },
-      events: [
-        { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } },
-        { seq: 1, time: 101, type: 'user/message', surfaceOp: 'append', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'pwd' }] } },
-        { seq: 2, time: 102, type: 'assistant/message', data: { turn: 1, step: 0, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
-        { seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
-        { seq: 4, time: 104, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } },
-        { seq: 5, time: 105, type: 'tool/result', data: { turn: 1, step: 0, message: { toolCallId: 'call-1', content: [{ type: 'text', text: 'secret' }] } } },
-      ],
+      snapshotEvents: () => events,
     },
     ...overrides,
   }
@@ -61,7 +62,7 @@ describe('DshParentSessionFactSource', () => {
     expect(facts?.approvalSnapshots).toEqual([approval])
     expect(facts?.events).toHaveLength(5)
     expect(facts?.events[1]).toMatchObject({ type: 'user/message', surfaceState: 'visible' })
-    ;((requester.session.events[1]!.data as { content: Array<{ text: string }> }).content[0]!).text = 'mutated after snapshot'
+    ;((requester.session.snapshotEvents()[1]!.data as { content: Array<{ text: string }> }).content[0]!).text = 'mutated after snapshot'
     expect(facts?.events[1]).toMatchObject({ data: { content: [{ text: 'pwd' }] } })
     const snapshotEvent = facts?.events[1]
     expect(snapshotEvent?.retention).toBe('included')
@@ -70,11 +71,11 @@ describe('DshParentSessionFactSource', () => {
 
   it('marks a replaced direct user event superseded in the frozen source snapshot', () => {
     const requester = agent()
-    ;(requester.session.events as unknown as object[]).splice(2, 0, {
+    ;(requester.session.snapshotEvents() as unknown as object[]).splice(2, 0, {
       seq: 2, time: 102, type: 'user/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [1],
       data: { id: 'user-2', source: { kind: 'user' }, content: [{ type: 'text', text: 'use ls instead' }] },
     })
-    ;(requester.session.events as unknown as Array<{ seq: number }>).forEach((event, sequence) => { event.seq = sequence })
+    ;(requester.session.snapshotEvents() as unknown as Array<{ seq: number }>).forEach((event, sequence) => { event.seq = sequence })
     const shiftedExecution = { ...execution, request: { ...execution.request, eventSeq: 4 } }
     const shiftedApproval = {
       ...approval,
@@ -121,10 +122,10 @@ describe('DshParentSessionFactSource', () => {
     const requester = agent()
     const source = new DshParentSessionFactSource({ get: id => id === 'parent-1' ? requester as never : undefined })
     const duplicate = agent()
-    ;(duplicate.session.events as unknown as object[]).splice(3, 0, {
+    ;(duplicate.session.snapshotEvents() as unknown as object[]).splice(3, 0, {
       seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{}' },
     })
-    ;(duplicate.session.events as unknown as Array<{ seq: number }>).forEach((event, index) => { event.seq = index })
+    ;(duplicate.session.snapshotEvents() as unknown as Array<{ seq: number }>).forEach((event, index) => { event.seq = index })
     expect(source.snapshot(input({ agent: duplicate as never }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, request: { ...execution.request, eventSeq: 1 } }] }))).toBeUndefined()
   })
@@ -150,13 +151,13 @@ describe('DshParentSessionFactSource', () => {
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, environment: { version: 1, kind: 'native-header-only', sandbox: { enabled: true } } }] as never }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, session: { ...lifecycle, cwd: '/other-project' } } as ToolExecutionFactRecordV1] }))).toBeUndefined()
     const regressive = agent()
-    ;(regressive.session.events as unknown as Array<{ time: number }>)[2]!.time = 99
+    ;(regressive.session.snapshotEvents() as unknown as Array<{ time: number }>)[2]!.time = 99
     expect(source.snapshot(input({ agent: regressive as never }))).toBeUndefined()
     const negativeZeroSequence = agent()
-    ;(negativeZeroSequence.session.events as unknown as Array<{ seq: number }>)[0]!.seq = -0
+    ;(negativeZeroSequence.session.snapshotEvents() as unknown as Array<{ seq: number }>)[0]!.seq = -0
     expect(source.snapshot(input({ agent: negativeZeroSequence as never }))).toBeUndefined()
     const invalidSourceSequence = agent()
-    ;(invalidSourceSequence.session.events as unknown as Array<{ sourceEventSeqs?: readonly number[] }>)[2]!.sourceEventSeqs = [-0]
+    ;(invalidSourceSequence.session.snapshotEvents() as unknown as Array<{ sourceEventSeqs?: readonly number[] }>)[2]!.sourceEventSeqs = [-0]
     expect(source.snapshot(input({ agent: invalidSourceSequence as never }))).toBeUndefined()
     const emptyCwd = agent()
     ;(emptyCwd.session.header as unknown as { cwd?: unknown }).cwd = ''

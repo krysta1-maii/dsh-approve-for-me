@@ -154,13 +154,13 @@ async function send(ctx, agent, text) {
 }
 
 function approvalOutcomes(agent) {
-  return agent.session.events
+  return agent.session.snapshotEvents()
     .filter(event => event.type === 'approval/decided')
     .map(event => event.data.outcome)
 }
 
 function toolResult(agent, callId) {
-  const event = agent.session.events.find(event => (
+  const event = agent.session.snapshotEvents().find(event => (
     event.type === 'tool/result'
     && event.data.message?.source?.kind === 'tool'
     && String(event.data.message.source.callId) === callId
@@ -239,7 +239,7 @@ export async function apply(ctx) {
   if (!automatic.outcomes.includes('allowed-once') || automatic.initial?.isError !== false || !automaticExecuted) {
     writeFileSync(`${marker}.failure.json`, `${JSON.stringify({
       outcomes: automatic.outcomes,
-      events: automatic.agent.session.events,
+      events: automatic.agent.session.snapshotEvents(),
     }, null, 2)}\n`, 'utf8')
     throw new Error(`automatic approval did not execute the guarded command: ${JSON.stringify(automatic.outcomes)}`)
   }
@@ -251,7 +251,7 @@ export async function apply(ctx) {
       reviewCalls: adapter.reviewCalls,
       rootScenarios: [...adapter.rootScenarios.entries()].map(([sessionId, scenario]) => [sessionId, scenario.kind]),
       outcomes: human.outcomes,
-      events: human.agent.session.events,
+      events: human.agent.session.snapshotEvents(),
     }, null, 2)}\n`, 'utf8')
     throw new Error(`expected one human fallback call, received ${humanFallbackCalls}`)
   }
@@ -260,7 +260,7 @@ export async function apply(ctx) {
       reviewCalls: adapter.reviewCalls,
       outcomes: human.outcomes,
       commandOutput: toolResultText(human.initial),
-      events: human.agent.session.events,
+      events: human.agent.session.snapshotEvents(),
     }, null, 2)}\n`, 'utf8')
     throw new Error(`human fallback did not block the guarded command: ${JSON.stringify(human.outcomes)}`)
   }

@@ -39,7 +39,7 @@ scripts/verify-target-host.mjs        # 校验目标 DSH commit/tag、tarball �
 
 ```bash
 patch/dsh-user-approval/scripts/build-fork.sh
-# 产物：.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz
+# 产物：.build/dsh-user-approval-afm-0.1.2-alpha.5.tgz
 ```
 
 脚本在一次性 clone（`.build/upstream-clone`）中 detach 到锁定 commit，覆盖源码、运行 overlay 测试、重建 `lib/`、打标记、校验并输出 `.sha256`，构建结束删除该 clone。上游 checkout 全程只被读取（`git clone`），不注册 worktree，也不写入其 index/config。`SKIP_BUILD=1` 被明确拒绝，因为它不能证明编译产物包含 patch。
@@ -60,7 +60,7 @@ npm run verify:approval-fork
 
 ## 上游跟进
 
-当前锁定：`upstreamVersion 0.1.2-alpha.2`、`upstreamTag dsh-v0.1.2-alpha.2`、`upstreamCommit 0a53fb55bea101816fa226bb964ae2bed71c343b`、`patchVersion 2`；patch 语义与上一版本一致，包内唯一的上游增量是 `order` 由字面量 `115` 改为 `scope.systemPrompt.getContextOrder('APPROVAL_POLICY')`。
+当前锁定：`upstreamVersion 0.1.2-alpha.5`、`upstreamTag dsh-v0.1.2-alpha.5`、`upstreamCommit db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5`、`patchVersion 3`；patch 语义与上一版本一致，本版上游增量是 Session 日志读取从 `session.events` 迁到 `snapshotEvents()`/`eventAt()`（overlay 的 `index.ts`/`invariant.ts` 以 alpha.5 源码为底座重打，`types.ts` 无上游变更）。
 
 上游版本变化时：更新 `upstream.json` 的 tag/commit/version，重放 overlay，重跑构建脚本；`build-fork.sh` 会拒绝在错误 commit 上构建。目标是把这两个改动作为上游 PR 合并，合并后本目录只保留记录、不再产出 tarball。
 

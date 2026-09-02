@@ -19,7 +19,7 @@ interface EventLike {
 interface SessionLike {
   readonly id: unknown
   readonly header: { readonly id: unknown; readonly version: unknown; readonly createdAt: unknown; readonly cwd?: unknown }
-  readonly events: readonly EventLike[]
+  readonly snapshotEvents?: () => readonly EventLike[]
 }
 
 function string(value: unknown): string | undefined {
@@ -41,7 +41,9 @@ function sandboxMode(value: unknown): SandboxDenialOutcome['mode'] | undefined {
 }
 
 function standingSandboxMode(agent: Agent | undefined, throughSeq: number | undefined): SandboxDenialOutcome['mode'] | undefined {
-  const events = (agent?.session as unknown as SessionLike | undefined)?.events
+  const session = agent?.session as unknown as SessionLike | undefined
+  if (typeof session?.snapshotEvents !== 'function') return undefined
+  const events = session.snapshotEvents()
   if (!Array.isArray(events)) return undefined
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index]
@@ -173,12 +175,15 @@ export class DshExecutionFactProjectionBridge {
       || !Number.isSafeInteger(version) || (version as number) < 0
       || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0
       || (session.header?.cwd !== undefined && cwd === undefined)
-      || !Array.isArray(session.events)) return
+      || typeof session.snapshotEvents !== 'function') return
+
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return
 
     const callId = String(exec.callId)
     const effective = this.catalogSource(exec)
     if (effective === undefined) return
-    const event = session.events[effective.execution.requestEventSeq]
+    const event = events[effective.execution.requestEventSeq]
     if (event === undefined || event.seq !== effective.execution.requestEventSeq
       || event.type !== effective.execution.requestEventType) return
     const eventData = event.data as Record<string, unknown>
@@ -303,8 +308,11 @@ export class DshExecutionFactProjectionBridge {
     if (lifecycle === undefined) return undefined
     const requestEventSeq = this.requestEventByToken.get(exec.token)
     this.requestEventByToken.delete(exec.token)
-    const source = requestEventSeq === undefined ? undefined : session.events[requestEventSeq]
-    if (requestEventSeq === undefined || source === undefined || source.seq !== requestEventSeq) return undefined
+    if (requestEventSeq === undefined || typeof session.snapshotEvents !== 'function') return undefined
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return undefined
+    const source = events[requestEventSeq]
+    if (source === undefined || source.seq !== requestEventSeq) return undefined
     const sourceData = source.data as Record<string, unknown>
     const sourceMatches = (source.type === 'tool/call' && sourceData.callId === callId && sourceData.name === exec.name)
       || (source.type === 'tool/code-dispatch-start' && sourceData.subCallId === callId
@@ -382,8 +390,11 @@ export class DshExecutionFactProjectionBridge {
     const resultKey = this.resultKey(lifecycle, callId, requestEventSeq)
     const volatileTerminal = this.terminalOutcomes.get(resultKey)
     const session = agent.session as unknown as SessionLike
+    if (typeof session.snapshotEvents !== 'function') return false
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return false
     const candidates = (await this.repository.list(lifecycle)).filter(record => {
-      const call = session.events[record.request.eventSeq]
+      const call = events[record.request.eventSeq]
       const callData = call?.data as Record<string, unknown> | undefined
       return record.request.kind === 'model-tool-call' && record.request.callId === callId
         && record.request.eventSeq === requestEventSeq && record.request.eventSeq < event.seq && call?.type === 'tool/call'
@@ -423,13 +434,16 @@ export class DshExecutionFactProjectionBridge {
     if (lifecycle === undefined || rootCallId === undefined || parentCallId === undefined
       || callId === undefined || toolName === undefined || typeof isError !== 'boolean') return false
     const session = agent.session as unknown as SessionLike
+    if (typeof session.snapshotEvents !== 'function') return false
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return false
     const sameDispatch = (candidate: EventLike): boolean => {
       const item = candidate.data as Record<string, unknown>
       return item.rootCallId === rootCallId && item.parentCallId === parentCallId
         && item.subCallId === callId && item.name === toolName
         && sameJson(item.arguments, data.arguments)
     }
-    const starts = session.events
+    const starts = events
       .filter(candidate => candidate.type === 'tool/code-dispatch-start' && candidate.seq < event.seq && sameDispatch(candidate))
       .sort((left, right) => left.seq - right.seq)
     const explicitSourceSeqs = event.sourceEventSeqs?.filter(seq => Number.isSafeInteger(seq))
@@ -442,7 +456,7 @@ export class DshExecutionFactProjectionBridge {
       // Without an exact source edge, accept only the sole matching start since
       // the preceding matching terminal. Two pending identical starts are
       // ambiguous when an earlier terminal event may be missing after a crash.
-      const precedingResultSeq = session.events
+      const precedingResultSeq = events
         .filter(candidate => candidate.type === 'tool/code-dispatch' && candidate.seq < event.seq && sameDispatch(candidate))
         .reduce((latest, candidate) => Math.max(latest, candidate.seq), -1)
       const pending = starts.filter(candidate => candidate.seq > precedingResultSeq)
@@ -505,12 +519,15 @@ export class DshExecutionFactProjectionBridge {
    */
   async awaitApprovalSnapshot(agent: Agent, requestId: string, callId: string, toolName: string): Promise<void> {
     const session = agent.session as unknown as SessionLike
-    const event = session.events?.filter(candidate => candidate.type === 'approval/asked'
+    if (typeof session.snapshotEvents !== 'function') return
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return
+    const event = events.filter(candidate => candidate.type === 'approval/asked'
       && (candidate.data as Record<string, unknown>)?.id === requestId
       && (candidate.data as Record<string, unknown>)?.callId === callId
       && (candidate.data as Record<string, unknown>)?.toolName === toolName)
-    if (event?.length !== 1 || event[0] === undefined) return
-    await Promise.all(session.events
+    if (event.length !== 1 || event[0] === undefined) return
+    await Promise.all(events
       .filter(candidate => (candidate.type === 'tool/result' || candidate.type === 'tool/code-dispatch')
         && candidate.seq < event[0]!.seq)
       .map(candidate => this.observeSessionEvent(agent, candidate)))
