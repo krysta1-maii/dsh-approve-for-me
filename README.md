@@ -2,18 +2,18 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），采用机器决策槽 v2。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.2` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.2 实现检查点通过 42 个测试文件、330 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-alpha.5`（commit `db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5`，tag `dsh-v0.1.2-alpha.5`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-alpha.5` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。alpha.5 实现检查点通过 42 个测试文件、330 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
 
 ## 部署组成
 
 ```text
-npm 已发布的 @deepseek-ai/*@0.1.2-alpha.2 宿主闭包
+npm 已发布的 @deepseek-ai/*@0.1.2-alpha.5 宿主闭包
 + @deepseek-ai/dsh-user-approval fork tarball
 + dsh-managed-agent tarball（Host/Client bundle）
 + dsh-approve-for-me tarball
 ```
 
-- 宿主基线固定为 tag `dsh-v0.1.2-alpha.2` / commit `0a53fb55bea101816fa226bb964ae2bed71c343b`；该版本已发布到 npm（dist-tag `alpha`）。
+- 宿主基线固定为 tag `dsh-v0.1.2-alpha.5` / commit `db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5`；该版本已发布到 npm（dist-tag `alpha`）。
 - 除 approval fork 外的宿主包全部按精确版本从 registry 安装，可复现性由 `pnpm-lock.yaml` 的 integrity 摘要保证；本仓库不再自建、也不再锁定本地宿主 tarball 闭包。
 - approval fork 仍从固定 commit 的宿主**源码**构建，保留官方 `name`/`version`，以 `dshApprovalPatch` 和独立 tarball 名标识；运行时会拒绝没有该标记或 `registerMachinePolicy()` 的同版本官方包。构建在一次性 clone 中进行，只读取上游 checkout，绝不写入。
 - managed artifact 由 sibling `dsh-managed-agent` 打包；`managed-agent-source.lock.json` 先约束完整 reviewed source tree 摘要，`artifact.json` 再记录 source commit/tree digest、dirty 状态、文件名和 tarball SHA-256。任何 source 漂移都在打包前失败；发布输入仍应使用 `dirty: false` 的已审查 commit。
@@ -80,19 +80,19 @@ R4 风险/授权基线只使用：
 只有 approval fork 与 managed artifact 需要 sibling checkout：
 
 ```text
-../deepseek-harness   # 需包含 0a53fb55...（HEAD 可以在别处；仅被读取）
+../deepseek-harness   # 需包含 db6bdc3576...（HEAD 可以在别处；仅被读取）
 ../dsh-managed-agent  # 已审查的 managed-agent source commit
 ../dsh-approve-for-me # 本仓库
 ```
 
 ```bash
 # 构建 immutable approval fork 与 managed artifact，再按 frozen pnpm lock
-# 安装已发布的 alpha.2 宿主闭包
+# 安装已发布的 alpha.5 宿主闭包
 DSH_REPO=../deepseek-harness \
 MANAGED_AGENT_SOURCE=../dsh-managed-agent \
 npm run bootstrap:dependencies
 
-# alpha.2 类型、测试与构建
+# alpha.5 类型、测试与构建
 npm run check
 
 # 校验本插件发布包内容
@@ -113,7 +113,7 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 
 ## 自动 Profile smoke 证明什么
 
-`profile:artifact-smoke` 在 disposable `DSH_HOME` 中（CLI 也来自已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2`，无需宿主 checkout）：
+`profile:artifact-smoke` 在 disposable `DSH_HOME` 中（CLI 也来自已发布的 `@deepseek-ai/dsh@0.1.2-alpha.5`，无需宿主 checkout）：
 
 - 完整校验 demo kit manifest、artifact digest 与 source identity，只消费三份预封存部署 tarball；
 - 安装 approval fork、managed-agent、本插件三个部署 tarball，并加入独立 probe tarball；
@@ -121,7 +121,7 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - 用 `--dump-config` 确认 managed host、本插件和 probe 已 compose；
 - 真正启动目标 Profile，并在其中跑完两条 gate 路径：一次 `/approve-for-me` 授权动作被自动放行并真实执行了 `bash` 副作用，一次 `auto-then-user` 下沉被人工通道拒绝且命令没有执行；
 - 杀掉进程后再从同一个已安装 Profile 冷启动一次，要求 effective tool catalog 完全一致；
-- 从 Profile 自身解析依赖，验证 fork marker/API 与精确 alpha.2 安装闭包；
+- 从 Profile 自身解析依赖，验证 fork marker/API 与精确 alpha.5 安装闭包；
 - 验证 `ctx.managedAgents` 的 create/renew/provider API、`ctx.approval.registerMachinePolicy()` 以及非空 Host tool catalog。
 
 它证明 artifact 安装图、Cordis loader boot、机器决策槽与两条业务路径在真实 Host 进程内可达；它**不证明**浏览器审批面板与人工点击流程、真实 LLM Reviewer 的判断质量，也不证明带 pending approval / Reviewer child 状态的跨进程 cold-resume（冒烟里的 Guardian 是脚本化 adapter，不是真实模型）。

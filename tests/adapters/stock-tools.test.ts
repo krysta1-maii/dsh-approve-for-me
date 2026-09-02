@@ -31,7 +31,7 @@ function execution(name: string, arguments_: unknown): ToolExecution {
   }
 }
 
-describe('DSH 0.1.2-alpha.2 stock tool composition', () => {
+describe('DSH 0.1.2-alpha.5 stock tool composition', () => {
   it('derives a deterministic exact-schema catalog with fail-closed opaque coverage', () => {
     const catalog = createDshAlpha2StockToolCatalog([
       schema('write', { file_path: { type: 'string' } }),
