@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import { parseApprovalDecision } from '../domain/protocol.js'
 import { REVIEWER_DECISION_PARAMETERS } from './policy.js'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { SubmitDecisionResult } from '../application/decision-channel.js'
@@ -57,6 +58,18 @@ export function createDecisionTool(
       const actual = exec.agent?.session.id
       if (actual === undefined || String(actual) !== expectedChildSessionId) {
         throw new Error(`${SUBMIT_DECISION_TOOL} is only available to its owning Reviewer child`)
+      }
+      // Validate BEFORE returning success. Real-world reviewer models
+      // occasionally emit schema-noncompliant payloads (e.g. protocolVersion
+      // as a string); surfacing the parse error as a tool failure lets the
+      // Reviewer correct and resubmit within its turn instead of silently
+      // killing the pending review with an 'invalid-result' it never sees.
+      try {
+        parseApprovalDecision(args)
+      } catch (error: unknown) {
+        throw new Error(
+          `invalid approval decision: ${error instanceof Error ? error.message : String(error)}`,
+        )
       }
       staged.set(String(exec.callId), args)
       exec.concludeTurn()

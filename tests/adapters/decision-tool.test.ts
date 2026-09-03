@@ -96,6 +96,24 @@ describe('createDecisionTool', () => {
     expect(submitter.submit).not.toHaveBeenCalled()
   })
 
+  it('rejects a schema-noncompliant payload with corrective feedback before staging', async () => {
+    const submitter = { submit: vi.fn() }
+    const scoped = createDecisionTool('reviewer-1', submitter)
+    const child = fakeAgent('reviewer-1')
+    const exec = fakeContext(child)
+    // Real reviewer models sometimes emit protocolVersion as a string; the tool
+    // must fail loudly so the Reviewer can resubmit a corrected payload.
+    const invalid = { ...realDecision(), protocolVersion: '1' as unknown as number }
+    await expect(scoped.definition.execute(invalid, exec)).rejects.toThrow(/invalid approval decision/)
+    expect(exec.concludeTurn).not.toHaveBeenCalled()
+    scoped.observeResult(exec, success())
+    expect(submitter.submit).not.toHaveBeenCalled()
+    // A corrected resubmission through a fresh call id still stages normally.
+    const retry = fakeContext(child, { callId: 'call-2' })
+    await scoped.definition.execute(realDecision(), retry)
+    expect(retry.concludeTurn).toHaveBeenCalledOnce()
+  })
+
   it('rejects a caller that is not the expected Reviewer child', async () => {
     const submitter = { submit: vi.fn() }
     const scoped = createDecisionTool('reviewer-1', submitter)
