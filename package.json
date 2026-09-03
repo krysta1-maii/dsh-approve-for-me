@@ -40,6 +40,7 @@
     "bootstrap:dependencies": "npm run build:approval-fork && npm run build:managed-artifact && pnpm install --frozen-lockfile",
     "package:smoke": "node scripts/package-smoke.mjs",
     "profile:artifact-smoke": "node scripts/profile-artifact-smoke.mjs",
+    "profile:pending-smoke": "node scripts/profile-pending-resume-smoke.mjs",
     "materialize:demo-inputs": "npm run build:approval-fork && npm run build:managed-artifact",
     "build:demo-kit": "node scripts/build-demo-kit.mjs",
     "demo:prepare": "node scripts/prepare-demo-profile.mjs",
