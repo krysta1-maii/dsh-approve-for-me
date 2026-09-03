@@ -226,7 +226,10 @@ export class DshStorageDomainFactRepositories {
         if (confirmed === undefined || canonicalJson(confirmed) !== canonical) return 'conflict'
         if (!await this.index(indexName, session, key)) return 'conflict'
         return 'created'
-      } catch { return 'conflict' }
+      } catch (cause: unknown) {
+        if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-repo] create-once failed', String(cause), (cause as { stack?: string })?.stack ?? '')
+        return 'conflict'
+      }
     })
   }
 
