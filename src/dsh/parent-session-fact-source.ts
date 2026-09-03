@@ -225,7 +225,13 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && (item.result === undefined || item.result.eventSeq <= throughSeq)
       && executionMatchesLiveEvents(item))
     const approvals = input.approvalSnapshots.filter(item => sameLifecycle(item) && item.approvalAskedSeq === throughSeq)
-    if (approvals.length !== 1 || approvals[0]?.approvalRequestId !== input.approvalRequestId) return fail('approval-sidecar', { found: approvals.length })
+    if (approvals.length !== 1 || approvals[0]?.approvalRequestId !== input.approvalRequestId) return fail('approval-sidecar', {
+      found: approvals.length,
+      listed: input.approvalSnapshots.length,
+      throughSeq,
+      rows: input.approvalSnapshots.map(item => ({ seq: item.approvalAskedSeq, requestId: item.approvalRequestId, session: item.session })),
+      bound: bound.identity,
+    })
     const approval = approvals[0]!
     const matchingCall = events[approval.execution.requestEventSeq]
     if (matchingCall === undefined || matchingCall.seq >= asked.seq) return fail('matching-call-seq')
