@@ -158,13 +158,17 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
   constructor(private readonly agents: LiveAgentRegistry) {}
 
   snapshot(input: Parameters<ParentSessionFactSource['snapshot']>[0]): ParentSessionFactSnapshotV1 | undefined {
-    if (input.signal?.aborted) return undefined
+    const fail = (stage: string, detail?: unknown): undefined => {
+      if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', stage, detail === undefined ? '' : JSON.stringify(detail))
+      return undefined
+    }
+    if (input.signal?.aborted) return fail('aborted')
     const bound = sessionIdentity(input.agent)
-    if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return undefined
-    if (typeof bound.session.snapshotEvents !== 'function') return undefined
+    if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return fail('identity')
+    if (typeof bound.session.snapshotEvents !== 'function') return fail('no-snapshot-events')
     const events = bound.session.snapshotEvents()
     if (!Array.isArray(events) || events.some((event, index) => nonNegative(event.seq) === undefined || event.seq !== index || nonNegative(event.time) === undefined
-      || (index > 0 && event.time < events[index - 1]!.time))) return undefined
+      || (index > 0 && event.time < events[index - 1]!.time))) return fail('invalid-events')
     const askedEvents = events.filter(event => {
       if (event.type !== 'approval/asked') return false
       const data = event.data as Record<string, unknown>
@@ -172,7 +176,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
         && data.callId === input.callId
         && data.toolName === input.toolName
     })
-    if (askedEvents.length !== 1 || askedEvents[0] === undefined) return undefined
+    if (askedEvents.length !== 1 || askedEvents[0] === undefined) return fail('asked-event', { found: askedEvents.length, approvalRequestId: input.approvalRequestId, callId: input.callId })
     const asked = askedEvents[0]
     const throughSeq = asked.seq
     const sameLifecycle = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string } }): boolean =>
@@ -221,16 +225,16 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && (item.result === undefined || item.result.eventSeq <= throughSeq)
       && executionMatchesLiveEvents(item))
     const approvals = input.approvalSnapshots.filter(item => sameLifecycle(item) && item.approvalAskedSeq === throughSeq)
-    if (approvals.length !== 1 || approvals[0]?.approvalRequestId !== input.approvalRequestId) return undefined
+    if (approvals.length !== 1 || approvals[0]?.approvalRequestId !== input.approvalRequestId) return fail('approval-sidecar', { found: approvals.length })
     const approval = approvals[0]!
     const matchingCall = events[approval.execution.requestEventSeq]
-    if (matchingCall === undefined || matchingCall.seq >= asked.seq) return undefined
+    if (matchingCall === undefined || matchingCall.seq >= asked.seq) return fail('matching-call-seq')
     const matchingData = matchingCall.data as Record<string, unknown>
     if (!((matchingCall.type === 'tool/call' && matchingData.callId === input.callId && matchingData.name === input.toolName)
-      || (matchingCall.type === 'tool/code-dispatch-start' && matchingData.subCallId === input.callId && matchingData.name === input.toolName))) return undefined
+      || (matchingCall.type === 'tool/code-dispatch-start' && matchingData.subCallId === input.callId && matchingData.name === input.toolName))) return fail('matching-call-shape', { type: matchingCall.type, callId: matchingData.callId })
     const correlatedExecutions = executions.filter(item => item.request.eventSeq === matchingCall.seq
       && item.request.callId === input.callId && item.request.toolName === input.toolName)
-    if (correlatedExecutions.length !== 1) return undefined
+    if (correlatedExecutions.length !== 1) return fail('correlated-executions', { found: correlatedExecutions.length, total: executions.length })
     const execution = correlatedExecutions[0]!
     const commitment = execution.catalogCommitment
     const rootRequestEventSeq = execution.request.kind === 'model-tool-call'
@@ -244,7 +248,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       || header === undefined || commitment.requestHeaderEventSeq >= rootRequestEventSeq
       || rootRequestEventSeq > execution.request.eventSeq
       || canonicalJson((header.tools ?? []) as JsonValue) !== canonicalJson(commitment.wireSchemas as unknown as JsonValue)
-      || executions.some(item => item.catalogCommitment.fingerprint !== commitment.fingerprint)) return undefined
+      || executions.some(item => item.catalogCommitment.fingerprint !== commitment.fingerprint)) return fail('catalog-commitment')
     if (!isApprovalEnvironmentEvidenceV1(approval.environment)
       || approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
       || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId
@@ -252,14 +256,14 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       || approval.execution.actionHash !== execution.projection.actionHash
       || approval.execution.classificationCatalogFingerprint !== commitment.classificationCatalog.fingerprint
       || approval.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
-      || approval.execution.projectorId !== execution.projection.projectorId) return undefined
+      || approval.execution.projectorId !== execution.projection.projectorId) return fail('environment-binding')
     const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
     const classificationCatalog = frozenSnapshot(commitment.classificationCatalog)
     const executionSnapshots = executions.map(frozenSnapshot)
     const approvalSnapshots = approvals.map(frozenSnapshot)
     if (eventSnapshots === undefined || classificationCatalog === undefined
       || executionSnapshots.some(snapshot => snapshot === undefined)
-      || approvalSnapshots.some(snapshot => snapshot === undefined)) return undefined
+      || approvalSnapshots.some(snapshot => snapshot === undefined)) return fail('freeze')
     const frozenExecutions = executionSnapshots as typeof executions
     const frozenApprovals = approvalSnapshots as typeof approvals
     return Object.freeze({
