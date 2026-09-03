@@ -444,11 +444,25 @@ export class DefaultGatePipeline implements GatePipeline {
       })
     } catch (error: unknown) {
       const outcome = gateFailureOutcome(error, this.deps.mode)
+      if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
+        console.error('[approve-for-me gate] pre-review failure', JSON.stringify({
+          outcome,
+          code: error instanceof GateFailure ? error.code : 'non-gate',
+          message: error instanceof Error ? error.message : String(error),
+        }))
+      }
       if (outcome === 'cancelled' || (outcome !== 'unavailable' && outcome !== 'delegate')) return outcome
       const stage: GateFailureStageV1 = error instanceof GateFailure && error.code === 'deadline'
         ? 'deadline'
         : error instanceof GateFailure ? 'pre-review' : 'unexpected'
       return this.finishPostFactsFailure(request, facts, outcome, stage)
+    }
+    if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
+      console.error('[approve-for-me gate] sealed', JSON.stringify({
+        disposition: sealed.disposition,
+        deadlineAt: sealed.deadlineAt,
+        now: this.deps.now?.() ?? Date.now(),
+      }))
     }
     if (request.signal?.aborted) return 'cancelled'
     if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
