@@ -167,15 +167,41 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
         && seq === execution.request.eventSeq
       return !isPendingAction && seq !== undefined && seq > directUserFrontierSeq
     })
-    const sandboxDenialCandidates = new Set(pending.earlierSandboxDenials.map(denial =>
-      `${denial.source.requestEventSeq}\0${denial.source.callId}`))
+    const isSameActionSandboxDenialRetry = (attempt: ToolTrajectorySectionV1['attempts'][number]): boolean => {
+      const seq = requestSeq(attempt)
+      if (seq === undefined || attempt.outcome.kind !== 'sandbox-denied') return false
+      const denialMatches = pending.earlierSandboxDenials.filter(denial =>
+        denial.source.requestEventSeq === seq && denial.source.callId === attempt.request.callId)
+      if (denialMatches.length !== 1) return false
+      const denial = denialMatches[0]!
+      const executionMatches = input.facts.executionFacts.filter(item =>
+        item.request.eventSeq === seq
+        && item.request.callId === attempt.request.callId
+        && item.request.toolName === attempt.request.toolName)
+      if (executionMatches.length !== 1) return false
+      const earlier = executionMatches[0]!
+      const outcome = earlier.result?.outcome
+      if (earlier.result?.eventSeq !== denial.source.event.seq
+        || earlier.result.eventType !== denial.source.event.type
+        || outcome?.kind !== 'sandbox-denied'
+        || outcome.mode !== attempt.outcome.mode) return false
+      const earlierAction = earlier.projection.action
+      if (earlierAction.toolName !== pending.action.toolName
+        || earlier.projection.projectorId !== pending.projectorId
+        || canonicalJson(earlierAction.semantics) !== canonicalJson(pending.action.semantics)) return false
+      const earlierSandbox = earlierAction.requestedPermissions.filter(permission => permission.kind === 'sandbox')
+      const pendingSandbox = pending.action.requestedPermissions.filter(permission => permission.kind === 'sandbox')
+      const earlierOther = earlierAction.requestedPermissions.filter(permission => permission.kind !== 'sandbox')
+      const pendingOther = pending.action.requestedPermissions.filter(permission => permission.kind !== 'sandbox')
+      if (earlierSandbox.length !== 0 || pendingSandbox.length !== 1
+        || canonicalJson(earlierOther) !== canonicalJson(pendingOther)) return false
+      const rank: Readonly<Record<string, number>> = { 'read-only': 0, 'workspace-write': 1, 'danger-full-access': 2 }
+      const from = rank[attempt.outcome.mode]
+      const to = rank[pendingSandbox[0]!.scope]
+      return from !== undefined && to !== undefined && to > from
+    }
     const onlyCurrentSandboxDenialsIntervened = interveningAttempts.length > 0
-      && interveningAttempts.every(attempt => {
-        const seq = requestSeq(attempt)
-        return seq !== undefined
-          && attempt.outcome.kind === 'sandbox-denied'
-          && sandboxDenialCandidates.has(`${seq}\0${attempt.request.callId}`)
-      })
+      && interveningAttempts.every(isSameActionSandboxDenialRetry)
     // A sandbox-denied first attempt is the source-verified candidate the
     // Guardian must correlate to this escalation; it does not consume an exact
     // next-action directive by itself. Other intervening attempts do consume

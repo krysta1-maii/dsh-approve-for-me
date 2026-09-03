@@ -97,9 +97,16 @@ describe('DossierGateFactProjector', () => {
     })
 
     const retryJustification = 'Retry the exact sandbox-denied command.'
+    const projectorId = 'dsh-approve-for-me/shell-process-v1'
+    const sameSemantics = { family: 'shell-process-v1', value: { operation: 'bash', command: 'pwd', cwd: '/workspace', runInBackground: false } }
+    const deniedAction = createActionSnapshot({
+      toolName: 'bash', arguments: { command: 'pwd' }, projectorId, semantics: sameSemantics,
+    })
     const retryAction = createActionSnapshot({
       toolName: 'bash',
       arguments: { command: 'pwd', sandbox_permissions: 'workspace-write', justification: retryJustification },
+      projectorId,
+      semantics: sameSemantics,
       requestedPermissions: [{ kind: 'sandbox', scope: 'workspace-write', details: { justification: retryJustification } }],
     })
     const retryActionHash = hashAction(retryAction)
@@ -108,7 +115,21 @@ describe('DossierGateFactProjector', () => {
       scope: 'next-action',
       allow: { toolName: 'bash', arguments: retryAction.arguments, requestedPermissions: retryAction.requestedPermissions },
     })}`
-    const sandboxRetry = projector.project({
+    const deniedExecution = {
+      ...projectInput.facts.executionFacts[0]!,
+      request: { ...projectInput.facts.executionFacts[0]!.request, eventSeq: 8, callId: 'denied-1' },
+      projection: {
+        ...projectInput.facts.executionFacts[0]!.projection,
+        projectorId, action: deniedAction, actionHash: hashAction(deniedAction), observedAt: 8,
+      },
+      result: { eventSeq: 9, eventType: 'tool/result', outcome: { kind: 'sandbox-denied', mode: 'read-only' } },
+    }
+    const retryExecution = {
+      ...projectInput.facts.executionFacts[0]!,
+      request: { ...projectInput.facts.executionFacts[0]!.request, eventSeq: 10 },
+      projection: { ...projectInput.facts.executionFacts[0]!.projection, projectorId, action: retryAction, actionHash: retryActionHash },
+    }
+    const sandboxRetryInput = {
       request: { ...request, actionHash: retryActionHash },
       pending: { ...request, actionHash: retryActionHash, agent, authority },
       facts: {
@@ -117,13 +138,9 @@ describe('DossierGateFactProjector', () => {
         approvalSnapshots: [{
           ...projectInput.facts.approvalSnapshots[0],
           approvalAskedSeq: 11,
-          execution: { ...projectInput.facts.approvalSnapshots[0]!.execution, requestEventSeq: 10, actionHash: retryActionHash, projectorId: retryAction.projectorId },
+          execution: { ...projectInput.facts.approvalSnapshots[0]!.execution, requestEventSeq: 10, actionHash: retryActionHash, projectorId },
         }],
-        executionFacts: [{
-          ...projectInput.facts.executionFacts[0]!,
-          request: { ...projectInput.facts.executionFacts[0]!.request, eventSeq: 10 },
-          projection: { ...projectInput.facts.executionFacts[0]!.projection, projectorId: retryAction.projectorId, action: retryAction, actionHash: retryActionHash },
-        }],
+        executionFacts: [deniedExecution, retryExecution],
       },
       verifiedDossier: {
         dossier: {
@@ -137,17 +154,59 @@ describe('DossierGateFactProjector', () => {
             outcome: { kind: 'sandbox-denied', mode: 'read-only' },
           }] },
           pendingApproval: {
-            callId: 'call-1', toolName: 'bash', action: retryAction, actionHash: retryActionHash,
+            callId: 'call-1', toolName: 'bash', action: retryAction, actionHash: retryActionHash, projectorId,
             confinement: { kind: 'unconfined-composition' },
             earlierSandboxDenials: [{ source: { event: { seq: 9, type: 'tool/result' }, requestEventSeq: 8, callId: 'denied-1' } }],
           },
         },
       },
-    } as never)
+    }
+    const sandboxRetry = projector.project(sandboxRetryInput as never)
     expect(sandboxRetry).toMatchObject({
       assessment: {
         authorization: {
           level: 'explicit', targetCovered: true, sideEffectsCovered: false,
+          sourceRefs: ['event:7'], sandboxDenialCandidateRefs: ['event:9'],
+        },
+      },
+    })
+
+    const unrelatedDeniedAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'whoami' },
+      projectorId,
+      semantics: { family: 'shell-process-v1', value: { operation: 'bash', command: 'whoami', cwd: '/workspace', runInBackground: false } },
+    })
+    const unrelatedRetry = projector.project({
+      ...sandboxRetryInput,
+      facts: {
+        ...sandboxRetryInput.facts,
+        executionFacts: [{
+          ...deniedExecution,
+          projection: {
+            ...deniedExecution.projection,
+            action: unrelatedDeniedAction,
+            actionHash: hashAction(unrelatedDeniedAction),
+          },
+        }, retryExecution],
+      },
+      verifiedDossier: {
+        dossier: {
+          ...sandboxRetryInput.verifiedDossier.dossier,
+          currentTurnTools: { attempts: [{
+            ...sandboxRetryInput.verifiedDossier.dossier.currentTurnTools.attempts[0]!,
+            request: {
+              ...sandboxRetryInput.verifiedDossier.dossier.currentTurnTools.attempts[0]!.request,
+              rawArguments: '{"command":"whoami"}',
+            },
+          }] },
+        },
+      },
+    } as never)
+    expect(unrelatedRetry).toMatchObject({
+      assessment: {
+        authorization: {
+          level: 'unknown', targetCovered: false, sideEffectsCovered: false,
           sourceRefs: ['event:7'], sandboxDenialCandidateRefs: ['event:9'],
         },
       },
