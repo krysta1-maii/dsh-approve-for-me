@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包直接安装 npm 上已发布的 `0.1.2-alpha.2` 包；`npm run check` 通过 42 个测试文件、330 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 alpha.2 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
+> 当前代码状态（2026-09-03，rc.1 基线）：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），机器决策槽 v3。宿主闭包直接安装 npm 上已发布的 `0.1.2-rc.1` 包；`npm run check` 通过 44 个测试文件、356 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 rc.1 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
 >
 > 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前 automatic allow 必须来自 branded source-verified dossier 上 identity-valid 的 Reviewer allow，并在返回前完成 durable decision record；R4 baseline 作为 Reviewer 输入和 authorization-derived cache/replay fast-path 边界。
 
@@ -10,10 +10,10 @@
 
 `patch/dsh-user-approval/`：
 
-- `upstream.json` 锁定 `dsh-v0.1.2-alpha.2` / `0a53fb55be…`，patch version 2；
-- overlay 只含两处增量：`ApprovalRequestEvent.requestId`、`ApprovalService.registerMachinePolicy()`；alpha.2 上游在该包内的唯一改动（`order: 115` → `getContextOrder('APPROVAL_POLICY')`）已并入 overlay；
+- `upstream.json` 锁定 `dsh-v0.1.2-rc.1` / `a66e470204…`，patch version 4；
+- overlay 只含两处增量：`ApprovalRequestEvent.requestId`、`ApprovalService.registerMachinePolicy()`；
 - `build-fork.sh` 在 throwaway clone（`.build/upstream-clone`）中检出固定 commit 后重建、测试、构建、打包并写 SHA-256 sidecar；上游 checkout 只被读取，不再注册 worktree，HEAD 位置不影响构建；
-- `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz` 已通过 `verify:approval-fork` 与 `verify:target-host`。
+- `.build/dsh-user-approval-afm-0.1.2-rc.1.tgz` 已通过 `verify:approval-fork` 与 `verify:target-host`。
 
 ### P1 机器决策槽接入（完成）
 
@@ -25,7 +25,7 @@
 
 - `src/dsh/effective-tool-catalog.ts`：每个 execution 从 exact `ctx.tools.schemas(agent)` 与 canonical `request/header.tools` 双向规范化比对，冻结一个 `DurableToolCatalogCommitmentV1`；
 - native call 要求 wire/callable schema 集合精确一致；`run_code` PTC call 绑定 root model call header，nested dispatch 继承 root catalog；
-- `src/dsh/stock-tools.ts`：alpha.2 stock 工具名与 schema 指纹的闭集审批目录（`argumentSemanticsId: dsh-0.1.2-alpha.2-stock-v1`）+ shell/filesystem/network/opaque 语义投影；未识别工具进入 opaque 语义，永不自动授权；
+- `src/dsh/stock-tools.ts`：沿用已冻结的 alpha.2 stock 工具语义标识（`argumentSemanticsId: dsh-0.1.2-alpha.2-stock-v1`）并在 rc.1 上验证兼容，提供 schema 指纹闭集与 shell/filesystem/network/opaque 语义投影；未识别工具进入 opaque 语义，永不自动授权；
 - 缺历史、歧义 header、late/HMR drift、schema 指纹不一致均 fail-closed；cold resume 只消费 durable commitment，不回退全局 `tools.schemas()`。
 
 ### Guardian route catalog 绑定（完成）
@@ -76,10 +76,19 @@
 - `src/client/approval-flow-item.ts` 使用 DSH design tokens、字体尺寸轴、暗色主题颜色和 reduced-motion 约束，提供工具名、原因与查看操作入口；
 - UI 不监听／认领 `approval/request`，不写模型 surface，不新增私有 Session event，renderer 异常或缺席均不改变授权结果。
 
+### H6 插件配置与 Reviewer 模型选择（完成）
+
+- Host 通过可选 `ctx.settings.installSection()` 注册 `dsh-approve-for-me` namespace；无 Settings provider 时继续使用 loader 配置，不把 `settings` 变成必需服务；
+- namespace 只开放 `reviewer.provider`／`reviewer.model`，generation、policy/toolset、mode、trust envelope 与目录承诺仍由部署配置拥有；
+- `src/client/approval-settings-card.ts` 向 keyed root slot `settings.plugin.item` 注册同名卡片，读取 `remote.session.modelCatalog()`，用 DSH tokens、暗色兼容与 reduced-motion 自绘配置卡片；
+- 编辑先进入草稿，保存通过 namespace revision fence 原子修改两个 route 路径；并发 revision 漂移保留草稿并阻止覆盖，重置恢复组合层；
+- 设置提交先同步撤销旧 machine policy，再异步校验新 route；只有最新 generation 可以重新安装。慢旧 lookup、unavailable route、provider detach 与卸载 race 都不能恢复过期策略；
+- 切换到其他 route 时删除部署模型专属 reasoning effort，使用新 adapter 默认值；重置为部署 route 时恢复部署 effort。provider credential、retry 与私有设置始终由 DSH 持有。
+
 ## 验证
 
 ```bash
-npm run check                       # typecheck + 42 files / 330 tests + build
+npm run check                       # typecheck + 44 files / 356 tests + build
 npm run verify:managed-source       # sibling clean HEAD/remote/tree = reviewed lock
 npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host

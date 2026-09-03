@@ -21,6 +21,60 @@ const TRUST_ENVELOPE_TOOLS: readonly TrustEnvelopeToolFamily[] = [
 /** Stable Cordis plugin identity. */
 export const name = 'dsh-approve-for-me'
 
+/** User-settings namespace surfaced by the AFM plugin configuration card. */
+export const APPROVE_FOR_ME_SETTINGS_NAMESPACE = 'dsh-approve-for-me'
+
+/** The currently user-configurable Reviewer route. */
+export interface ApproveForMeSettings {
+  readonly reviewer: {
+    readonly provider: string
+    readonly model: string
+  }
+}
+
+/** Wire-visible settings schema; private deployment policy stays in loader config. */
+export const ApproveForMeSettings: z<ApproveForMeSettings> = z.object({
+  reviewer: z.object({
+    provider: z.string().min(1).required(),
+    model: z.string().min(1).required(),
+  }).required(),
+})
+
+/** Project the loader entry onto the subset users may edit live. */
+export function reviewerSettingsFromConfig(config: Config): ApproveForMeSettings {
+  return Object.freeze({
+    reviewer: Object.freeze({
+      provider: config.reviewer.provider,
+      model: config.reviewer.model,
+    }),
+  })
+}
+
+/**
+ * Apply a settings-selected route without carrying an incompatible deployment
+ * reasoning effort onto a different model. Returning to the deployment route
+ * restores its configured effort.
+ */
+export function configWithReviewerSettings(
+  config: Config,
+  settings: ApproveForMeSettings,
+): Config {
+  const sameDeploymentRoute = settings.reviewer.provider === config.reviewer.provider
+    && settings.reviewer.model === config.reviewer.model
+  const { reasoningEffort: deploymentEffort, ...reviewer } = config.reviewer
+  return {
+    ...config,
+    reviewer: {
+      ...reviewer,
+      provider: settings.reviewer.provider,
+      model: settings.reviewer.model,
+      ...sameDeploymentRoute && deploymentEffort !== undefined
+        ? { reasoningEffort: deploymentEffort }
+        : {},
+    },
+  }
+}
+
 /**
  * Cordis service injects. Every listed service is REQUIRED: a missing service
  * means this plugin cannot mount, never a silently degraded Reviewer.

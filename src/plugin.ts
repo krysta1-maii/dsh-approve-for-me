@@ -1,8 +1,21 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
-import { Config, normalizeConfig } from './config.js'
-import type { Config as ApproveForMeConfig, NormalizedConfig } from './config.js'
+import type {} from '@deepseek-ai/dsh-settings'
+import type { ManagedProviderRegistration } from 'dsh-managed-agent'
+import {
+  APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+  ApproveForMeSettings,
+  Config,
+  configWithReviewerSettings,
+  normalizeConfig,
+  reviewerSettingsFromConfig,
+} from './config.js'
+import type {
+  ApproveForMeSettings as ApproveForMeSettingsValue,
+  Config as ApproveForMeConfig,
+  NormalizedConfig,
+} from './config.js'
 import { DefaultDecisionChannel } from './application/decision-channel.js'
 import { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
 import { GateFailure } from './application/gate-failure.js'
@@ -54,6 +67,17 @@ export interface ApproveForMePlugin {
   /** Non-sensitive bounded Reviewer execution measurements. */
   getReviewerTelemetryMetrics(): ReviewerTelemetrySnapshotV1
   dispose(): Promise<void>
+}
+
+/** Internal mount failure whose acquired-provider rollback must fence retries. */
+class ApproveForMeMountError extends Error {
+  readonly rollback: Promise<void>
+
+  constructor(cause: unknown, rollback: Promise<void>) {
+    super(cause instanceof Error ? cause.message : 'dsh-approve-for-me mount failed', { cause })
+    this.name = 'ApproveForMeMountError'
+    this.rollback = rollback
+  }
 }
 
 /**
@@ -120,6 +144,16 @@ export function installApproveForMe(
   options: ApproveForMeInstallOptions = {},
 ): ApproveForMePlugin {
   const normalized = normalizeConfig(config)
+  const approvalService = ctx as unknown as {
+    approval?: { registerMachinePolicy?: (policy: PatchedMachineApprovalPolicyLike) => () => void }
+  }
+  const approval = approvalService.approval
+  if (approval?.registerMachinePolicy === undefined) {
+    throw new Error(
+      'the patched @deepseek-ai/dsh-user-approval fork (registerMachinePolicy) is not installed; '
+      + 'refusing to mount a second approval/request authorization path',
+    )
+  }
   const toolRuntime = (ctx as unknown as { tools?: { schemas?: (agent: Agent) => readonly unknown[] } }).tools
   if (typeof toolRuntime?.schemas !== 'function') {
     throw new TypeError('dsh-approve-for-me requires scoped ctx.tools.schemas(agent)')
@@ -169,14 +203,24 @@ export function installApproveForMe(
       : createDefaultActionProjector(options.projectPermissions))
   const bridge = createCaptureBridge(actionProjector, captures)
 
-  const registration = ctx.managedAgents.registerProvider(createReviewerProvider({
+  let registration: ManagedProviderRegistration | undefined
+  let rollbackLanes: SerialLanes | undefined
+  let rollbackDurableFacts: DshStorageDomainFactRepositories | undefined
+  let rollbackRecords: DshStorageDomainGateDecisionRecordStore | undefined
+  let stopPreExecute = () => {}
+  let stopPostExecute = () => {}
+  let stopResult = () => {}
+  let stopSessionEvent = () => {}
+  let stopMachinePolicy = () => {}
+  try {
+  const acquiredRegistration = registration = ctx.managedAgents.registerProvider(createReviewerProvider({
     submitDecision: {
       submit: (payload, actualReviewerSessionId) =>
         channel.submit(payload, { actualReviewerSessionId }),
     },
   }))
-  const port = createManagedReviewerPort(registration.controller)
-  const lanes = new SerialLanes()
+  const port = createManagedReviewerPort(acquiredRegistration.controller)
+  const lanes = rollbackLanes = new SerialLanes()
   const reviewerTelemetry = new InMemoryReviewerTelemetry()
   const reviewerTelemetrySink: ReviewerTelemetrySink = {
     observe(observation) {
@@ -200,7 +244,7 @@ export function installApproveForMe(
   // Parent-session facts must survive a cold resume. Failed Storage Domain
   // access remains non-authorizing because the source-backed resolver cannot
   // correlate an approval ask without both sidecars.
-  const durableFacts = new DshStorageDomainFactRepositories(
+  const durableFacts = rollbackDurableFacts = new DshStorageDomainFactRepositories(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
   )
   const executionFacts = new DshStorageDomainExecutionFactRepository(durableFacts)
@@ -267,7 +311,7 @@ export function installApproveForMe(
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns
   // unavailable, so no automatic grant can escape the durability boundary.
-  const records = new DshStorageDomainGateDecisionRecordStore(
+  const records = rollbackRecords = new DshStorageDomainGateDecisionRecordStore(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
   )
 
@@ -344,54 +388,83 @@ export function installApproveForMe(
       return actionHash
     },
   })
-  const approvalService = ctx as unknown as {
-    approval?: { registerMachinePolicy?: (policy: PatchedMachineApprovalPolicyLike) => () => void }
-  }
-  if (approvalService.approval?.registerMachinePolicy === undefined) {
-    throw new Error(
-      'the patched @deepseek-ai/dsh-user-approval fork (registerMachinePolicy) is not installed; '
-      + 'refusing to mount a second approval/request authorization path',
-    )
-  }
-  const stopMachinePolicy = approvalService.approval.registerMachinePolicy(machinePolicy)
-
-  const stopPreExecute = ctx.on('tools/pre-execute', (exec, next) =>
-    bridge.preExecute(exec, () => executionProjection.preExecute(exec, next)), { prepend: true })
-  const stopPostExecute = ctx.on('tools/post-execute', (exec, result, next) =>
-    executionProjection.postExecute(exec, result, next), { prepend: true })
-  const stopResult = ctx.on('tools/result', (exec, result) => {
-    bridge.observeResult(exec)
-    executionProjection.observeResult(exec, result)
-    scopedCatalogs.release(exec)
-  })
-  const stopSessionEvent = ctx.on('session/event', (session, event) => {
-    const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
-    const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)
-    if (agent !== undefined) {
-      void executionProjection.observeSessionEvent(agent, event as never).catch(() => {
-        // A failed observer write is non-authorizing; an unhandled rejection
-        // must not be able to take down the Host process.
-      })
-    }
-  })
-
+  stopPreExecute = ctx.on('tools/pre-execute', (exec, next) =>
+      bridge.preExecute(exec, () => executionProjection.preExecute(exec, next)), { prepend: true })
+    stopPostExecute = ctx.on('tools/post-execute', (exec, result, next) =>
+      executionProjection.postExecute(exec, result, next), { prepend: true })
+    stopResult = ctx.on('tools/result', (exec, result) => {
+      bridge.observeResult(exec)
+      executionProjection.observeResult(exec, result)
+      scopedCatalogs.release(exec)
+    })
+    stopSessionEvent = ctx.on('session/event', (session, event) => {
+      const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
+      const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)
+      if (agent !== undefined) {
+        void executionProjection.observeSessionEvent(agent, event as never).catch(() => {
+          // A failed observer write is non-authorizing; an unhandled rejection
+          // must not be able to take down the Host process.
+        })
+      }
+    })
+    // The machine policy is the commit point: every fallible event hook is
+    // installed first, so a partial mount can never leave authorization armed.
+    stopMachinePolicy = approval.registerMachinePolicy(machinePolicy)
+  let disposal: Promise<void> | undefined
   return {
     config: normalized,
     getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
     getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
-    async dispose(): Promise<void> {
+    dispose(): Promise<void> {
+      if (disposal !== undefined) return disposal
+      // Authorization and observers are revoked synchronously; concurrent
+      // callers then join one complete ordered drain.
       stopMachinePolicy()
       stopSessionEvent()
-      await lifecycle.dispose()
       stopResult()
       stopPostExecute()
       stopPreExecute()
-      await lanes.drain()
-      await durableFacts.drain()
-      await records.drain()
-      channel.dispose()
-      await registration.dispose()
+      disposal = (async () => {
+        const errors: unknown[] = []
+        for (const close of [
+          () => lifecycle.dispose(),
+          () => lanes.drain(),
+          () => durableFacts.drain(),
+          () => records.drain(),
+        ]) {
+          try { await close() } catch (error) { errors.push(error) }
+        }
+        try { channel.dispose() } catch (error) { errors.push(error) }
+        try { await acquiredRegistration.dispose() } catch (error) { errors.push(error) }
+        if (errors.length > 0) throw new AggregateError(errors, 'dsh-approve-for-me disposal failed')
+      })()
+      return disposal
     },
+  }
+  } catch (error) {
+    const rollbackErrors: unknown[] = []
+    for (const stop of [stopMachinePolicy, stopSessionEvent, stopResult, stopPostExecute, stopPreExecute]) {
+      try { stop() } catch (reason) { rollbackErrors.push(reason) }
+    }
+    const rollback = (async () => {
+      for (const close of [
+        () => lifecycle.dispose(),
+        () => rollbackLanes?.drain(),
+        () => rollbackDurableFacts?.drain(),
+        () => rollbackRecords?.drain(),
+      ]) {
+        try { await close() } catch (reason) { rollbackErrors.push(reason) }
+      }
+      try { channel.dispose() } catch (reason) { rollbackErrors.push(reason) }
+      try { await registration?.dispose() } catch (reason) { rollbackErrors.push(reason) }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(rollbackErrors, 'dsh-approve-for-me mount rollback failed')
+      }
+    })()
+    // Direct programmatic callers may only inspect the thrown error; observe the
+    // rollback here while the loader additionally fences retries on the promise.
+    void rollback.catch(reason => ctx.logger.error(reason))
+    throw new ApproveForMeMountError(error, rollback)
   }
 }
 
@@ -400,46 +473,137 @@ export function installApproveForMe(
  * so unload and HMR revoke the Controller before a replacement can register.
  */
 export async function apply(ctx: Context, config: ApproveForMeConfig): Promise<void> {
-  const normalized = normalizeConfig(config)
+  // Reject an invalid composition entry before registering any optional runtime
+  // integration. The settings source can only replace the Reviewer route.
+  normalizeConfig(config)
+  const entrySettings = reviewerSettingsFromConfig(config)
+  let settingsSource: () => ApproveForMeSettingsValue = () => entrySettings
   let topologyGeneration = 0
   let active: ApproveForMePlugin | undefined
   let disposed = false
-  let transition: Promise<void> = Promise.resolve()
+  let started = false
+  let settingsFaulted = false
+  let retirementTail: Promise<void> = Promise.resolve()
+  let latestReconcile: Promise<void> = Promise.resolve()
+  let lookupAbort: AbortController | undefined
+  const pending = new Set<Promise<void>>()
 
-  const reconcile = (): Promise<void> => {
-    const requestedGeneration = ++topologyGeneration
+  /** Revoke the current policy synchronously and fence every late lookup. */
+  const suspend = (): { readonly generation: number; readonly retirement: Promise<void> } => {
+    const generation = ++topologyGeneration
+    lookupAbort?.abort()
+    lookupAbort = undefined
     const invalidated = active
     active = undefined
-    // dispose() revokes the machine policy synchronously before its first
-    // await. No catalog transition can leave an old policy armed.
-    const revoke = invalidated?.dispose().catch(() => {}) ?? Promise.resolve()
-    transition = Promise.allSettled([transition, revoke]).then(async () => {
-      if (disposed || requestedGeneration !== topologyGeneration) return
-      try {
-        await resolveReviewerModelRouteFromDshCatalog(ctx.llm, normalized.preset.modelRoute)
-      } catch {
-        // A missing, ambiguous, or stale route is non-authorizing. A later
-        // adapters-updated event retries against the fresh DSH catalogs.
-        return
-      }
-      if (disposed || requestedGeneration !== topologyGeneration) return
-      active = installApproveForMe(ctx, config)
-    })
-    return transition
+    if (invalidated !== undefined) {
+      // dispose() revokes the machine policy before its first await. Keep a
+      // failed teardown poisonous: uncertain leftovers must never be overlaid.
+      const retirement = invalidated.dispose()
+      retirementTail = retirementTail.then(() => retirement)
+      // Keep the rejecting tail as a poison barrier, but observe it even when a
+      // settings-registration throw prevents any reconcile from awaiting it.
+      void retirementTail.catch(error => ctx.logger.error(error))
+    }
+    return { generation, retirement: retirementTail }
   }
 
-  const stopTopology = ctx.on('llm/adapters-updated', () => {
-    void reconcile()
-  })
-  await reconcile()
+  /** Resolve routes concurrently; only the newest generation may commit. */
+  const reconcile = async (): Promise<void> => {
+    const { generation, retirement } = suspend()
+    const requestedConfig = configWithReviewerSettings(config, settingsSource())
+    const normalized = normalizeConfig(requestedConfig)
+    const controller = new AbortController()
+    lookupAbort = controller
+    await retirement
+    if (disposed || settingsFaulted || generation !== topologyGeneration) return
+    try {
+      await resolveReviewerModelRouteFromDshCatalog(
+        ctx.llm,
+        normalized.preset.modelRoute,
+        controller.signal,
+      )
+    } catch {
+      // Missing, ambiguous, stale, or aborted routes are non-authorizing. A
+      // settings correction or adapters-updated event retries the fresh catalog.
+      return
+    }
+    if (disposed || generation !== topologyGeneration || controller.signal.aborted) return
+    try {
+      active = installApproveForMe(ctx, requestedConfig)
+    } catch (error) {
+      if (error instanceof ApproveForMeMountError) {
+        retirementTail = retirementTail.then(() => error.rollback)
+        void retirementTail.catch(reason => ctx.logger.error(reason))
+        await retirementTail
+      }
+      throw error
+    }
+  }
 
+  const track = (task: Promise<void>): Promise<void> => {
+    pending.add(task)
+    void task.then(() => pending.delete(task), () => pending.delete(task))
+    latestReconcile = task
+    return task
+  }
+  const scheduleReconcile = () => {
+    const task = track(reconcile())
+    void task.catch(error => ctx.logger.error(error))
+  }
+
+  // Await the optional injection fiber before the first reconcile. When the
+  // service is absent the pending fiber settles immediately; when present, its
+  // stored section is authoritative before any policy can be armed.
+  const settingsFiber = ctx.inject(['settings'], settingsCtx => {
+    // A late provider attachment must retire the fallback policy before reading
+    // a possibly-invalid stored section. A registration failure then stays dark
+    // across later topology signals until a successful attachment clears it.
+    settingsFaulted = true
+    suspend()
+    let attaching = true
+    settingsCtx.settings.installSection(
+      ctx,
+      APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+      ApproveForMeSettings,
+      entrySettings,
+      {
+        setSource(source) {
+          settingsSource = source
+        },
+        validate(value) {
+          // Keep loader and user-selected routes under the same config boundary.
+          normalizeConfig(configWithReviewerSettings(config, value))
+        },
+        onChange() {
+          if (started && !attaching) scheduleReconcile()
+        },
+      },
+    )
+    attaching = false
+    settingsFaulted = false
+    if (started) scheduleReconcile()
+  })
+  await settingsFiber
+
+  const stopTopology = ctx.on('llm/adapters-updated', () => {
+    if (started) scheduleReconcile()
+  })
   ctx.effect(() => async () => {
+    started = false
     disposed = true
-    topologyGeneration += 1
     stopTopology()
-    const plugin = active
-    active = undefined
-    await plugin?.dispose()
-    await transition
+    const { retirement } = suspend()
+    await Promise.allSettled([...pending])
+    await retirement
   }, 'dsh-approve-for-me.install()')
+
+  started = true
+  await track(reconcile())
+  // A topology signal racing startup may supersede the first lookup; do not
+  // report the loader ready until the newest generation has also settled.
+  while (latestReconcile !== undefined) {
+    const observed = latestReconcile
+    await observed
+    if (observed === latestReconcile) break
+  }
 }

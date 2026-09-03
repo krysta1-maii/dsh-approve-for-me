@@ -66,6 +66,8 @@ interface InstallHarness {
     tools: { schemas(agent: unknown): readonly unknown[] }
     on(event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown): () => void
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
+    inject(services: readonly string[], listener: (ctx: unknown) => void): Promise<void>
+    logger: { error(error: unknown): void }
     llm: {
       listProviders(): Array<{ id: string; name: string }>
       listModels(provider: string): Promise<Array<{ provider: string; id: string; name: string }>>
@@ -207,6 +209,8 @@ function harness(): InstallHarness {
       return () => {}
     },
     effect(setup: () => (() => void | Promise<void>)) { return setup() },
+    inject: vi.fn(async () => {}),
+    logger: { error: vi.fn() },
   }
   return {
     ctx: ctx as unknown as InstallHarness['ctx'],
@@ -337,6 +341,95 @@ describe('installApproveForMe composition root', () => {
     expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
   })
 
+  it('uses a pre-mounted settings route before arming any Reviewer policy', async () => {
+    const h = harness()
+    const selected = { reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' } }
+    const installSection = vi.fn((_owner, namespace, _schema, base, hooks: {
+      setSource(source: () => typeof selected): void
+      onChange(): void
+    }) => {
+      expect(namespace).toBe('dsh-approve-for-me')
+      expect(base).toEqual({ reviewer: { provider: 'deepseek', model: 'deepseek-chat' } })
+      hooks.setSource(() => selected)
+      hooks.onChange()
+    })
+    h.ctx.inject = vi.fn(async (_services, listener) => {
+      listener({ settings: { installSection } })
+    })
+    h.ctx.llm.listProviders = vi.fn(() => [{ id: 'openai-codex', name: 'Codex' }])
+    h.ctx.llm.listModels = vi.fn(async provider => [{ provider, id: 'gpt-5.6-terra', name: 'GPT 5.6 Terra' }])
+    h.ctx.llm.resolveModelInfo = vi.fn(async (provider, model) => ({ provider, id: model, name: model }))
+
+    await approveForMe.apply(h.ctx as unknown as Context, config)
+
+    expect(installSection).toHaveBeenCalledOnce()
+    expect(h.ctx.llm.listModels).toHaveBeenCalledTimes(1)
+    expect(h.ctx.llm.listModels).toHaveBeenCalledWith('openai-codex')
+    expect(h.ctx.llm.resolveModelInfo).toHaveBeenCalledWith('openai-codex', 'gpt-5.6-terra', expect.any(AbortSignal))
+    expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' })
+  })
+
+  it('retires the old policy immediately for an unavailable settings route and rearms on catalog recovery', async () => {
+    const h = harness()
+    let selected = { reviewer: { provider: 'deepseek', model: 'deepseek-chat' } }
+    let settingsHooks: { onChange(): void } | undefined
+    h.ctx.inject = vi.fn(async (_services, listener) => {
+      listener({ settings: { installSection: (_owner: unknown, _namespace: string, _schema: unknown, _base: unknown, hooks: {
+        setSource(source: () => typeof selected): void
+        onChange(): void
+      }) => {
+        settingsHooks = hooks
+        hooks.setSource(() => selected)
+        hooks.onChange()
+      } } })
+    })
+    const listProviders = vi.fn(() => [
+      { id: 'deepseek', name: 'DeepSeek' },
+      { id: 'openai-codex', name: 'Codex' },
+    ])
+    let terraAvailable = false
+    const listModels = vi.fn(async (provider: string) => provider === 'openai-codex'
+      ? terraAvailable ? [{ provider, id: 'gpt-5.6-terra', name: 'GPT 5.6 Terra' }] : []
+      : [{ provider, id: 'deepseek-chat', name: 'DeepSeek Chat' }])
+    h.ctx.llm.listProviders = listProviders
+    h.ctx.llm.listModels = listModels
+    h.ctx.llm.resolveModelInfo = vi.fn(async (provider, model) => ({ provider, id: model, name: model }))
+
+    await approveForMe.apply(h.ctx as unknown as Context, config)
+    expect(h.machinePolicy).toBeDefined()
+
+    selected = { reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' } }
+    settingsHooks!.onChange()
+    expect(h.machinePolicy).toBeUndefined()
+    await vi.waitFor(() => expect(listModels).toHaveBeenCalledWith('openai-codex'))
+    expect(h.machinePolicy).toBeUndefined()
+
+    terraAvailable = true
+    h.listeners.topology?.()
+    await vi.waitFor(() => expect(h.machinePolicy).toMatchObject({ id: 'dsh-approve-for-me/v1' }))
+    expect(h.ctx.llm.resolveModelInfo).toHaveBeenLastCalledWith('openai-codex', 'gpt-5.6-terra', expect.any(AbortSignal))
+  })
+
+  it('stays dormant after a late settings attachment fails, even on later topology signals', async () => {
+    const h = harness()
+    let attachSettings: ((ctx: unknown) => void) | undefined
+    h.ctx.inject = vi.fn(async (_services, listener) => {
+      attachSettings = listener
+    })
+
+    await approveForMe.apply(h.ctx as unknown as Context, config)
+    expect(h.machinePolicy).toBeDefined()
+
+    expect(() => attachSettings!({
+      settings: { installSection: () => { throw new Error('invalid stored AFM settings') } },
+    })).toThrow(/invalid stored AFM settings/)
+    expect(h.machinePolicy).toBeUndefined()
+
+    h.listeners.topology?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.machinePolicy).toBeUndefined()
+  })
+
   it('withdraws on topology drift and rearms only after the configured route returns', async () => {
     const h = harness()
     const listModels = vi.fn(async () => [{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }])
@@ -460,11 +553,73 @@ describe('installApproveForMe composition root', () => {
     expect(Object.hasOwn(h.listeners, 'answerer')).toBe(false)
   })
 
+  it('keeps the machine policy unarmed and rolls back the provider when hook mounting fails', async () => {
+    const h = harness()
+    const originalOn = h.ctx.on.bind(h.ctx)
+    h.ctx.on = ((event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown) => {
+      if (event === 'tools/result') throw new Error('hook mount failed')
+      return originalOn(event, listener)
+    })
+
+    expect(() => installApproveForMe(h.ctx as unknown as Context, config)).toThrow(/hook mount failed/)
+    expect(h.machinePolicy).toBeUndefined()
+    await vi.waitFor(() => expect(h.disposeRegistration).toHaveBeenCalledOnce())
+  })
+
+  it('keeps later topology reconciles dormant after a retirement failure', async () => {
+    const h = harness()
+    const registerProvider = vi.spyOn(h.ctx.managedAgents, 'registerProvider')
+    h.disposeRegistration.mockRejectedValue(new Error('managed provider retirement failed'))
+    await approveForMe.apply(h.ctx as unknown as Context, config)
+    expect(registerProvider).toHaveBeenCalledOnce()
+
+    h.listeners.topology?.()
+    expect(h.machinePolicy).toBeUndefined()
+    await vi.waitFor(() => expect(h.ctx.logger.error).toHaveBeenCalled())
+
+    h.listeners.topology?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.machinePolicy).toBeUndefined()
+    expect(registerProvider).toHaveBeenCalledOnce()
+  })
+
+  it('does not settle loader reconciliation before post-registration rollback finishes', async () => {
+    const h = harness()
+    const registerProvider = h.ctx.managedAgents.registerProvider.bind(h.ctx.managedAgents)
+    let releaseRollback!: () => void
+    const rollbackBarrier = new Promise<void>(resolve => { releaseRollback = resolve })
+    const rollbackDispose = vi.fn(() => rollbackBarrier)
+    h.ctx.managedAgents.registerProvider = vi.fn(provider => ({
+      ...registerProvider(provider),
+      dispose: rollbackDispose,
+    }))
+    const originalOn = h.ctx.on.bind(h.ctx)
+    h.ctx.on = ((event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown) => {
+      if (event === 'tools/result') throw new Error('post-registration mount failed')
+      return originalOn(event, listener)
+    })
+
+    const applying = approveForMe.apply(h.ctx as unknown as Context, config)
+    await vi.waitFor(() => expect(rollbackDispose).toHaveBeenCalledOnce())
+    let settled = false
+    void applying.then(() => { settled = true }, () => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(h.machinePolicy).toBeUndefined()
+
+    releaseRollback()
+    await expect(applying).rejects.toThrow(/post-registration mount failed/)
+  })
+
   it('disposes the old registration and can be remounted after unload', async () => {
     const first = harness()
     const plugin = installApproveForMe(first.ctx as unknown as Context, config)
-    await plugin.dispose()
+    const firstDisposal = plugin.dispose()
+    const secondDisposal = plugin.dispose()
+    expect(secondDisposal).toBe(firstDisposal)
+    await firstDisposal
     expect(first.disposeRegistration).toHaveBeenCalledOnce()
+    expect(first.disposeMachinePolicy).toHaveBeenCalledOnce()
 
     const second = harness()
     const reloaded = installApproveForMe(second.ctx as unknown as Context, config)

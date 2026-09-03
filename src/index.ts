@@ -356,9 +356,22 @@ export type {
   StorageWriteResult,
 } from './application/record-storage.js'
 
-// Cordis plugin entry and serializable config.
-export { Config, inject, name, normalizeConfig } from './config.js'
-export type { Config as ApproveForMeConfig, NormalizedConfig } from './config.js'
+// Cordis plugin entry, loader config, and live user-settings projection.
+export {
+  APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+  ApproveForMeSettings,
+  Config,
+  configWithReviewerSettings,
+  inject,
+  name,
+  normalizeConfig,
+  reviewerSettingsFromConfig,
+} from './config.js'
+export type {
+  ApproveForMeSettings as ApproveForMeSettingsValue,
+  Config as ApproveForMeConfig,
+  NormalizedConfig,
+} from './config.js'
 export {
   apply,
   installApproveForMe,

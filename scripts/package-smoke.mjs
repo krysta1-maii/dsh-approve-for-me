@@ -30,18 +30,23 @@ try {
   }
   const manifest = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }))
   if (manifest.name !== 'dsh-approve-for-me' || manifest.version !== '0.1.0-dev.0') throw new Error('packed identity mismatch')
+  const clientInject = manifest.dsh?.client?.inject ?? []
   if (manifest.exports?.['./client']?.default !== './lib/client.js'
     || manifest.dsh?.client?.platform !== 'web'
-    || !manifest.dsh.client.inject?.includes('@deepseek-ai/dsh-client-ui-chat')) {
-    throw new Error('packed artifact is missing the Web approval stream client manifest')
+    || !clientInject.includes('@deepseek-ai/dsh-client-ui-chat')
+    || !clientInject.includes('@deepseek-ai/dsh-api-remotes')
+    || !clientInject.includes('@deepseek-ai/dsh-client-ui-settings')
+    || !clientInject.includes('@deepseek-ai/dsh-client-ui-settings-plugins')) {
+    throw new Error('packed artifact is missing the Web approval and settings client graph')
   }
   if (entries.includes('package/lib/client.js.map')) {
     throw new Error('packed Web client must not disclose embedded TypeScript sources')
   }
   const client = execFileSync('tar', ['-xOf', tarball, 'package/lib/client.js'], { encoding: 'utf8' })
   if (!client.includes('window.__ModuleLoader__.load({') || !client.includes('id: "dsh-approve-for-me"')
-    || !client.includes('approval/asked') || !client.includes('approval/decided')) {
-    throw new Error('packed Web client is not a DSH lazy module with the approval audit projection')
+    || !client.includes('approval/asked') || !client.includes('approval/decided')
+    || !client.includes('settings.plugin.item') || !client.includes('modelCatalog')) {
+    throw new Error('packed Web client is not a DSH lazy module with approval and settings surfaces')
   }
   console.log(`PASS package smoke ${tarballs[0]} (${entries.length} entries)`)
 } finally {

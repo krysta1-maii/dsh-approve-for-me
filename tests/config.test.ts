@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { Config, fingerprintApprovalToolCatalogV1, inject, name, normalizeConfig } from '../src/index.js'
+import {
+  APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+  ApproveForMeSettings,
+  Config,
+  configWithReviewerSettings,
+  fingerprintApprovalToolCatalogV1,
+  inject,
+  name,
+  normalizeConfig,
+  reviewerSettingsFromConfig,
+} from '../src/index.js'
 
 const toolCatalog = (descriptors: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string; readonly classification: 'ordinary' | 'gate-ask' | 'body-escalation'; readonly actionSemanticsFamily: string; readonly actionProjectorId: string }[]) => {
   const unsealed = { version: 1 as const, argumentSemanticsId: 'default-v1', fingerprint: '', descriptors }
@@ -21,6 +31,40 @@ describe('plugin config', () => {
   it('exposes the stable plugin identity and required injects', () => {
     expect(name).toBe('dsh-approve-for-me')
     expect([...inject]).toEqual(['agents', 'managedAgents', 'tools', 'systemPrompt', 'approval', 'storageDomain', 'llm'])
+  })
+
+  it('exposes a narrow live settings namespace for the Reviewer route', () => {
+    expect(APPROVE_FOR_ME_SETTINGS_NAMESPACE).toBe('dsh-approve-for-me')
+    expect(ApproveForMeSettings({
+      reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' },
+    })).toEqual({ reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' } })
+    expect(() => ApproveForMeSettings({ reviewer: { provider: '', model: 'x' } } as never)).toThrow()
+  })
+
+  it('projects a frozen settings base and changes only the Reviewer route', () => {
+    const composition = valid()
+    const settings = reviewerSettingsFromConfig(composition)
+    expect(settings).toEqual({ reviewer: { provider: 'deepseek', model: 'deepseek-chat' } })
+    expect(Object.isFrozen(settings)).toBe(true)
+    expect(Object.isFrozen(settings.reviewer)).toBe(true)
+
+    const switched = configWithReviewerSettings(composition, {
+      reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' },
+    })
+    expect(switched).toMatchObject({
+      reviewer: {
+        generation: 'reviewer-v1',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-terra',
+        policyVersion: 'policy-v1',
+        toolsetVersion: 1,
+      },
+    })
+    expect(switched.reviewer).not.toHaveProperty('reasoningEffort')
+    expect(composition.reviewer.reasoningEffort).toBe('high')
+
+    const reset = configWithReviewerSettings(composition, settings)
+    expect(reset.reviewer.reasoningEffort).toBe('high')
   })
 
   it('normalizes defaults and derives the Reviewer preset', () => {

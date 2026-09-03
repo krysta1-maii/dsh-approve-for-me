@@ -8,6 +8,13 @@ import {
   type ApprovalFlowData,
 } from '../../src/client/approval-conversation.js'
 import { ApprovalFlowItem, APPROVAL_FLOW_STYLES } from '../../src/client/approval-flow-item.js'
+import {
+  APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+  APPROVAL_SETTINGS_STYLES,
+  approvalModelCandidates,
+  decodeApprovalModelSettings,
+  hasReviewerRouteOverride,
+} from '../../src/client/approval-settings-card.js'
 
 function event(type: string, seq: number, data: Record<string, unknown>): SessionEventLike {
   return { type, seq, time: 1_000 + seq, data } as SessionEventLike
@@ -127,19 +134,70 @@ describe('approval Chat projection', () => {
   })
 })
 
+describe('AFM plugin settings card model', () => {
+  it('narrows the settings section and detects nested user overrides', () => {
+    expect(decodeApprovalModelSettings({
+      reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra', ignored: true },
+      privatePolicy: 'not exposed',
+    })).toEqual({ reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' } })
+    expect(decodeApprovalModelSettings({ reviewer: { provider: '', model: 'x' } })).toBeUndefined()
+    expect(hasReviewerRouteOverride({ reviewer: { model: 'gpt-5.6-terra' } })).toBe(true)
+    expect(hasReviewerRouteOverride({ reviewer: {} })).toBe(false)
+  })
+
+  it('uses exact catalog ids and retains a selected route that is unavailable', () => {
+    const groups = [{
+      id: 'openai-codex',
+      name: 'Codex',
+      models: [{ id: 'gpt-5.6-terra', name: 'GPT 5.6 Terra', description: 'Reviewer route' }],
+    }]
+    expect(approvalModelCandidates(groups, { provider: 'openai-codex', model: 'gpt-5.6-terra' }))
+      .toEqual([expect.objectContaining({
+        provider: 'openai-codex',
+        model: 'gpt-5.6-terra',
+        providerName: 'Codex',
+        modelName: 'GPT 5.6 Terra',
+        availability: 'available',
+      })])
+    expect(approvalModelCandidates(groups, { provider: 'cpa', model: 'gpt-5.6-sol' }, new Set()).at(-1))
+      .toMatchObject({ provider: 'cpa', model: 'gpt-5.6-sol', availability: 'unavailable' })
+    expect(approvalModelCandidates(groups, { provider: 'cpa', model: 'gpt-5.6-sol' }, new Set(['cpa'])).at(-1))
+      .toMatchObject({ provider: 'cpa', model: 'gpt-5.6-sol', availability: 'unknown' })
+  })
+
+  it('styles the card with DSH tokens and reduced-motion handling', () => {
+    expect(APPROVAL_SETTINGS_STYLES).toContain('var(--dsw-alias-bg-layer-3)')
+    expect(APPROVAL_SETTINGS_STYLES).toContain('var(--dsw-alias-brand-primary)')
+    expect(APPROVAL_SETTINGS_STYLES).toContain('@media (prefers-reduced-motion:reduce)')
+  })
+})
+
 describe('AFM client plugin', () => {
   it('registers the lifecycle definition, localized keyed renderer, and scoped styles', () => {
     const registerDefinition = vi.fn(() => () => {})
     const registerLocale = vi.fn(() => () => {})
     const registerSlot = vi.fn(() => () => {})
     const effects: string[] = []
+    const bindSettings = vi.fn(() => ({
+      getSnapshot: () => ({ status: 'ready', value: { reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' } }, base: {}, user: {}, revision: 1, writable: true, mode: 'host' }),
+      subscribe: () => () => {},
+      mutate: vi.fn(async () => {}),
+      set: vi.fn(async () => {}),
+      unset: vi.fn(async () => {}),
+    }))
     const ctx = {
       uiConversation: { events: { register: registerDefinition } },
-      locale: { register: registerLocale },
+      locale: { register: registerLocale, bind: () => (key: string) => key },
       slots: {
         inject(_name: string, setup: () => unknown) { setup() },
         register: registerSlot,
       },
+      settingsScope: { bind: bindSettings },
+      remote: {
+        session: { modelCatalog: vi.fn(async () => ({ ok: false })) },
+        $on: vi.fn(() => () => {}),
+      },
+      on: vi.fn(() => () => {}),
       effect(setup: () => unknown, label?: string) {
         effects.push(label ?? '')
         return setup()
@@ -155,9 +213,21 @@ describe('AFM client plugin', () => {
       key: 'approve-for-me',
       locale: 'approve-for-me',
     }), expect.anything())
+    expect(bindSettings).toHaveBeenCalledWith({
+      namespace: APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+      decode: decodeApprovalModelSettings,
+    })
+    expect(registerSlot).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'settings.plugin.item',
+      key: APPROVE_FOR_ME_SETTINGS_NAMESPACE,
+      locale: 'approve-for-me',
+    }), expect.anything())
     expect(effects).toEqual(expect.arrayContaining([
       'approve-for-me: dictionaries',
-      'approve-for-me: approval flow styles',
+      'approve-for-me: client styles',
+      'approve-for-me: model adapter invalidations',
+      'approve-for-me: model settings invalidations',
+      'approve-for-me: connection generation',
     ]))
   })
 })

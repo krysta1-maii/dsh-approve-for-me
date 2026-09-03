@@ -1,6 +1,6 @@
-# DSH 0.1.2-alpha.2 artifact 集成与验收
+# DSH 0.1.2-rc.1 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-alpha.2` / `0a53fb55bea101816fa226bb964ae2bed71c343b`，alpha.2 检查点为 42 个测试文件、330 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、356 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -9,7 +9,7 @@
 部署由四组 artifact 组成：
 
 ```text
-已发布的 DSH 0.1.2-alpha.2 npm 依赖闭包（dist-tag alpha）
+已发布的 DSH 0.1.2-rc.1 npm 依赖闭包（dist-tag alpha）
 + @deepseek-ai/dsh-user-approval fork tarball
 + dsh-managed-agent tarball
 + dsh-approve-for-me tarball
@@ -17,9 +17,9 @@
 
 硬约束：
 
-1. 目标宿主为 `0.1.2-alpha.2`（tag `dsh-v0.1.2-alpha.2`、commit `0a53fb55bea101816fa226bb964ae2bed71c343b`）。除 approval fork 外，宿主闭包及其 vendor（`@deepseek-ai/cordis` 4.0.2、`@deepseek-ai/schemastery` 3.18.2）全部作为普通 npm 依赖固定在该版本上。
+1. 目标宿主为 `0.1.2-rc.1`（tag `dsh-v0.1.2-rc.1`、commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`）。除 approval fork 外，宿主闭包及其 vendor（`@deepseek-ai/cordis` 4.0.2、`@deepseek-ai/schemastery` 3.18.2）全部作为普通 npm 依赖固定在该版本上。
 2. `pnpm-lock.yaml` 的 integrity 摘要是依赖闭包的复现锚点：安装只用 `pnpm install --frozen-lockfile`，不重新解析版本；lockfile 的 diff 就是供应链变更审查面。
-3. `@deepseek-ai/dsh-user-approval` fork 固定 `patch/dsh-user-approval/upstream.json` 中同一 tag/commit 和 patch version；保留上游 package name/version，必须携带 `dshApprovalPatch`；`pnpm-workspace.yaml` 的 overrides 把该包解析到 `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz`。
+3. `@deepseek-ai/dsh-user-approval` fork 固定 `patch/dsh-user-approval/upstream.json` 中同一 tag/commit 和 patch version；保留上游 package name/version，必须携带 `dshApprovalPatch`；`pnpm-workspace.yaml` 的 overrides 把该包解析到 `.build/dsh-user-approval-afm-0.1.2-rc.1.tgz`。
 4. fork 构建在一次性上游 clone（`.build/upstream-clone`）中进行，上游 checkout 只被读取；overlay、测试、编译、打包、marker/API 校验及 SHA-256 sidecar 必须全部成功；构建补充依赖使用精确版本。
 5. `dsh-managed-agent` 作为独立 artifact 先于本插件挂载。其 `artifact.json` 必须记录已审查 source commit、`dirty: false` 和 tarball SHA-256。
 6. 本插件 package 不内嵌 approval fork；目标 Profile 必须显式安装 fork、managed-agent 和 approve-for-me 三个 tarball。
@@ -47,9 +47,9 @@ npm run bootstrap:dependencies
 
 该命令依次执行：
 
-1. `build:approval-fork`：在一次性 clone 中 detach 到锁定 commit，生成 `.build/dsh-user-approval-afm-0.1.2-alpha.2.tgz`，执行 overlay 测试/构建/校验并写 SHA-256 sidecar；
+1. `build:approval-fork`：在一次性 clone 中 detach 到锁定 commit，生成 `.build/dsh-user-approval-afm-0.1.2-rc.1.tgz`，执行 overlay 测试/构建/校验并写 SHA-256 sidecar；
 2. `build:managed-artifact`：pack sibling managed-agent，检查 runtime、types、Cordis patch，并写 source/digest manifest；
-3. `pnpm install --frozen-lockfile`：按 `pnpm-lock.yaml` 的 integrity 从 npm 安装 `0.1.2-alpha.2` 宿主闭包，并用 workspace overrides 把 `@deepseek-ai/dsh-user-approval` 解析到本地 fork tarball、`dsh-managed-agent` 解析到已 materialize 的 artifact。
+3. `pnpm install --frozen-lockfile`：按 `pnpm-lock.yaml` 的 integrity 从 npm 安装 `0.1.2-rc.1` 宿主闭包，并用 workspace overrides 把 `@deepseek-ai/dsh-user-approval` 解析到本地 fork tarball、`dsh-managed-agent` 解析到已 materialize 的 artifact。
 
 升级目标宿主版本时：同步更新 peer/dev 依赖的版本、`patch/dsh-user-approval/upstream.json` 的 tag/commit/version 与 workspace overrides，重跑上述 bootstrap，并把 `pnpm-lock.yaml` 的 diff 作为供应链变更审查。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# alpha.2 实现检查点：42 files / 330 tests
+# rc.1 实现检查点：44 files / 356 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
@@ -81,7 +81,7 @@ package smoke 必须确认 tarball 包含：
 - `lib/client.js`（DSH lazy-CJS 浏览器入口）；
 - `lib/client.d.ts`。
 
-`package.json` 还必须导出 `./client`，并声明 `dsh.client.platform: web` 及 Chat／Conversation／Locale 依赖图；client bundle 必须把 `approval/asked → approval/decided` 投影为同一条只读 Chat 状态项。并且不泄漏 `src/`、`tests/`、`node_modules/`、`patch/` 或 TypeScript 构建配置。
+`package.json` 还必须导出 `./client`，并声明 `dsh.client.platform: web` 及 Chat／Conversation／Locale、API Remotes、UI Settings、UI Settings Plugins 依赖图；client bundle 必须同时把 `approval/asked → approval/decided` 投影为同一条只读 Chat 状态项，并以 `dsh-approve-for-me` key 向 `settings.plugin.item` 注册 Reviewer 模型卡片。Host 包必须把同名 namespace 注册到可选 DSH Settings 服务，浏览器保存只持久化稳定 provider/model id。发布包不得泄漏 `src/`、`tests/`、`node_modules/`、`patch/` 或 TypeScript 构建配置。
 
 managed-agent artifact 还必须包含 `dist/index.js`、`dist/index.d.ts` 和 `cordis.patch.yml`。
 
@@ -171,7 +171,7 @@ npm run profile:artifact-smoke
 
 先在两个源码仓库都 clean 且 managed source lock 精确匹配时运行 `npm run materialize:demo-inputs`，再运行 `npm run build:demo-kit`。它把 approval patch、managed-agent、approve-for-me 三个原子 tarball 封存到 `.build/demo-kit/`，并用 manifest 锁定每件 artifact 的文件名、SHA-256、source repository/commit/tree、patch upstream identity 与三个输入 lock 摘要；完成验收的同一 manifest 以 `deployment-artifacts.lock.json` 进入版本控制。
 
-`profile:artifact-smoke` 只消费这个 kit；不会在验收阶段重新 pack 三个生产 artifact。脚本把已发布的 `@deepseek-ai/dsh@0.1.2-alpha.2` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
+`profile:artifact-smoke` 只消费这个 kit；不会在验收阶段重新 pack 三个生产 artifact。脚本把已发布的 `@deepseek-ai/dsh@0.1.2-rc.1` CLI 安装到一次性 prefix 并使用临时 `DSH_HOME`，因此不需要任何 harness checkout：
 
 1. 完整校验 demo-kit manifest、三个 artifact digest 与 source identity；
 2. 单独 pack 非生产的 probe fixture；

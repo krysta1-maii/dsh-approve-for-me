@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 43 个测试文件、341 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 44 个测试文件、356 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -55,6 +55,14 @@ approval/decided → 同一状态项原位更新为 已允许 / 已拒绝 / 已�
 状态项按 requestId 精确配对，显示工具名、审批原因和“查看操作”入口；颜色、字号、间距、暗色模式及 reduced-motion 均复用 DSH design tokens。它保持为独立信息流项，不会被 compact transcript 折叠进“工具调用”摘要；刷新或重载后由持久事件重建，孤立的 `approval/asked` 保持未决而不会伪造结果。
 
 该 UI 是只读、非授权的 client projection：不拦截 `approval/request`，不注册第二条审批链，不向 `user/message`／`assistant/message`／`tool/result` 等模型 surface 写入状态，也不新增可能破坏旧版持久化或后续 dossier 编译的私有 Session event。最终展示始终以权威 `approval/decided` 为准；发生人工下沉时，它表示整条审批请求的最终结果，而不冒充 Reviewer 的中间提议。
+
+## 设置中的 Reviewer 模型
+
+Host 在可选的 DSH Settings 服务上注册 `dsh-approve-for-me` namespace；浏览器半侧以同名 key 向“设置 → 插件 → 插件配置”贡献原生风格卡片。卡片从 `remote.session.modelCatalog()` 读取实时 provider/model 目录，展示名称但只持久化稳定的 provider/model id；未出现在当前目录中的已配置 route 会明确标为不可用，不会被静默替换为默认模型。
+
+选择先保留为本地草稿，点击保存后以 namespace revision 为 fence，原子修改 `reviewer.provider` 与 `reviewer.model` 两个路径。并发变更会阻止旧草稿覆盖新配置；重置会删除用户层 route，重新继承 Profile 的组合配置。配置提交后旧 machine policy 立即撤销，只有新 route 通过 DSH catalog 精确校验后才重新挂载；不可用 route 保持失败关闭。切换到非部署默认模型时不携带旧模型的 `reasoningEffort`，而是使用新 adapter 的默认值。
+
+该设置只开放 Reviewer route。generation、policy/toolset 版本、审批模式、trust envelope、tool catalog 等授权边界仍由部署配置拥有；provider 私有配置、凭据与 retry 继续完全复用 DSH。
 
 ## Scoped effective tool catalog
 
