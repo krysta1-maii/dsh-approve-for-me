@@ -79,7 +79,21 @@ describe('real guarded-continuable contract fixture', () => {
       deferContext: () => {},
       concludeTurn: () => {},
     } satisfies ToolRunContext
-    const value = await definition.execute({}, exec)
+    // The contract now validates before staging: exercise execute with a
+    // well-formed decision payload.
+    const value = await definition.execute({
+      protocolVersion: 1,
+      reviewId: 'review-1',
+      parentSessionId: 'parent-1',
+      reviewerSessionId: 'reviewer-1',
+      generation: 'generation-1',
+      actionHash: `sha256:${'0'.repeat(64)}`,
+      decision: 'allow',
+      risk: 'low',
+      categories: [],
+      userAuthorization: 'explicit',
+      rationale: 'Explicitly authorized.',
+    }, exec)
     expect(value).toEqual({ recorded: true })
   })
 
