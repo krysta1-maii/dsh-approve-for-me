@@ -461,8 +461,8 @@ async function applyVerify(ctx, marker) {
 
 async function applyQuality(ctx, marker) {
   const workspace = dirname(marker)
-  const provider = process.env.DSH_QUALITY_PROVIDER || 'cpa'
-  const model = process.env.DSH_QUALITY_MODEL || 'gemini-3.7-flash-high'
+  const provider = process.env.DSH_QUALITY_ROOT_PROVIDER || process.env.DSH_QUALITY_PROVIDER || 'cpa'
+  const model = process.env.DSH_QUALITY_ROOT_MODEL || process.env.DSH_QUALITY_MODEL || 'gemini-3.7-flash-high'
 
   const s1Args = Object.freeze({
     command: "printf 'quality-ok\\n' > quality-allowed.txt",

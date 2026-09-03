@@ -207,6 +207,35 @@ try {
   }
   writeFileSync(join(dshHome, 'settings.yaml'), `${piAiLines.join('\n')}\n`, 'utf8')
 
+  // Fail-fast preflight: prove the Guardian's LLM route answers before paying
+  // for a full profile boot. The local proxy occasionally stalls requests for
+  // minutes; without this probe those show up as opaque idle timeouts.
+  const providerSection = piAiLines.join('\n').match(new RegExp(`${qualityProvider}:[\\s\\S]*?(?=\\n\\s{4}\\w|$)`))
+  const baseUrl = providerSection?.[0]?.match(/baseUrl:\s*['"]?([^'"\s]+)/)?.[1]
+  const credentialsContent = readFileSync(targetCredentials, 'utf8')
+  const apiKey = credentialsContent.match(new RegExp(`${qualityProvider.toUpperCase()}_API_KEY:\\s*['"]?([^'"\s]+)`))?.[1]
+    ?? providerSection?.[0]?.match(/apiKey:\s*['"]?([^'"\s]+)/)?.[1]
+  if (!baseUrl || !apiKey) {
+    throw new Error(`quality smoke preflight: could not resolve baseUrl/apiKey for provider '${qualityProvider}'`)
+  }
+  {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), 30_000)
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: qualityModel, messages: [{ role: 'user', content: 'reply with: ok' }], max_tokens: 4 }),
+        signal: ac.signal,
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+    } catch (error) {
+      throw new Error(`quality smoke preflight: LLM route ${qualityProvider}/${qualityModel} unreachable or stalled (${error?.message ?? error})`)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   const env = {
     ...process.env,
     DSH_HOME: dshHome,
