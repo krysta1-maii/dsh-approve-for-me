@@ -349,11 +349,14 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
     if (this.now() >= deadlineAt) {
       throw new ReviewProtocolError('timed-out', 'review reached its business deadline before an attempt started')
     }
+    const debug = process.env.DSH_APPROVE_FOR_ME_DEBUG === '1'
+    if (debug) console.error('[approve-for-me review] ensure child start')
     const childId = await deadline.wait(this.options.directory.ensure(
       input.authority,
       this.options.preset,
       deadline.signal,
     ))
+    if (debug) console.error('[approve-for-me review] child ready', String(childId))
     const issuedAt = this.now()
     if (issuedAt >= deadlineAt) {
       throw new ReviewProtocolError('timed-out', 'review reached its business deadline before delivery')
@@ -388,6 +391,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
           baseline: input.assessment,
         })
     const result = this.options.channel.arm(request, deadline.signal)
+    if (debug) console.error('[approve-for-me review] armed', request.reviewId)
     // A very fast scoped tool may settle before deliver()'s acceptance promise
     // resumes this task. Attach containment immediately while preserving the
     // original promise for the authoritative await below.
@@ -399,6 +403,7 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
         this.buildContent(packet),
         { signal: deadline.signal },
       ))
+      if (debug) console.error('[approve-for-me review] delivered', request.reviewId)
     } catch (error: unknown) {
       if (!(error instanceof ReviewProtocolError && (error.code === 'timed-out' || error.code === 'aborted'))) {
         this.options.channel.cancel(request.reviewId, 'delivery-failed', `review ${request.reviewId} delivery failed`)
@@ -416,8 +421,16 @@ export class DefaultReviewCoordinator<Parent, SessionId extends string>
       throw error
     }
     try {
-      return await deadline.wait(result)
+      const decision = await deadline.wait(result)
+      if (debug) console.error('[approve-for-me review] decision settled', request.reviewId, decision.decision)
+      return decision
     } catch (error: unknown) {
+      if (debug) {
+        console.error('[approve-for-me review] decision wait failed', request.reviewId, JSON.stringify({
+          code: error instanceof ReviewProtocolError ? error.code : 'other',
+          message: error instanceof Error ? error.message : String(error),
+        }))
+      }
       if (error instanceof ReviewProtocolError && error.code !== 'disposed') {
         this.options.port.interrupt(input.authority, childId)
       }
