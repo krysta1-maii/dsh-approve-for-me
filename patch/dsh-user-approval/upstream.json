@@ -1,9 +1,9 @@
 {
   "packageName": "@deepseek-ai/dsh-user-approval",
-  "upstreamVersion": "0.1.2-alpha.5",
-  "upstreamTag": "dsh-v0.1.2-alpha.5",
-  "upstreamCommit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
-  "patchVersion": 3,
+  "upstreamVersion": "0.1.2-rc.1",
+  "upstreamTag": "dsh-v0.1.2-rc.1",
+  "upstreamCommit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+  "patchVersion": 4,
   "changes": [
     "ApprovalRequestEvent.requestId: service-issued ask id reaches answerers and machine policies",
     "ApprovalService.registerMachinePolicy(): globally exclusive machine-policy slot after the session never check and before the approval/request waterfall"

@@ -9,7 +9,7 @@ const resolutionAnchor = process.env.DSH_VERIFY_RESOLVE_FROM ?? import.meta.url
 const require = createRequire(resolutionAnchor)
 
 /** Exact resolved versions the deployment must install. */
-const HOST_VERSION = '0.1.2-alpha.5'
+const HOST_VERSION = '0.1.2-rc.1'
 const expected = Object.freeze({
   '@deepseek-ai/cordis': '4.0.2',
   '@deepseek-ai/schemastery': '3.18.2',

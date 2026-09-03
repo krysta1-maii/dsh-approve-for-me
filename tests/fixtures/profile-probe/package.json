@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./index.mjs",
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.2-alpha.5"
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1"
   },
   "files": [
     "index.mjs",
