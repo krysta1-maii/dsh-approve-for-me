@@ -262,6 +262,10 @@ try {
       cwd: temp,
       env: {
         ...env,
+        // S1 asserts an allowed side effect actually lands; the install steps
+        // above stay read-only, but the quality boot itself must permit the
+        // workspace write the Guardian has authorized.
+        DSH_PERMISSION_MODE: 'workspace-write',
         DSH_APPROVE_FOR_ME_PROFILE_PROBE: marker,
         DSH_APPROVE_FOR_ME_PROFILE_PROBE_PHASE: 'quality',
         DSH_QUALITY_PROVIDER: qualityProvider,
