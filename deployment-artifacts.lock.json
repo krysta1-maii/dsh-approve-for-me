@@ -2,14 +2,14 @@
   "version": 1,
   "target": {
     "package": "@deepseek-ai/dsh",
-    "version": "0.1.2-alpha.5",
-    "tag": "dsh-v0.1.2-alpha.5",
-    "commit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5"
+    "version": "0.1.2-rc.1",
+    "tag": "dsh-v0.1.2-rc.1",
+    "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d"
   },
   "locks": {
-    "pnpmLockSha256": "4f4e317a6e281229abec0779b9ce870db4570a81a9a224c5961b4c49201fd782",
-    "approvalUpstreamSha256": "811b8ca6c970ddb02222882f379101ef502f95b36ced739d46dba37824586228",
-    "managedSourceSha256": "45e9bda08fb81fcc59b3bc823c68b0316c8e1a72f68ae7c97de90e1a48a5a53b"
+    "pnpmLockSha256": "9bb1921ba309f870e6fec68669fc3e0f6bfe91058fcf8726806ded9d0f140505",
+    "approvalUpstreamSha256": "2a0ce42debfe6e5433c7cc572cb754a42de40cd0091dc50f1921f49bad015c5e",
+    "managedSourceSha256": "c1b9fe81eee46de712a19bb52586ce4fca38f247613e457f7c7d2f5191e11261"
   },
   "atomicPackageCount": 3,
   "installOrder": [
@@ -21,15 +21,15 @@
     {
       "role": "dsh-plugin-family-patch",
       "package": "@deepseek-ai/dsh-user-approval",
-      "version": "0.1.2-alpha.5",
-      "file": "dsh-user-approval-afm-0.1.2-alpha.5.tgz",
-      "sha256": "db7c87fd27ea605b26426753ebd519c9b35734de983ede0ae70687ab39e76e55",
+      "version": "0.1.2-rc.1",
+      "file": "dsh-user-approval-afm-0.1.2-rc.1.tgz",
+      "sha256": "b1d4c1254236d88392cdc9a7821ac3e43c18373a4005e8b8ba1ea6e0c34699d9",
       "source": {
         "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
-        "commit": "c3dc2529f1d11ccea95506b44a2e66eda72b157f",
-        "tree": "57771f036edc8597d487cc1feb459b853069bb1a",
-        "upstreamCommit": "db6bdc3576c2d4e7c965e8e3ed0c2a731eed87f5",
-        "patchVersion": 3
+        "commit": "e3e77420c3118af9237475d32ccb0cae1ab23652",
+        "tree": "474ac1336a0b586bbc7c2ed878dca2cf8453d672",
+        "upstreamCommit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+        "patchVersion": 4
       }
     },
     {
@@ -37,11 +37,11 @@
       "package": "dsh-managed-agent",
       "version": "0.1.0-dev.0",
       "file": "dsh-managed-agent-0.1.0-dev.0.tgz",
-      "sha256": "8a17cebad7f0716d6a1165129449a3df221f754bc3f1faaed7f3a8a9c2b34718",
+      "sha256": "7461ddb53fd9f0641b4e15110f925a83aaee2c9e4ecf79679868eda3954a4f9f",
       "source": {
         "repository": "https://github.com/krysta1-maii/dsh-managed-agent.git",
-        "commit": "5533393e379a2f7de116ecce62e4072faa414727",
-        "treeSha256": "a63b24da8d15646b49a13ec2fbf608a8c3ea36c3ca7ac5163b082af9d172bc4d"
+        "commit": "4f5756533b72fcbf636fa4778a5391fdc528695c",
+        "treeSha256": "73f74148a48eaac483ce0bcd3ac18153fbb73c4456ce8557ff0f0b863fcef113"
       }
     },
     {
@@ -49,11 +49,11 @@
       "package": "dsh-approve-for-me",
       "version": "0.1.0-dev.0",
       "file": "dsh-approve-for-me-0.1.0-dev.0.tgz",
-      "sha256": "1c4153743d9f67a9991c2dba8e4506738f9117b569db6f1bd060f8e7e435ec5e",
+      "sha256": "d59c26cc95ec0a25f4e092ca3f07ad7c8e78f6ec1fcf7fb67aeddb53b4e5c84f",
       "source": {
         "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
-        "commit": "67e762733e02bd47c982afc1cc827ea6259c9955",
-        "tree": "b8c7110402a7362282e0b25c76b90e3ada3da7f2"
+        "commit": "1eea1c07f85a1a4baabc7edca8306d8ae31b6ae7",
+        "tree": "6ba3707843924aa6ef23453f1ef6e1bd2c3166a6"
       }
     }
   ]
