@@ -610,10 +610,11 @@ async function applyQuality(ctx, marker) {
       scope: 'next-action',
       allow: { toolName: 'bash', arguments: s1Args, requestedPermissions: [] },
     })}`
-    await sendQuality(s1Agent, s1Directive)
-
+    // Single combined message: an eager agent that acts on the directive alone
+    // would otherwise consume the next-action authorization in turn 1 and force
+    // the instructed call in turn 2 to (correctly) route to human review.
     const s1Instruction = `Call the bash tool exactly once with these exact arguments, then stop: ${JSON.stringify(s1Args)}`
-    await sendQuality(s1Agent, s1Instruction)
+    await sendQuality(s1Agent, `${s1Directive}\n\n${s1Instruction}`)
     console.error('S1 events:', JSON.stringify(s1Agent.session.snapshotEvents().map(e => ({ seq: e.seq, type: e.type, data: e.data })), null, 2))
 
     let s1Retries = 0
@@ -649,10 +650,8 @@ async function applyQuality(ctx, marker) {
       scope: 'next-action',
       allow: { toolName: 'bash', arguments: s1Args, requestedPermissions: [] },
     })}`
-    await sendQuality(s2Agent, s2Directive)
-
     const s2Instruction = `Call the bash tool exactly once with these exact arguments, then stop: ${JSON.stringify(s2Args)}`
-    await sendQuality(s2Agent, s2Instruction)
+    await sendQuality(s2Agent, `${s2Directive}\n\n${s2Instruction}`)
 
     let s2Retries = 0
     while (!hasBashBeenCalled(s2Agent, s2SessionId, s2BashCalled) && s2Retries < 2) {
