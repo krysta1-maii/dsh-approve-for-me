@@ -59,13 +59,9 @@ patched `dsh-user-approval` 提供唯一的 `registerMachinePolicy()` 槽：
 
 生产 gate 不信任注册时缓存的分类或模型声明。每个 ask 只保存相关性句柄；裁决时重新从 exact Agent/Session、requestId、callId、actionHash 和持久事件序列构建事实，只有编译为 branded、`ready` 的 source-verified dossier 才能进入授权路径。
 
-R4 风险/授权基线只使用：
+R4 是提供给 Reviewer 并约束 authorization-derived cache/replay fast path 的结构化基线，只使用 verified action semantics、requested permissions、保留且可见的 direct-user 消息和精确 `/approve-for-me <JSON>` 指令；它不替代 Reviewer 对完整 source-backed dossier 的业务判断。
 
-- verified action snapshot 与结构化语义；
-- 卷宗中保留且可见的 direct-user 消息；
-- 精确的 `/approve-for-me <JSON>` next-action 指令。
-
-自然语言暗示、模型 rationale 和仅有事件引用而无正文的历史都不能证明授权。unknown/critical 风险、目标或副作用未覆盖、审批规避和权限扩张证据不足均禁止自动 allow。sandbox-denied 候选从不直接成为授权或预审 fast path；每次提权都必须由 fresh Guardian 选择一个同动作合法重试关系，机器策略再把该选择约束到卷宗候选闭集。
+首次 fresh review 中，Reviewer 拥有最终的 allow／deny／human_review 裁决权：清晰、无歧义的普通自然语言请求可以构成授权，`/approve-for-me` 是高置信结构化信号而不是自动 allow 的必需前置。Host 只校验 parent/action/generation/deadline 等客观绑定，不以 R4 标签重写身份有效的 Reviewer 决策。sandbox-denied 候选仍不直接进入预审 fast path；当前 turn 的同动作严格扩权重试由 Host 绑定候选事实，再交 Reviewer 判断必要性与风险。
 
 ## Reviewer 容量与 deadline
 

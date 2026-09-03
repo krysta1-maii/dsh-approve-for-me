@@ -116,11 +116,11 @@ managed-agent artifact 还必须包含 `dist/index.js`、`dist/index.d.ts` 和 `
 R4 基线：
 
 - 风险来自 verified action semantics、requested permissions 和直接来源证据；
-- 授权只接受最新可见 direct-user message 中独立且精确的 `/approve-for-me <JSON>` next-action 指令；
-- toolName、arguments 和 requestedPermissions 必须与 verified action 完全匹配；
-- natural language、模型 rationale、不可见/被替代内容或只有 event ref 而无正文的历史不构成授权；
-- unknown/critical、审批规避、冲突授权、目标/副作用未覆盖均禁止自动 allow；
-- Guardian 输出不能降低 source-derived risk、遗漏来源类别或虚构 source refs/coverage。
+- 精确 `/approve-for-me <JSON>` 的 toolName、arguments、requestedPermissions 必须与 verified action 完全匹配，才能成为 deterministic structured authorization；
+- 普通自然语言不进入 authorization-derived cache/replay fast path，但 fresh Reviewer 可以基于完整 source-backed dossier 判断其是否清晰授权当前动作；
+- R4 baseline 随 packet 提供给 Reviewer用于风险/证据参照，不再作为第二个 Host 授权裁决器重写 Reviewer 的 identity-valid allow；
+- Reviewer 的 allow／deny／human_review 在 parent/action/generation/deadline 校验通过后分别映射为 allowed-once／rejected／人工下沉；
+- 模型 rationale、不可见/被替代内容或仅有 event ref 而无正文的历史仍不构成独立用户证据。
 
 ## 6. 机器决策槽
 
@@ -216,7 +216,7 @@ npm run demo:prepare
 
 发布验收环境必须使用已打包 artifact 和精确目标 Profile，而不是源码链接。至少执行：
 
-1. **真实 LLM Guardian**：包络外动作分别产生 allow、deny、human_review；验证 source-backed dossier、R4 floor 和 durable decision record。
+1. **真实 LLM Guardian**：普通自然语言动作分别产生 allow、deny、human_review；验证 source-backed dossier、R4 baseline 输入、Reviewer 直接 disposition 和 durable decision record。
 2. **Web 人工链**：`auto-then-user` 下 human_review 只经 `'delegate'` 到官方 `ui-approval`，面板可见、可批准/拒绝且不会被 managed composer 抢占。
 3. **真实工具执行**：终态 allow 只消费一次；deny、deadline、abort、错误身份和存储失败均在副作用前阻断。
 4. **cold-process**：完成一次 review 后彻底结束 DSH 进程，再从同一 Profile/Storage 启动；验证 child、generation、deliveryAttempts、request/header catalog、sidecar 和 pending state 的恢复。

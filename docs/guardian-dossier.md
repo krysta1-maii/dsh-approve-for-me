@@ -743,11 +743,11 @@ interface PendingApprovalSectionV1 {
 
 ### 10.2 更早的 sandbox denial
 
-DSH 没有持久 `retryOf` 关系，编译器不得根据“参数看起来相同”制造一条精确前驱边。`earlierSandboxDenials` 只列出当前 turn、冻结点之前已经确认的所有 sandbox-denied 请求，按 request event seq 排序，并通过 ref 指回第四段的完整请求和结果。
+DSH 没有持久 `retryOf` 关系；`earlierSandboxDenials` 只列出当前 turn、冻结点之前已经确认的 sandbox-denied 请求，按 request event seq 排序，并通过 ref 指回第四段的完整请求和结果。
 
-该列表不声明其中任一项与当前动作等价，也不声称当前提权是一次合法重试。“是否同一动作”“升级是否必要”“请求是否最窄”全部由 Guardian 根据原始请求、denial 事实和 justification 判断。未来若工具或 sidecar 提供正式 `retryOf`／fingerprint 协议，必须以新版本显式加入。
+Host 只为“中间 denial 是否消耗 structured authorization frontier”做窄结构校验：精确绑定 execution/ref/result，要求同 tool、projector、canonical semantics、相同非 sandbox 权限且 sandbox 严格变宽。该校验不判断扩权是否必要或风险是否可接受；这些业务问题仍由 Guardian 根据原始请求、denial 事实和 justification 裁决。未来若 DSH 提供正式 `retryOf`／fingerprint 协议，应以新版本替换当前结构关联。
 
-候选存在本身不得提升 authorization coverage，也不得进入 allow-cache／sealed replay 等预审 fast path。每个 sandbox expansion 都必须经过 fresh Guardian；若要 `allow`，Guardian 必须在结构化 assessment 的 `sandboxDenialRelation` 中选择一个候选 ref，并声明闭集关系 `same-action-legitimate-retry`。机器策略只接受列表内的精确 ref，且该 ref 与 direct-user authorization `sourceRefs` 分离；缺失、越界或用于非提权动作的 relation 一律 under-evidenced。`danger-full-access` 仍因 critical risk 禁止自动 allow。
+候选存在本身不得提升 deterministic authorization coverage，也不得进入 allow-cache／sealed replay 等预审 fast path。当前 turn 只有精确绑定 execution/ref/result、同 tool/projector/semantic action、相同非 sandbox 权限且 sandbox 严格变宽的 denial retry 才能保留结构化授权 frontier；其他中间尝试只保留非授权 provenance。每个 sandbox expansion 仍交 fresh Guardian 裁决；Guardian 在 assessment 中用 `sandboxDenialRelation` 说明所选候选与 `same-action-legitimate-retry` 关系，并将该 ref 与 direct-user `sourceRefs` 分离。该 assessment 是 Reviewer 的可审计解释，不是 Reviewer 返回后由 Host 执行的第二次业务裁决。
 
 ## 11. 编译端口
 

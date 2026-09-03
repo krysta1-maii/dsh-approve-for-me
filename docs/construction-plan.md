@@ -59,7 +59,7 @@
 - 演示触发源用 stock 沙箱提权（tool-bash 的 sandbox_permissions + justification 重试路径），不用自造钩子：模型首次执行受限命令被 sandbox 拒绝 → 收到 [sandbox: escalation available — retry...] 提示 → 携带 sandbox_permissions（最窄可用更宽模式）+ justification 重试 → ctx.approval.request() → 机器决策槽；
 - 检查点 A：approval/decided 出现且为 allowed-once，命令真实执行；afm_decision_records 有 confirmed 行。若为 unavailable，用 DSH_APPROVE_FOR_ME_DEBUG=1 定位是卷宗编译、R4 还是 Guardian 契约哪一环；
 - 完成定义：10 次连续提权用例中，模型无契约违规且全部走通；human_review → delegate 与 deny → breaker 各出现一次；
-- 此阶段可能需要对 src/reviewer/policy.ts 的 Guardian 提示词做"只拷贝卷宗事实、不得降级风险/省略类别/夸大覆盖"的约束强化，但不得放宽 validateDecisionAssessmentV1。
+- Guardian 基于完整 source-backed dossier 解释普通自然语言授权并承担最终业务裁决；R4 baseline 用于提示与 authorization-derived cache/replay fast path，不得在 Reviewer 返回后由 Host 再次改写 allow／deny／human_review。
 
 ### H1：人工下沉 Web 链路
 

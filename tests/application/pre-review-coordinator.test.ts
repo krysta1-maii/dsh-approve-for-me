@@ -85,12 +85,32 @@ describe('DefaultPreReviewCoordinator', () => {
     expect(review).toHaveBeenCalledWith(expect.objectContaining({ reviewRunId: 'run-1', deadlineAt: 200 }))
   })
 
-  it('constrains an identity-valid model allow with the source assessment before sealing', async () => {
+  it('preserves an identity-valid Reviewer allow when the deterministic baseline is non-authorizing', async () => {
     const seals = new InMemorySealedDispositionRegistry()
     const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision()), seals)
     const assessedAction = action()
     await expect(coordinator.preReview(input({ action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
-      .resolves.toMatchObject({ disposition: 'human' })
+      .resolves.toMatchObject({ disposition: 'allow' })
+  })
+
+  it('does not replace an identity-valid Reviewer allow with a Host risk verdict', async () => {
+    const assessedAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'pwd', sandbox_permissions: 'danger-full-access', justification: 'Reviewer-owned demo decision.' },
+      requestedPermissions: [{ kind: 'sandbox', scope: 'danger-full-access' }],
+    })
+    const assessment = assessVerifiedActionV1(assessedAction, [1])
+    const coordinator = new DefaultPreReviewCoordinator(
+      reviewReturning(decision({
+        actionHash: hashAction(assessedAction),
+        risk: 'critical',
+        categories: ['permission-expansion'],
+        userAuthorization: 'absent',
+      })),
+      new InMemorySealedDispositionRegistry(),
+    )
+    await expect(coordinator.preReview(input({ action: assessedAction, assessment })))
+      .resolves.toMatchObject({ disposition: 'allow' })
   })
 
   it('seals an assessed allow when retained direct-user evidence covers the exact action', async () => {
@@ -123,19 +143,19 @@ describe('DefaultPreReviewCoordinator', () => {
       .resolves.toMatchObject({ disposition: 'allow' })
   })
 
-  it('requires a cited assessment for an assessed policy-v2 allow', async () => {
+  it('does not let an optional policy-v2 assessment field replace the Reviewer decision', async () => {
     const assessedAction = action()
     const coordinator = new DefaultPreReviewCoordinator(reviewReturning(decision()), new InMemorySealedDispositionRegistry())
     await expect(coordinator.preReview(input({ policyVersion: 'policy-v2', action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
-      .resolves.toMatchObject({ disposition: 'human' })
+      .resolves.toMatchObject({ disposition: 'allow' })
   })
 
-  it('downgrades a cited allow that overclaims source-derived coverage', async () => {
+  it('records an identity-valid cited allow without a second Host authorization verdict', async () => {
     const assessedAction = action()
-    const reviewer = reviewReturning(decision({ assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1'], rationale: 'overclaimed' } }))
+    const reviewer = reviewReturning(decision({ assessment: { version: 1, targetCovered: true, sideEffectsCovered: true, sourceRefs: ['event:1', 'action-snapshot'], rationale: 'reviewed' } }))
     const coordinator = new DefaultPreReviewCoordinator(reviewer, new InMemorySealedDispositionRegistry())
     await expect(coordinator.preReview(input({ action: assessedAction, assessment: assessVerifiedActionV1(assessedAction, [1]) })))
-      .resolves.toMatchObject({ disposition: 'human' })
+      .resolves.toMatchObject({ disposition: 'allow' })
   })
 
   it('never weakens a Guardian deny because its risk explanation is incomplete', async () => {

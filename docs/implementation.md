@@ -2,7 +2,7 @@
 
 > 当前代码状态（2026-08-31，alpha.2 基线）：精确适配 DSH `0.1.2-alpha.2`（commit `0a53fb55bea101816fa226bb964ae2bed71c343b`，tag `dsh-v0.1.2-alpha.2`），机器决策槽 v2。宿主闭包直接安装 npm 上已发布的 `0.1.2-alpha.2` 包；`npm run check` 通过 42 个测试文件、330 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 alpha.2 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
 >
-> 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前任何 automatic allow 仍被 branded source-verified dossier、R4 基线和 durable decision record 约束。
+> 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前 automatic allow 必须来自 branded source-verified dossier 上 identity-valid 的 Reviewer allow，并在返回前完成 durable decision record；R4 baseline 作为 Reviewer 输入和 authorization-derived cache/replay fast-path 边界。
 
 ## 当前里程碑
 
@@ -41,7 +41,7 @@
 - trust envelope 默认关闭，启用时只接受闭集工具族、mode ceiling、realpath workspace 边界、justification 与严格阶梯变宽；
 - allow-cache 只在既有 Guardian allow 且 configuration/generation/frontier/actionHash 全部一致时命中，每次 ask 仍需自己的 durable 确认；
 - sealed disposition 按 `requestId+callId+actionHash` 单次消费；consumed/mismatch/过期一律 `unavailable`；
-- 生产插件固定 `requireVerifiedDossier: true` 并强制 R4 assessment，无 source-verified dossier 的路径不可能自动放行。
+- 生产插件固定 `requireVerifiedDossier: true`；R4 assessment 进入 Reviewer packet并限制 authorization-derived cache/replay fast path，但不再作为第二个 Host 业务裁决器重写身份有效的 Reviewer decision。
 
 ### D1 source-backed dossier（完成，严格子集）
 
@@ -53,9 +53,9 @@
 ### R4 风险/授权基线（保守基线，完成）
 
 - `assessVerifiedActionV1` 只消费 verified action semantics、requested permissions、earlier sandbox denials 与保留的可见 direct-user 消息；
-- 授权只接受最新可见消息中独立且精确的 `/approve-for-me <JSON>` next-action 指令，toolName/arguments/requestedPermissions 与 action 逐字节匹配；
-- network/data-exfil、filesystem destructive、`danger-full-access` 提权、unknown semantics 有结构触发；unknown/critical、权限扩张、审批规避不进入自动 allow fast path；
-- `validateDecisionAssessmentV1` 禁止 Guardian 降低来源风险、遗漏类别、引用卷宗外 source 或夸大 coverage。
+- 它只把独立且精确的 `/approve-for-me <JSON>` 识别为 deterministic structured authorization；普通自然语言由 fresh Reviewer 结合完整 dossier 解释；
+- network/data-exfil、filesystem destructive、`danger-full-access` 提权、unknown semantics 有结构触发；无结构化授权的结果不进入 cache/replay fast path；
+- `validateDecisionAssessmentV1` 保留为诊断/评估工具，不参与 PreReview 的最终 disposition 映射；身份有效的 Reviewer decision 直接决定 allow／deny／human_review。
 
 ### R5 policy artifact / R6 review run / R7 breaker / R9 audit（完成）
 

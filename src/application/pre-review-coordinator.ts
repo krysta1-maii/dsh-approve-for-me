@@ -15,7 +15,6 @@ import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import type { ReviewCoordinator } from './review-coordinator.js'
 import { GateFailure } from './gate-failure.js'
 import { ReviewProtocolError } from './decision-channel.js'
-import { validateDecisionAssessmentV1 } from '../domain/risk-assessment.js'
 import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
 
 export interface PreReviewInput<Parent, SessionId extends string> {
@@ -30,7 +29,7 @@ export interface PreReviewInput<Parent, SessionId extends string> {
   readonly signal?: AbortSignal
   readonly generation: string
   readonly configurationFingerprint: string
-  /** policy-v2 refuses uncited model authorization claims. */
+  /** Reviewer policy identity retained in the sealed business request. */
   readonly policyVersion?: string
   readonly issuedAt: number
   readonly deadlineAt: number
@@ -118,17 +117,11 @@ export class DefaultPreReviewCoordinator<Parent, SessionId extends string>
     ) {
       throw new GateFailure('integrity', 'Guardian decision identity does not match the pre-review request')
     }
-    const assessmentValidity = input.assessment === undefined ? undefined
-      : input.policyVersion === 'policy-v2' && decision.assessment === undefined
-        ? { kind: 'under-evidenced' as const, reason: 'policy-v2 requires a cited decision assessment' }
-        : validateDecisionAssessmentV1(decision, input.assessment)
-    // The transport channel accepts an identity-valid model answer; this is the
-    // first authority boundary that constrains its disposition using dossier
-    // evidence. Under-evidence becomes human review; a prohibited allow denies.
-    const dispositionKind = decision.decision !== 'allow' ? dispositionFor(decision)
-      : assessmentValidity?.kind === 'under-evidenced' ? 'human'
-        : assessmentValidity?.kind === 'prohibited' ? 'deny'
-          : dispositionFor(decision)
+    // The Reviewer owns the business decision once the Host has verified the
+    // exact parent/action/generation identity and the review deadline. The R4
+    // baseline is evidence supplied to the Reviewer, not a second Host policy
+    // that rewrites an identity-valid allow into a human decision.
+    const dispositionKind = dispositionFor(decision)
     const disposition: SealedDispositionV1 = Object.freeze({
       version: 1,
       reviewRunId,

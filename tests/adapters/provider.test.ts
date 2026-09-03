@@ -127,6 +127,8 @@ describe('createReviewerProvider', () => {
     const section = stub.systemPrompt.section.mock.calls[0]![0] as { text: string }
     expect(section.text).toContain('source-verified dossier')
     expect(section.text).toContain('Critical risk')
+    expect(section.text).toContain('ordinary natural-language request can be explicit authorization')
+    expect(section.text).toContain('not a prerequisite for allow')
     const registered = (stub.tools.register.mock.calls[0]![0] as { parameters: { required: readonly string[] } })
     expect(registered.parameters.required).toContain('assessment')
   })
