@@ -210,11 +210,14 @@ try {
   // Fail-fast preflight: prove the Guardian's LLM route answers before paying
   // for a full profile boot. The local proxy occasionally stalls requests for
   // minutes; without this probe those show up as opaque idle timeouts.
-  const providerSection = piAiLines.join('\n').match(new RegExp(`${qualityProvider}:[\\s\\S]*?(?=\\n\\s{4}\\w|$)`))
-  const baseUrl = providerSection?.[0]?.match(/baseUrl:\s*['"]?([^'"\s]+)/)?.[1]
+  const piAiText = piAiLines.join('\n')
+  const providerIdx = piAiText.indexOf(`${qualityProvider}:`)
+  const providerSegment = providerIdx >= 0 ? piAiText.slice(providerIdx, providerIdx + 800) : ''
+  const baseUrl = providerSegment.match(/baseURL:\s*['"]?([^'"\s,}]+)/)?.[1]
+  const apiKeyEnv = providerSegment.match(/apiKeyEnv:\s*['"]?([A-Z0-9_]+)/)?.[1]
   const credentialsContent = readFileSync(targetCredentials, 'utf8')
-  const apiKey = credentialsContent.match(new RegExp(`${qualityProvider.toUpperCase()}_API_KEY:\\s*['"]?([^'"\s]+)`))?.[1]
-    ?? providerSection?.[0]?.match(/apiKey:\s*['"]?([^'"\s]+)/)?.[1]
+  const apiKey = (apiKeyEnv ? credentialsContent.match(new RegExp(`${apiKeyEnv}:\\s*['"]?([^'"\\s]+)`))?.[1] : undefined)
+    ?? providerSegment.match(/apiKey:\s*['"]?([^'"\s,}]+)/)?.[1]
   if (!baseUrl || !apiKey) {
     throw new Error(`quality smoke preflight: could not resolve baseUrl/apiKey for provider '${qualityProvider}'`)
   }
