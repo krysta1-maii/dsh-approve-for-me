@@ -528,6 +528,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       // Alpha.1 stock Host lifecycle/metadata events are retained for the
       // sequence/hash chain but carry no approval authority.
       'permission/preset', 'sandbox/mode', 'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
+      // rc.1 Web/command lifecycle metadata is log-only and carries no
+      // approval authority. Keep the vocabulary explicit so truly unknown
+      // events still make the dossier incomplete.
+      'subagent/model-selection-policy', 'command/run', 'command/done',
     ])
     if (facts.events.some(event => !allowed.has(event.type)) || !approvalPolicyHistoryIsConsistent(facts.events)) {
       { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch events-allowlist', JSON.stringify({ unknown: [...new Set(facts.events.filter(event => !allowed.has(event.type)).map(event => event.type))], policyConsistent: approvalPolicyHistoryIsConsistent(facts.events) })); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }

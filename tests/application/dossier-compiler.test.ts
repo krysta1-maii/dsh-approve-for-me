@@ -165,6 +165,30 @@ describe('DefaultDossierCompiler', () => {
       }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: withApprovalPolicy })).toMatchObject({ kind: 'ready' })
+
+    const withWebCommandMetadata = {
+      ...complete,
+      approvalBinding: { ...complete.approvalBinding, event: { seq: 11, type: 'approval/asked' as const } },
+      throughSeq: 11,
+      events: [
+        { seq: 0, time: 1, type: 'subagent/model-selection-policy' as const, retention: 'included' as const, data: { allowedModels: [{ provider: 'openai-codex', model: 'gpt-5.6-terra' }] } },
+        { seq: 1, time: 2, type: 'command/run' as const, retention: 'included' as const, data: { commandId: 'cmd-1', name: 'permission', args: ' read-only', source: { kind: 'user' } } },
+        { seq: 2, time: 3, type: 'command/done' as const, retention: 'included' as const, data: { commandId: 'cmd-1', kind: 'success', text: 'preset read-only' } },
+        ...complete.events.map(event => ({ ...event, seq: event.seq + 3, time: event.time + 3 })),
+      ],
+      executionFacts: [{
+        ...complete.executionFacts[0]!,
+        request: { ...complete.executionFacts[0]!.request, eventSeq: 10 },
+        projection: { ...complete.executionFacts[0]!.projection, observedAt: 11 },
+      }],
+      approvalSnapshots: [{
+        ...complete.approvalSnapshots[0]!,
+        approvalAskedSeq: 11,
+        execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 10 },
+      }],
+    }
+    expect(new DefaultDossierCompiler(deps).compile({ facts: withWebCommandMetadata })).toMatchObject({ kind: 'ready' })
+
     expect(new DefaultDossierCompiler(deps).compile({
       facts: {
         ...withApprovalPolicy,

@@ -92,7 +92,66 @@ describe('DossierGateFactProjector', () => {
         },
       },
     } as never)
-    expect(consumedByDelegation).toBeUndefined()
+    expect(consumedByDelegation).toMatchObject({
+      assessment: { authorization: { level: 'unknown', targetCovered: false, sideEffectsCovered: false, sourceRefs: ['event:7'] } },
+    })
+
+    const retryJustification = 'Retry the exact sandbox-denied command.'
+    const retryAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'pwd', sandbox_permissions: 'workspace-write', justification: retryJustification },
+      requestedPermissions: [{ kind: 'sandbox', scope: 'workspace-write', details: { justification: retryJustification } }],
+    })
+    const retryActionHash = hashAction(retryAction)
+    const directive = `/approve-for-me ${JSON.stringify({
+      version: 1,
+      scope: 'next-action',
+      allow: { toolName: 'bash', arguments: retryAction.arguments, requestedPermissions: retryAction.requestedPermissions },
+    })}`
+    const sandboxRetry = projector.project({
+      request: { ...request, actionHash: retryActionHash },
+      pending: { ...request, actionHash: retryActionHash, agent, authority },
+      facts: {
+        ...projectInput.facts,
+        approvalBinding: { event: { seq: 11, type: 'approval/asked' }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' },
+        approvalSnapshots: [{
+          ...projectInput.facts.approvalSnapshots[0],
+          approvalAskedSeq: 11,
+          execution: { ...projectInput.facts.approvalSnapshots[0]!.execution, requestEventSeq: 10, actionHash: retryActionHash, projectorId: retryAction.projectorId },
+        }],
+        executionFacts: [{
+          ...projectInput.facts.executionFacts[0]!,
+          request: { ...projectInput.facts.executionFacts[0]!.request, eventSeq: 10 },
+          projection: { ...projectInput.facts.executionFacts[0]!.projection, projectorId: retryAction.projectorId, action: retryAction, actionHash: retryActionHash },
+        }],
+      },
+      verifiedDossier: {
+        dossier: {
+          ...projectInput.verifiedDossier.dossier,
+          interaction: {
+            delegations: { entries: [] },
+            turns: [{ turn: 3, directUserMessages: [{ event: { seq: 7 }, content: [{ type: 'text', text: directive }], surfaceState: 'visible' }] }],
+          },
+          currentTurnTools: { attempts: [{
+            request: { kind: 'model-tool-call', issuedIn: { seq: 8 }, blockIndex: 0, callId: 'denied-1', toolName: 'bash', rawArguments: '{"command":"pwd"}', callEvent: { seq: 8 } },
+            outcome: { kind: 'sandbox-denied', mode: 'read-only' },
+          }] },
+          pendingApproval: {
+            callId: 'call-1', toolName: 'bash', action: retryAction, actionHash: retryActionHash,
+            confinement: { kind: 'unconfined-composition' },
+            earlierSandboxDenials: [{ source: { event: { seq: 9, type: 'tool/result' }, requestEventSeq: 8, callId: 'denied-1' } }],
+          },
+        },
+      },
+    } as never)
+    expect(sandboxRetry).toMatchObject({
+      assessment: {
+        authorization: {
+          level: 'explicit', targetCovered: true, sideEffectsCovered: false,
+          sourceRefs: ['event:7'], sandboxDenialCandidateRefs: ['event:9'],
+        },
+      },
+    })
 
     const withoutUserFrontier = projector.project({
       request: { ...request, actionHash }, pending: { ...request, actionHash, agent, authority },

@@ -159,14 +159,34 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       ...dossier.currentTurnTools.attempts,
       ...dossier.interaction.delegations.entries.map(entry => entry.attempt),
     ]
-    if (latest === undefined || priorAttempts.some(attempt => {
+    if (latest === undefined) return undefined
+    const directUserFrontierSeq = latest.seq
+    const interveningAttempts = priorAttempts.filter(attempt => {
       const seq = requestSeq(attempt)
       const isPendingAction = attempt.request.callId === pending.callId
         && seq === execution.request.eventSeq
-      return !isPendingAction && seq !== undefined && seq > latest.seq
-    })) return undefined
-    const frontiers = Object.freeze([latest])
-    const directUserFrontierSeq = latest.seq
+      return !isPendingAction && seq !== undefined && seq > directUserFrontierSeq
+    })
+    const sandboxDenialCandidates = new Set(pending.earlierSandboxDenials.map(denial =>
+      `${denial.source.requestEventSeq}\0${denial.source.callId}`))
+    const onlyCurrentSandboxDenialsIntervened = interveningAttempts.length > 0
+      && interveningAttempts.every(attempt => {
+        const seq = requestSeq(attempt)
+        return seq !== undefined
+          && attempt.outcome.kind === 'sandbox-denied'
+          && sandboxDenialCandidates.has(`${seq}\0${attempt.request.callId}`)
+      })
+    // A sandbox-denied first attempt is the source-verified candidate the
+    // Guardian must correlate to this escalation; it does not consume an exact
+    // next-action directive by itself. Other intervening attempts do consume
+    // that directive, but consumption is not invalid facts: retain numeric
+    // provenance only so the request can reach Guardian/human review while no
+    // automatic authorization or fast path survives.
+    const frontiers: Parameters<typeof assessVerifiedActionV1>[1] = Object.freeze(
+      interveningAttempts.length === 0 || onlyCurrentSandboxDenialsIntervened
+        ? [latest]
+        : [directUserFrontierSeq],
+    )
     const assessment = assessVerifiedActionV1(pending.action, frontiers, pending.earlierSandboxDenials)
     const parentLifecycleFingerprint = canonicalJson(input.facts.session)
     const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq, actionHash: input.pending.actionHash })
