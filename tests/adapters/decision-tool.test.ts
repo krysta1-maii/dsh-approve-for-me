@@ -101,9 +101,7 @@ describe('createDecisionTool', () => {
     const scoped = createDecisionTool('reviewer-1', submitter)
     const child = fakeAgent('reviewer-1')
     const exec = fakeContext(child)
-    // Real reviewer models sometimes emit protocolVersion as a string; the tool
-    // must fail loudly so the Reviewer can resubmit a corrected payload.
-    const invalid = { ...realDecision(), protocolVersion: '1' as unknown as number }
+    const invalid = { ...realDecision(), reviewId: 42 as unknown as string }
     await expect(scoped.definition.execute(invalid, exec)).rejects.toThrow(/invalid approval decision/)
     expect(exec.concludeTurn).not.toHaveBeenCalled()
     scoped.observeResult(exec, success())
@@ -112,6 +110,16 @@ describe('createDecisionTool', () => {
     const retry = fakeContext(child, { callId: 'call-2' })
     await scoped.definition.execute(realDecision(), retry)
     expect(retry.concludeTurn).toHaveBeenCalledOnce()
+  })
+
+  it('accepts the observed string spelling of version constants from reviewer models', async () => {
+    const submitter = { submit: vi.fn() }
+    const scoped = createDecisionTool('reviewer-1', submitter)
+    const child = fakeAgent('reviewer-1')
+    const exec = fakeContext(child)
+    const stringVersions = { ...realDecision(), protocolVersion: '1' as unknown as number }
+    await expect(scoped.definition.execute(stringVersions, exec)).resolves.toEqual({ recorded: true })
+    expect(exec.concludeTurn).toHaveBeenCalledOnce()
   })
 
   it('rejects a caller that is not the expected Reviewer child', async () => {

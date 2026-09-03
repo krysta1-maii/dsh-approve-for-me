@@ -17,6 +17,18 @@ const RISKS = ['low', 'medium', 'high', 'critical', 'unknown'] as const
 const AUTHORIZATIONS = ['explicit', 'implicit', 'absent', 'conflicting', 'unknown'] as const
 const PERMISSION_KINDS = ['filesystem', 'network', 'sandbox', 'process', 'other'] as const
 
+/**
+ * Reviewer-authored version constants arrive over an LLM tool-call boundary:
+ * both weak and strong models have been observed emitting `"1"` (string) for
+ * an integer const. Coerce that one exact spelling; anything else still fails
+ * closed. Host-authored structures (providerData, action snapshots) stay
+ * strict — they never cross a model boundary.
+ */
+function versionConstant(input: unknown, label: string): 1 {
+  if (input === 1 || input === '1') return 1
+  throw new TypeError(`${label} must be 1`)
+}
+
 export interface ReviewerModelRoute {
   readonly providerId: string
   readonly modelId: string
@@ -376,7 +388,7 @@ export function parseApprovalReviewRequest(input: unknown): ApprovalReviewReques
 function parseDecisionAuthorizationAssessment(input: unknown): DecisionAuthorizationAssessmentV1 {
   const value = record(input, 'decision.assessment')
   exactKeys(value, ['version', 'targetCovered', 'sideEffectsCovered', 'sourceRefs', 'rationale'], ['sandboxDenialRelation'], 'decision.assessment')
-  if (value.version !== 1) throw new TypeError('decision.assessment.version must be 1')
+  versionConstant(value.version, 'decision.assessment.version')
   if (typeof value.targetCovered !== 'boolean' || typeof value.sideEffectsCovered !== 'boolean') {
     throw new TypeError('decision.assessment coverage must be boolean')
   }
@@ -414,9 +426,7 @@ export function parseApprovalDecision(input: unknown): ApprovalDecision {
     ['assessment'],
     'decision',
   )
-  if (value.protocolVersion !== APPROVAL_PROTOCOL_VERSION) {
-    throw new TypeError(`decision.protocolVersion must be ${APPROVAL_PROTOCOL_VERSION}`)
-  }
+  versionConstant(value.protocolVersion, 'decision.protocolVersion')
   if (!Array.isArray(value.categories) || value.categories.length > 16) {
     throw new TypeError('decision.categories must be an array with at most 16 entries')
   }
