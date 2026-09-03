@@ -230,9 +230,9 @@ try {
   writeFileSync(userPatch, `- id: dsh-approve-for-me
   config:
     mode: auto-then-user
-    // Real Guardian reviews take multiple LLM round trips through the local
-    // proxy; a short deadline turns every decision into GateFailure('deadline')
-    // before the sealed disposition can be consumed.
+    # Real Guardian reviews take multiple LLM round trips through the local
+    # proxy; a short deadline turns every decision into GateFailure('deadline')
+    # before the sealed disposition can be consumed.
     timeoutMs: 300000
     trustEnvelope:
       version: 1
