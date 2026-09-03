@@ -8,7 +8,10 @@ export const APPROVAL_PROTOCOL_VERSION = 1 as const
 const ACTION_HASH_DOMAIN = 'dsh-approve-for-me/action-snapshot/v1\0'
 const CONFIG_HASH_DOMAIN = 'dsh-approve-for-me/reviewer-config/v1\0'
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/
-const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,511}$/
+// Provider-issued tool call ids are opaque host identifiers (e.g. pi-ai
+// composites like `call_…|fc_call_…`); they bind exactly and never splice
+// into storage keys (record keys are base64url of canonical JSON).
+const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/|-]{0,511}$/
 const DECISIONS = ['allow', 'deny', 'human_review'] as const
 const RISKS = ['low', 'medium', 'high', 'critical', 'unknown'] as const
 const AUTHORIZATIONS = ['explicit', 'implicit', 'absent', 'conflicting', 'unknown'] as const

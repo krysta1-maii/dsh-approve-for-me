@@ -109,6 +109,21 @@ describe('action snapshots and requests', () => {
     expect(Object.isFrozen(shell.semantics.value)).toBe(true)
   })
 
+  it('accepts provider-issued composite tool call ids', () => {
+    const composite = 'call_1788399356576047492_19|fc_call_1788399356576047492_19'
+    const req = createApprovalReviewRequest(action(), {
+      reviewId: 'review-1',
+      parentSessionId: 'parent-1',
+      reviewerSessionId: 'reviewer-1',
+      generation: 'generation-1',
+      callId: composite,
+      issuedAt: 100,
+      deadlineAt: 200,
+    })
+    expect(req.callId).toBe(composite)
+    expect(parseApprovalReviewRequest(structuredClone(req)).callId).toBe(composite)
+  })
+
   it('snapshots and recursively freezes mutable arguments', () => {
     const input = { nested: { value: 1 } }
     const frozen = createActionSnapshot({ toolName: 'write', arguments: input })
