@@ -268,7 +268,9 @@ try {
         DSH_QUALITY_MODEL: qualityModel,
         DSH_APPROVE_FOR_ME_DEBUG: '1',
       },
-      timeout: 240_000,
+      // Real Guardian reviews take minutes through the local LLM proxy; the
+      // boot must outlive the per-review deadline plus both scenarios.
+      timeout: 900_000,
     })
   } catch (error) {
     if (error?.signal !== 'SIGTERM' && error?.status !== 0) {
