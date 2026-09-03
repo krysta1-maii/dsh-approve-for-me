@@ -63,6 +63,7 @@ describe('approval Chat projection', () => {
       kind: 'approve-for-me',
       target: 'chat',
       anchorSeq: 7,
+      location: { kind: 'session' },
       visibility: 'visible',
       data: {
         requestId: 'ask-1',

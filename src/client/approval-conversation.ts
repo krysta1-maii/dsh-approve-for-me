@@ -132,7 +132,10 @@ export const approvalConversationDefinition: ConversationNodeDefinition<Approval
       id: context.id,
       target: 'chat',
       anchorSeq: state.askedSeq,
-      location: context.start?.location ?? context.matches[0]?.location ?? { kind: 'unresolved' },
+      // Approval is process evidence but its visibility is the feature: placing
+      // the read-only row at Session scope keeps stock compact-transcript logic
+      // from hiding it inside the collapsed "tool calls" disclosure.
+      location: { kind: 'session' },
       visibility: 'visible',
       data: state,
     }

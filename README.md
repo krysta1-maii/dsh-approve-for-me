@@ -52,7 +52,7 @@ approval/asked   → Approve for me · 审批中
 approval/decided → 同一状态项原位更新为 已允许 / 已拒绝 / 已取消 / 审批不可用
 ```
 
-状态项按 requestId 精确配对，显示工具名、审批原因和“查看操作”入口；颜色、字号、间距、暗色模式及 reduced-motion 均复用 DSH design tokens。刷新或重载后由持久事件重建，孤立的 `approval/asked` 保持未决而不会伪造结果。
+状态项按 requestId 精确配对，显示工具名、审批原因和“查看操作”入口；颜色、字号、间距、暗色模式及 reduced-motion 均复用 DSH design tokens。它保持为独立信息流项，不会被 compact transcript 折叠进“工具调用”摘要；刷新或重载后由持久事件重建，孤立的 `approval/asked` 保持未决而不会伪造结果。
 
 该 UI 是只读、非授权的 client projection：不拦截 `approval/request`，不注册第二条审批链，不向 `user/message`／`assistant/message`／`tool/result` 等模型 surface 写入状态，也不新增可能破坏旧版持久化或后续 dossier 编译的私有 Session event。最终展示始终以权威 `approval/decided` 为准；发生人工下沉时，它表示整条审批请求的最终结果，而不冒充 Reviewer 的中间提议。
 
