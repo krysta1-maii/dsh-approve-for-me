@@ -162,7 +162,10 @@ export class DshExecutionFactProjectionBridge {
   }
 
   async project(exec: ToolExecution): Promise<void> {
-    if (exec.signal?.aborted === true || exec.agent === undefined) return
+    const dbg = (stage: string, detail?: unknown): void => {
+      if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me project]', stage, detail === undefined ? '' : JSON.stringify(detail))
+    }
+    if (exec.signal?.aborted === true || exec.agent === undefined) return dbg('no-agent-or-aborted')
     const agent = exec.agent
     const session = agent.session as unknown as SessionLike
     const agentId = string((agent as unknown as { id?: unknown }).id)
@@ -175,17 +178,17 @@ export class DshExecutionFactProjectionBridge {
       || !Number.isSafeInteger(version) || (version as number) < 0
       || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0
       || (session.header?.cwd !== undefined && cwd === undefined)
-      || typeof session.snapshotEvents !== 'function') return
+      || typeof session.snapshotEvents !== 'function') return dbg('identity')
 
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return
 
     const callId = String(exec.callId)
     const effective = this.catalogSource(exec)
-    if (effective === undefined) return
+    if (effective === undefined) return dbg('no-catalog', { name: exec.name, callId: String(exec.callId) })
     const event = events[effective.execution.requestEventSeq]
     if (event === undefined || event.seq !== effective.execution.requestEventSeq
-      || event.type !== effective.execution.requestEventType) return
+      || event.type !== effective.execution.requestEventType) return dbg('event-binding')
     const eventData = event.data as Record<string, unknown>
     const rootCallId = event.type === 'tool/code-dispatch-start' ? string(eventData.rootCallId) : undefined
     const parentCallId = event.type === 'tool/code-dispatch-start' ? string(eventData.parentCallId) : undefined
@@ -196,16 +199,17 @@ export class DshExecutionFactProjectionBridge {
           || parentCallId === undefined || !sameJson(eventData.arguments, exec.arguments)))) return
     const catalog = effective.dossier
     const descriptor = catalog.descriptors.find(item => item.toolName === exec.name)
-    if (descriptor === undefined) return
+    if (descriptor === undefined) return dbg('no-descriptor', { name: exec.name })
     // When installed beside a capture bridge, only its frozen action is
     // authoritative. Re-projecting on a miss can create a different semantic
     // snapshot from mutable execution state after the approval ask began.
     let action = this.captures?.lookup(agent, callId, exec.name)
-    if (this.captures !== undefined && action === undefined) return
+    if (this.captures !== undefined && action === undefined) return dbg('capture-miss', { callId, name: exec.name })
     if (action === undefined) {
       try {
         action = createActionSnapshot(this.projector.project(exec))
-      } catch {
+      } catch (error: unknown) {
+        dbg('projector-throw', String(error))
         return
       }
     }
@@ -249,7 +253,8 @@ export class DshExecutionFactProjectionBridge {
         observedAt: event.time,
       }),
     })
-    await this.repository.create(record)
+    const created = await this.repository.create(record)
+    dbg('record-create', { outcome: created, callId, eventSeq: event.seq })
     this.requestEventByToken.set(exec.token, event.seq)
   }
 

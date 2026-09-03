@@ -292,6 +292,7 @@ export function createCaptureBridge(
           capture.remember(owner, String(exec.callId), createActionSnapshot(projector.project(exec)))
         } catch (error: unknown) {
           if (!(error instanceof JsonSnapshotError) && !(error instanceof TypeError)) throw error
+          if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me capture] skip', String(error))
         }
       }
       return next()
