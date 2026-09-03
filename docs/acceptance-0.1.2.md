@@ -1,15 +1,17 @@
-# DSH 0.1.2-alpha.5 验收记录
+# DSH 0.1.2 验收记录(rc.1)
 
-日期:2026-09-03。基线:`deployment-artifacts.lock.json` 锁定 target `0.1.2-alpha.5` / commit `db6bdc3`,三件套(fork patch、managed-agent、插件本体)sha256 冻结。分析见 `docs/compat-alpha5-analysis.md`。
+日期:2026-09-03。基线:`deployment-artifacts.lock.json` 锁定 target `0.1.2-rc.1` / commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`,三件套(fork patch v4、managed-agent、插件本体)sha256 冻结。分析见 `docs/compat-alpha5-analysis.md`。
 
-## 验收矩阵(全部 PASS)
+> 历史:首轮验收于 alpha.5(commit `db6bdc3`)完成;rc.1 相对 alpha.5 上游源码零变更(252 文件纯版本号翻动),本仓升级为纯版本墙翻动 + 重建重锁,四项验收全部复跑通过。升级中唯一实质操作:managed-agent tarball 的 peerDependencies 随其版本墙重建,否则 lockfile 会从旧 tarball 拉回 alpha.5 传递依赖。
+
+## 验收矩阵(全部 PASS,rc.1 复跑)
 
 | 项 | 命令 | 结果 |
 |---|---|---|
 | 单元/契约/集成 | `npm run check` | 334 测试全绿 |
-| 真实 Profile 冒烟 | `npm run profile:artifact-smoke` | 12 包精确校验、fork marker、cold-restart 26 工具 |
+| 真实 Profile 冒烟 | `npm run profile:artifact-smoke` | 12 包精确校验(npm 官方 0.1.2-rc.1 宿主)、fork v4 marker、cold-restart 26 工具 |
 | pending 跨进程 cold-resume | `npm run profile:pending-smoke` | SIGKILL 崩溃后 resume:孤儿 `approval/asked` 保留、turn 自动修复闭合、无补裁决、无迟到副作用、可继续对话 |
-| 真实 LLM Guardian 质量 | `npm run profile:quality-smoke` | 见下 |
+| 真实 LLM Guardian 质量 | `npm run profile:quality-smoke` | S1 Guardian allow(逐字段核对 directive seq:34 匹配)放行、副作用落盘;S2 Guardian 识别授权已被 turn-1 消耗,裁 human_review、拒绝、零副作用 |
 
 ## 真实 LLM Guardian 质量(profile:quality-smoke)
 
