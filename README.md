@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 42 个测试文件、330 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 43 个测试文件、341 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -42,6 +42,19 @@ patched `dsh-user-approval` 提供唯一的 `registerMachinePolicy()` 槽：
 ```
 
 机器策略位于 `never` 之后、官方 `approval/request` waterfall 之前；机器策略异常、身份冲突、catalog 漂移、卷宗不完整、存储失败或 deadline 到期均不能自动放行。
+
+## Web 当前会话信息流
+
+插件同时交付静态 `dsh.client` 浏览器入口，把父会话中已经存在的官方持久审计对投影为一条紧凑的 Chat 信息流状态项：
+
+```text
+approval/asked   → Approve for me · 审批中
+approval/decided → 同一状态项原位更新为 已允许 / 已拒绝 / 已取消 / 审批不可用
+```
+
+状态项按 requestId 精确配对，显示工具名、审批原因和“查看操作”入口；颜色、字号、间距、暗色模式及 reduced-motion 均复用 DSH design tokens。刷新或重载后由持久事件重建，孤立的 `approval/asked` 保持未决而不会伪造结果。
+
+该 UI 是只读、非授权的 client projection：不拦截 `approval/request`，不注册第二条审批链，不向 `user/message`／`assistant/message`／`tool/result` 等模型 surface 写入状态，也不新增可能破坏旧版持久化或后续 dossier 编译的私有 Session event。最终展示始终以权威 `approval/decided` 为准；发生人工下沉时，它表示整条审批请求的最终结果，而不冒充 Reviewer 的中间提议。
 
 ## Scoped effective tool catalog
 

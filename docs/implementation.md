@@ -69,6 +69,13 @@
 - 版本化 packet/decision/policy/case schema、hash domain、create-once 内存/文件后端与完整 case sink 已有；
 - durable compact gate decision row 已接入；完整 ReviewDecisionRecord、attempt/recovery 审计与 full case capture 的 Storage Domain 后端仍未接线，因此 `caseCapture.mode: 'full'` 安装会被拒绝。
 
+### H5 Web 当前会话信息流（完成）
+
+- `src/client.ts` 交付独立 DSH lazy-CJS client bundle，并在 stock Chat 的 keyed node slot 注册 `approve-for-me` renderer；
+- `src/client/approval-conversation.ts` 只读折叠官方持久 `approval/asked`／`approval/decided`，按 requestId 把“审批中”原位更新为权威最终 outcome，刷新后可重建；
+- `src/client/approval-flow-item.ts` 使用 DSH design tokens、字体尺寸轴、暗色主题颜色和 reduced-motion 约束，提供工具名、原因与查看操作入口；
+- UI 不监听／认领 `approval/request`，不写模型 surface，不新增私有 Session event，renderer 异常或缺席均不改变授权结果。
+
 ## 验证
 
 ```bash

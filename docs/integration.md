@@ -78,8 +78,10 @@ package smoke 必须确认 tarball 包含：
 - `cordis.patch.yml`；
 - `lib/index.js`；
 - `lib/index.d.ts`；
+- `lib/client.js`（DSH lazy-CJS 浏览器入口）；
+- `lib/client.d.ts`。
 
-并且不泄漏 `src/`、`tests/`、`node_modules/`、`patch/` 或 TypeScript 构建配置。
+`package.json` 还必须导出 `./client`，并声明 `dsh.client.platform: web` 及 Chat／Conversation／Locale 依赖图；client bundle 必须把 `approval/asked → approval/decided` 投影为同一条只读 Chat 状态项。并且不泄漏 `src/`、`tests/`、`node_modules/`、`patch/` 或 TypeScript 构建配置。
 
 managed-agent artifact 还必须包含 `dist/index.js`、`dist/index.d.ts` 和 `cordis.patch.yml`。
 
