@@ -32,8 +32,14 @@ function hashWithDomain(domain: string, value: unknown): string {
   return `sha256:${createHash('sha256').update(domain).update(canonicalJson(value)).digest('hex')}`
 }
 
-function base64url(value: string): string {
-  return Buffer.from(value, 'utf8').toString('base64url')
+/**
+ * Storage keys ride the Storage Domain file backend, which bounds entry names
+ * at 255 bytes. Canonical tuples embed unbounded provider callIds and absolute
+ * cwd paths, so keys are prefix-bound sha256 digests (64 hex chars) instead of
+ * an inline encoding.
+ */
+function digestKey(prefix: string, value: unknown): string {
+  return `${prefix}${createHash('sha256').update(prefix).update('\0').update(canonicalJson(value)).digest('hex')}`
 }
 
 /** Storage key for one create-once `review_records` row. */
@@ -41,7 +47,7 @@ export function reviewRecordKey(
   session: SessionLifecycleIdentityV1,
   reviewRunId: string,
 ): string {
-  return `r1_${base64url(canonicalJson([session, reviewRunId]))}`
+  return digestKey('r1_', [session, reviewRunId])
 }
 
 /** Storage key for one create-once `case_artifacts` row. */
@@ -49,7 +55,7 @@ export function caseArtifactKey(
   session: SessionLifecycleIdentityV1,
   artifactId: string,
 ): string {
-  return `c1_${base64url(canonicalJson([session, artifactId]))}`
+  return digestKey('c1_', [session, artifactId])
 }
 
 export function hashGuardianDossier(dossier: unknown): string {

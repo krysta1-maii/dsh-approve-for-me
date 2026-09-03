@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { canonicalJson, snapshotJson } from '../domain/json.js'
 import { hashAction, parseActionSnapshot } from '../domain/protocol.js'
 import type { ActionSnapshot } from '../domain/protocol.js'
@@ -22,9 +23,11 @@ const factDomainSpec = Object.freeze({
 })
 
 function storageKey(prefix: string, value: unknown): string {
-  // Canonical tuple encoding is collision-free without leaking separators into
-  // a backend key layout or relying on a hash collision assumption.
-  return `${prefix}${Buffer.from(canonicalJson(value), 'utf8').toString('base64url')}`
+  // The file backend bounds entry names at 255 bytes while canonical tuples
+  // embed unbounded provider callIds and absolute cwd paths (ENAMETOOLONG).
+  // Prefix-bound sha256 digests keep keys at 68 chars with collision-free
+  // domain separation.
+  return `${prefix}${createHash('sha256').update(prefix).update('\0').update(canonicalJson(value)).digest('hex')}`
 }
 
 function lifecycleIdentity(session: SessionLifecycleIdentityV1): readonly [string, number, number, string | null] {

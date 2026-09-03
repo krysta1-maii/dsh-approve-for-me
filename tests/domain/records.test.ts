@@ -26,6 +26,22 @@ describe('record/artifact key encoding', () => {
     expect(artifact).toBe(caseArtifactKey(session, 'artifact-1'))
     expect(record).not.toBe(caseArtifactKey(session, 'run-1'))
   })
+
+  it('bounds key length for unbounded provider callIds and cwd paths', () => {
+    const huge = {
+      sessionId: `session-${'s'.repeat(300)}`,
+      sessionFormatVersion: 0,
+      createdAt: 1_000,
+      cwd: `/workspace/${'deep/'.repeat(120)}`,
+    }
+    const record = reviewRecordKey(huge, `run-${'r'.repeat(300)}`)
+    const artifact = caseArtifactKey(huge, `artifact-${'a'.repeat(300)}`)
+    // prefix (3) + sha256 hex (64): always below the 255-byte file-name bound.
+    expect(record).toMatch(/^r1_[0-9a-f]{64}$/)
+    expect(artifact).toMatch(/^c1_[0-9a-f]{64}$/)
+    expect(record.length).toBe(67)
+    expect(artifact.length).toBe(67)
+  })
 })
 
 describe('H4 hash helpers', () => {
