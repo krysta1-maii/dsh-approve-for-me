@@ -491,25 +491,23 @@ async function applyQuality(ctx, marker) {
   let s1BashCalled = false
   let s2BashCalled = false
 
-  function waitForIdleQuality(subjectAgent, timeoutMs = Number(process.env.DSH_QUALITY_IDLE_TIMEOUT_MS ?? 300_000)) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        dispose()
-        reject(new Error(`agent ${subjectAgent.id} did not return to idle within ${timeoutMs}ms`))
-      }, timeoutMs)
-      const dispose = ctx.on('agent/status', ({ agent, status }) => {
-        if (agent !== subjectAgent || status !== 'idle') return
-        clearTimeout(timer)
-        dispose()
-        resolve()
-      })
-    })
-  }
-
   async function sendQuality(targetAgent, text, timeoutMs = Number(process.env.DSH_QUALITY_IDLE_TIMEOUT_MS ?? 300_000)) {
-    const idle = waitForIdleQuality(targetAgent, timeoutMs)
+    // Race-proof completion signal: agent/status 'idle' can fire spuriously
+    // between subscription and turn start, which previously made the caller
+    // believe the turn had finished and re-send the instruction (double-send).
+    // Instead wait for a turn/end whose seq follows this message's user/message.
+    const deadline = Date.now() + timeoutMs
+    const baselineSeqs = new Set((targetAgent.session?.snapshotEvents?.() ?? []).map(e => e.seq))
     targetAgent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
-    await idle
+    let sawOwnMessage = false
+    while (Date.now() < deadline) {
+      const events = targetAgent.session?.snapshotEvents?.() ?? []
+      const fresh = events.filter(e => !baselineSeqs.has(e.seq))
+      if (fresh.some(e => e.type === 'user/message')) sawOwnMessage = true
+      if (sawOwnMessage && fresh.some(e => e.type === 'turn/end')) return
+      await new Promise(r => setTimeout(r, 250))
+    }
+    throw new Error(`agent ${targetAgent.id} did not complete the turn within ${timeoutMs}ms`)
   }
 
   function hasBashBeenCalled(targetAgent, targetSessionId, flag) {
