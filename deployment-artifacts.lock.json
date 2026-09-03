@@ -7,7 +7,7 @@
     "commit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d"
   },
   "locks": {
-    "pnpmLockSha256": "11f24838d0758290c0dfa2585c4ff921f69be8e7c00816fc99f41e37167ff68d",
+    "pnpmLockSha256": "e9a06c6aa0723f4c85fe43c73521223d37578af4dcc25a273ea5778a4e6e4986",
     "approvalUpstreamSha256": "2a0ce42debfe6e5433c7cc572cb754a42de40cd0091dc50f1921f49bad015c5e",
     "managedSourceSha256": "c1b9fe81eee46de712a19bb52586ce4fca38f247613e457f7c7d2f5191e11261"
   },
@@ -49,11 +49,11 @@
       "package": "dsh-approve-for-me",
       "version": "0.1.0-dev.0",
       "file": "dsh-approve-for-me-0.1.0-dev.0.tgz",
-      "sha256": "dd6ba14b20d0f9ee88889b670eb1df40d7a16262e8a93b1cd0efa037ef139cdc",
+      "sha256": "6b5ed90234260e8dd7064ecac06f349cad60818c8c8aae5b34caacbcd82abcb2",
       "source": {
         "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
-        "commit": "af0e2d1e53d9189d25c680596b94ae54749f3d17",
-        "tree": "54f2f15adffc348bf3c4501568999190b4e0ac18"
+        "commit": "2d1ff4ac6b3952435a73d7df4400868febca9f0d",
+        "tree": "3b45132421a8579e8be5ce64a7d2d2b3163639c5"
       }
     }
   ]
