@@ -223,7 +223,7 @@ try {
   }
   {
     const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), 30_000)
+    const timer = setTimeout(() => ac.abort(), 120_000)
     try {
       const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
