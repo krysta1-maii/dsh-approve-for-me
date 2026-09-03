@@ -530,7 +530,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       'permission/preset', 'sandbox/mode', 'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
     ])
     if (facts.events.some(event => !allowed.has(event.type)) || !approvalPolicyHistoryIsConsistent(facts.events)) {
-      { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch events-allowlist'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
+      { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch events-allowlist', JSON.stringify({ unknown: [...new Set(facts.events.filter(event => !allowed.has(event.type)).map(event => event.type))], policyConsistent: approvalPolicyHistoryIsConsistent(facts.events) })); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     }
     const turn = Number.isSafeInteger(currentPositionData?.turn) && (currentPositionData?.turn as number) >= 0 ? currentPositionData!.turn as number : undefined
     const step = Number.isSafeInteger(currentPositionData?.step) && (currentPositionData?.step as number) >= 0 ? currentPositionData!.step as number : undefined
