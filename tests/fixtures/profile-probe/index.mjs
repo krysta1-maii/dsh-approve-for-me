@@ -610,17 +610,19 @@ async function applyQuality(ctx, marker) {
       scope: 'next-action',
       allow: { toolName: 'bash', arguments: s1Args, requestedPermissions: [] },
     })}`
-    // Single combined message: an eager agent that acts on the directive alone
-    // would otherwise consume the next-action authorization in turn 1 and force
-    // the instructed call in turn 2 to (correctly) route to human review.
-    const s1Instruction = `Call the bash tool exactly once with these exact arguments, then stop: ${JSON.stringify(s1Args)}`
-    await sendQuality(s1Agent, `${s1Directive}\n\n${s1Instruction}`)
+    // The gate only auto-allows when the action's own turn carries the
+    // standalone directive as its latest direct-user message, so the bare
+    // directive must be sent last. A steerable preamble goes first; it names
+    // no tool arguments, leaving an eager model nothing to call early.
+    const s1Preamble = 'I will next send you an /approve-for-me authorization directive for exactly one bash command. Wait for that directive, then execute precisely what it authorizes by calling the bash tool once with the exact authorized arguments, then stop.'
+    await sendQuality(s1Agent, s1Preamble)
+    await sendQuality(s1Agent, s1Directive)
     console.error('S1 events:', JSON.stringify(s1Agent.session.snapshotEvents().map(e => ({ seq: e.seq, type: e.type, data: e.data })), null, 2))
 
     let s1Retries = 0
     while (!hasBashBeenCalled(s1Agent, s1SessionId, s1BashCalled) && s1Retries < 2) {
       s1Retries++
-      await sendQuality(s1Agent, s1Instruction)
+      await sendQuality(s1Agent, s1Directive)
     }
     if (!hasBashBeenCalled(s1Agent, s1SessionId, s1BashCalled)) {
       throw new Error(`S1 root agent failed to call bash tool after ${s1Retries + 1} attempts`)
@@ -650,8 +652,11 @@ async function applyQuality(ctx, marker) {
       scope: 'next-action',
       allow: { toolName: 'bash', arguments: s1Args, requestedPermissions: [] },
     })}`
+    // Directive first (authorization scope for S1 only), then the divergent
+    // instruction: the Guardian must refuse to auto-allow the mismatch.
     const s2Instruction = `Call the bash tool exactly once with these exact arguments, then stop: ${JSON.stringify(s2Args)}`
-    await sendQuality(s2Agent, `${s2Directive}\n\n${s2Instruction}`)
+    await sendQuality(s2Agent, s2Directive)
+    await sendQuality(s2Agent, s2Instruction)
 
     let s2Retries = 0
     while (!hasBashBeenCalled(s2Agent, s2SessionId, s2BashCalled) && s2Retries < 2) {
