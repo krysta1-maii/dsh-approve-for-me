@@ -530,7 +530,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       'permission/preset', 'sandbox/mode', 'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
     ])
     if (facts.events.some(event => !allowed.has(event.type)) || !approvalPolicyHistoryIsConsistent(facts.events)) {
-      return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+      { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch events-allowlist'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     }
     const turn = Number.isSafeInteger(currentPositionData?.turn) && (currentPositionData?.turn as number) >= 0 ? currentPositionData!.turn as number : undefined
     const step = Number.isSafeInteger(currentPositionData?.step) && (currentPositionData?.step as number) >= 0 ? currentPositionData!.step as number : undefined
@@ -542,10 +542,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
 
     const callEvents = facts.events.filter(event => event.type === 'tool/call' || event.type === 'tool/code-dispatch-start')
     if (callEvents.length === 0 || facts.executionFacts.length !== callEvents.length) {
-      return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+      { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch receipt-dup'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     }
     const receiptKeys = facts.delegationReceipts.map(receipt => canonicalJson(receipt as unknown as JsonValue))
-    if (new Set(receiptKeys).size !== receiptKeys.length) return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+    if (new Set(receiptKeys).size !== receiptKeys.length) { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch calls-mismatch'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     const usedReceiptKeys = new Set<string>()
     const assistantCalls: { readonly eventSeq: number; readonly callId: string; readonly toolName: string; readonly rawArguments: unknown; readonly turn: number; readonly step: number }[] = []
     const projected: Array<{
@@ -661,11 +661,11 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         turn: callTurn as number, step: callStep as number, outcome,
       })
     }
-    if (usedReceiptKeys.size !== facts.delegationReceipts.length) return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+    if (usedReceiptKeys.size !== facts.delegationReceipts.length) { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch unused-receipts'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     const resultEventSeqs = facts.executionFacts.flatMap(item => item.result === undefined ? [] : [item.result.eventSeq])
     if (new Set(resultEventSeqs).size !== resultEventSeqs.length
       || facts.events.some(event => (event.type === 'tool/result' || event.type === 'tool/code-dispatch') && !resultEventSeqs.includes(event.seq))) {
-      return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+      { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch result-seqs'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
     }
     const assistantMessages = assistantMessagesForCalls(facts.events, assistantCalls, turn, step)
     if (assistantMessages === undefined || facts.events.some(event => (event.type === 'assistant/chunk' || event.type === 'assistant/message')
@@ -713,7 +713,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       const attempt: ToolAttemptV1 = Object.freeze({ request, outcome: item.outcome })
       if (item.event.seq === execution.request.eventSeq) {
         if (item.outcome.kind !== 'pending') {
-          return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+          { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch current-not-pending'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
         }
         pendingRequest = request
         continue
@@ -721,7 +721,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       if ((item.turn < turn || item.step < step)
         && item.outcome.kind !== 'completed' && item.outcome.kind !== 'tool-error'
         && item.outcome.kind !== 'sandbox-denied') {
-        return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' }
+        { if (process.env.DSH_APPROVE_FOR_ME_DEBUG) console.error('[approve-for-me dossier] incomplete-branch historical-outcome'); return { kind: 'incomplete', reason: 'unsupported-history-for-complete-v1' } }
       }
       if (item.descriptor.classification === 'delegation') {
         const projectedDelegation = this.deps.delegationProjector.project({
