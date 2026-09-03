@@ -491,7 +491,7 @@ async function applyQuality(ctx, marker) {
   let s1BashCalled = false
   let s2BashCalled = false
 
-  function waitForIdleQuality(subjectAgent, timeoutMs = 120_000) {
+  function waitForIdleQuality(subjectAgent, timeoutMs = Number(process.env.DSH_QUALITY_IDLE_TIMEOUT_MS ?? 300_000)) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         dispose()
@@ -506,7 +506,7 @@ async function applyQuality(ctx, marker) {
     })
   }
 
-  async function sendQuality(targetAgent, text, timeoutMs = 120_000) {
+  async function sendQuality(targetAgent, text, timeoutMs = Number(process.env.DSH_QUALITY_IDLE_TIMEOUT_MS ?? 300_000)) {
     const idle = waitForIdleQuality(targetAgent, timeoutMs)
     targetAgent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
     await idle
@@ -584,8 +584,11 @@ async function applyQuality(ctx, marker) {
     const reqSessionId = String(request.agent?.session?.id ?? '')
     const reqAgentId = String(request.agent?.id ?? '')
     if (reqSessionId === s1SessionId || reqAgentId === s1AgentId) {
+      // S1 must be auto-allowed by the Guardian. A human fallback is already a
+      // smoke failure; resolve it so the run completes and reports the payload
+      // instead of hanging until the idle timeout.
       s1HumanFallback = true
-      return new Promise(() => {})
+      return Promise.resolve('rejected')
     }
     if (reqSessionId === s2SessionId || reqAgentId === s2AgentId) {
       s2AnswererReached = true

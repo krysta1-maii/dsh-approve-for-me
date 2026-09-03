@@ -129,13 +129,18 @@ interface ResolvedExecutionHistory {
   readonly wireSchemas: readonly JsonValue[]
 }
 
+function debugCatalog(stage: string, detail?: unknown): undefined {
+  if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me catalog]', stage, detail === undefined ? '' : JSON.stringify(detail))
+  return undefined
+}
+
 function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory | undefined {
   const session = exec.agent?.session as unknown as SessionLike | undefined
-  if (typeof session?.snapshotEvents !== 'function') return undefined
+  if (typeof session?.snapshotEvents !== 'function') return debugCatalog('history:no-snapshot-events')
   const events = session.snapshotEvents()
   const validSeq = (value: unknown): value is number =>
     Number.isSafeInteger(value) && (value as number) >= 0 && !Object.is(value, -0)
-  if (!Array.isArray(events) || events.some((event, index) => !validSeq(event.seq) || event.seq !== index)) return undefined
+  if (!Array.isArray(events) || events.some((event, index) => !validSeq(event.seq) || event.seq !== index)) return debugCatalog('history:invalid-events')
   const callId = String(exec.callId)
   const isNested = exec.parent !== undefined
   const request = last(events.filter(event => {
@@ -150,7 +155,7 @@ function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory 
   }))
   // Alpha.1 appends the canonical source event immediately before pre-execute.
   // Refuse to bind an older matching call when IDs are reused or the hook is late.
-  if (request === undefined || request.seq !== events.length - 1) return undefined
+  if (request === undefined || request.seq !== events.length - 1) return debugCatalog('history:request-not-latest', { found: request !== undefined, requestSeq: request?.seq, lastSeq: events.length - 1, callId, name: exec.name })
 
   let root = request
   let parent = request
@@ -173,7 +178,7 @@ function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory 
   const rootData = record(root.data)
   const rootCallId = typeof rootData?.callId === 'string' ? rootData.callId : undefined
   const rootName = typeof rootData?.name === 'string' ? rootData.name : undefined
-  if (rootCallId === undefined || rootName === undefined) return undefined
+  if (rootCallId === undefined || rootName === undefined) return debugCatalog('history:root-shape')
   const assistant = last(events.filter(event => {
     if (event.type !== 'assistant/message' || event.seq >= root.seq) return false
     const message = record(record(event.data)?.message)
@@ -184,11 +189,11 @@ function resolveExecutionHistory(exec: ToolExecution): ResolvedExecutionHistory 
     })
   }))
   if (assistant === undefined || events.some(event => event.type === 'request/header'
-    && event.seq > assistant.seq && event.seq < root.seq)) return undefined
+    && event.seq > assistant.seq && event.seq < root.seq)) return debugCatalog('history:assistant-binding', { found: assistant !== undefined })
   const header = last(events.filter(event => event.type === 'request/header' && event.seq < assistant.seq))
   const headerValue = record(record(header?.data)?.header)
   const wireSchemas = frozenSchemas(headerValue?.tools ?? [])
-  if (header === undefined || wireSchemas === undefined) return undefined
+  if (header === undefined || wireSchemas === undefined) return debugCatalog('history:header', { found: header !== undefined })
   return Object.freeze({ request, root, parent, header, wireSchemas })
 }
 
@@ -235,9 +240,9 @@ export class DshScopedEffectiveCatalogResolver {
   forExecution(exec: ToolExecution): DshAlpha2EffectiveCatalog | undefined {
     const cached = this.byExecution.get(exec)
     if (cached !== undefined) return cached
-    if (exec.agent === undefined) return undefined
+    if (exec.agent === undefined) return debugCatalog('for-exec:no-agent')
     const history = resolveExecutionHistory(exec)
-    if (history === undefined) return undefined
+    if (history === undefined) return debugCatalog('for-exec:no-history', { name: exec.name, callId: String(exec.callId) })
     if (exec.parent !== undefined) {
       const parentCatalog = this.byToken.get(exec.parent)
       if (parentCatalog === undefined || parentCatalog.commitment.presentation !== 'ptc'
@@ -273,12 +278,15 @@ export class DshScopedEffectiveCatalogResolver {
       && record(history.wireSchemas[0])?.name === 'run_code'
       && callableSchemas.some(schema => canonicalJson(schema) === canonicalJson(history.wireSchemas[0]!))
     const presentation = same ? 'native' as const : runCodeWire ? 'ptc' as const : undefined
-    if (presentation === undefined) return undefined
+    if (presentation === undefined) return debugCatalog('for-exec:schema-mismatch', {
+      callable: callableSchemas.map(item => record(item)?.name),
+      wire: history.wireSchemas.map(item => record(item)?.name),
+    })
     let base: Omit<DshAlpha2EffectiveCatalog, 'commitment' | 'execution'>
     try {
       const discovered = createDshAlpha2EffectiveCatalog(callableSchemas)
       const configured = this.applyConfiguredTemplate(discovered)
-      if (configured === undefined) return undefined
+      if (configured === undefined) return debugCatalog('for-exec:template-mismatch')
       base = configured
     } catch {
       return undefined
