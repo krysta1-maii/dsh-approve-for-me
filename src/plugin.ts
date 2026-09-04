@@ -33,7 +33,6 @@ import { createDshAlpha2StockProjectorRegistry } from './dsh/stock-tools.js'
 import {
   DossierGateFactProjector,
   SourceBackedGateFactResolver,
-  assertApprovalSourceEventBudget,
 } from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
@@ -290,11 +289,7 @@ export function installApproveForMe(
       if (signal?.aborted) return undefined
       const session = pending.agent.session as unknown as {
         header?: { version?: unknown; createdAt?: unknown; cwd?: unknown }
-        snapshotEvents?: () => readonly unknown[]
       }
-      const sourceEvents = session.snapshotEvents?.()
-      if (!Array.isArray(sourceEvents)) return undefined
-      assertApprovalSourceEventBudget(sourceEvents.length, normalized.maxSourceEvents)
       const approvalAskedSeq = await executionProjection.awaitApprovalSnapshot(
         pending.agent,
         pending.requestId,

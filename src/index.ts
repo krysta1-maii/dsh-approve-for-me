@@ -323,7 +323,6 @@ export type { GateFactRegistration } from './application/capture-gate-facts.js'
 export {
   DossierGateFactProjector,
   SourceBackedGateFactResolver,
-  assertApprovalSourceEventBudget,
 } from './application/source-backed-gate-facts.js'
 export type {
   PendingSourceBackedAsk,

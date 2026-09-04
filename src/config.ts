@@ -92,8 +92,16 @@ export interface Config {
   readonly maxDeliveryAttemptsPerChild?: number
   /** Maximum UTF-8 bytes of a complete serialized Guardian dossier. */
   readonly maxDossierBytes?: number
-  /** Maximum source events admitted to dossier work; deployments may lower the safe 20k ceiling. */
-  readonly maxSourceEvents?: number
+  /** Maximum unanchored sealed events admitted to an approval hot path. */
+  readonly maxSealedTailEvents?: number
+  /** Maximum ledger entries admitted to an approval hot packet. */
+  readonly maxLedgerEntries?: number
+  /** Maximum bytes of the recent transcript excerpt admitted to an approval hot packet. */
+  readonly maxRecentExcerptBytes?: number
+  /** Maximum bytes of a prebuilt approval hot packet. */
+  readonly maxHotPacketBytes?: number
+  /** Reserved for phase three; phase one accepts only false or an omitted value. */
+  readonly sealBackfill?: boolean
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
   readonly caseCapture?: GuardianCaseCaptureConfigV1
@@ -112,7 +120,11 @@ export const Config: z<Config> = z.object({
   timeoutMs: z.number().default(30_000),
   maxDeliveryAttemptsPerChild: z.number().min(1),
   maxDossierBytes: z.number().min(1),
-  maxSourceEvents: z.number().min(1).max(20_000),
+  maxSealedTailEvents: z.number().min(1),
+  maxLedgerEntries: z.number().min(1),
+  maxRecentExcerptBytes: z.number().min(1),
+  maxHotPacketBytes: z.number().min(1).max(256_000),
+  sealBackfill: z.boolean(),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
@@ -135,7 +147,11 @@ export interface NormalizedConfig {
   readonly timeoutMs: number
   readonly maxDeliveryAttemptsPerChild: number
   readonly maxDossierBytes: number
-  readonly maxSourceEvents: number
+  readonly maxSealedTailEvents: number
+  readonly maxLedgerEntries: number
+  readonly maxRecentExcerptBytes: number
+  readonly maxHotPacketBytes: number
+  readonly sealBackfill: false
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
@@ -145,8 +161,10 @@ export interface NormalizedConfig {
 const DEFAULT_MAX_DELIVERY_ATTEMPTS_PER_CHILD = 64
 /** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
 const DEFAULT_MAX_DOSSIER_BYTES = 256_000
-/** Work budget preventing dense long histories from starving Host I/O. */
-const DEFAULT_MAX_SOURCE_EVENTS = 20_000
+const DEFAULT_MAX_SEALED_TAIL_EVENTS = 512
+const DEFAULT_MAX_LEDGER_ENTRIES = 256
+const DEFAULT_MAX_RECENT_EXCERPT_BYTES = 24_000
+const DEFAULT_MAX_HOT_PACKET_BYTES = 96_000
 
 const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = (() => {
   const unsealed = {
@@ -268,9 +286,30 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(maxDossierBytes) || maxDossierBytes < 1) {
     throw new TypeError('maxDossierBytes must be a positive safe integer')
   }
-  const maxSourceEvents = config.maxSourceEvents ?? DEFAULT_MAX_SOURCE_EVENTS
-  if (!Number.isSafeInteger(maxSourceEvents) || maxSourceEvents < 1 || maxSourceEvents > DEFAULT_MAX_SOURCE_EVENTS) {
-    throw new TypeError(`maxSourceEvents must be a positive safe integer no greater than ${DEFAULT_MAX_SOURCE_EVENTS}`)
+  if (Object.hasOwn(config as object, 'maxSourceEvents')) {
+    throw new TypeError('maxSourceEvents has been removed; the approval hot path is protected by sealed-tail and ledger budgets')
+  }
+  const maxSealedTailEvents = config.maxSealedTailEvents ?? DEFAULT_MAX_SEALED_TAIL_EVENTS
+  if (!Number.isSafeInteger(maxSealedTailEvents) || maxSealedTailEvents < 1) {
+    throw new TypeError('maxSealedTailEvents must be a positive safe integer')
+  }
+  const maxLedgerEntries = config.maxLedgerEntries ?? DEFAULT_MAX_LEDGER_ENTRIES
+  if (!Number.isSafeInteger(maxLedgerEntries) || maxLedgerEntries < 1) {
+    throw new TypeError('maxLedgerEntries must be a positive safe integer')
+  }
+  const maxRecentExcerptBytes = config.maxRecentExcerptBytes ?? DEFAULT_MAX_RECENT_EXCERPT_BYTES
+  if (!Number.isSafeInteger(maxRecentExcerptBytes) || maxRecentExcerptBytes < 1) {
+    throw new TypeError('maxRecentExcerptBytes must be a positive safe integer')
+  }
+  const maxHotPacketBytes = config.maxHotPacketBytes ?? DEFAULT_MAX_HOT_PACKET_BYTES
+  if (!Number.isSafeInteger(maxHotPacketBytes) || maxHotPacketBytes < 1 || maxHotPacketBytes > DEFAULT_MAX_DOSSIER_BYTES) {
+    throw new TypeError(`maxHotPacketBytes must be a positive safe integer no greater than ${DEFAULT_MAX_DOSSIER_BYTES}`)
+  }
+  if (config.sealBackfill === true) {
+    throw new TypeError('sealBackfill is fixed off until phase three')
+  }
+  if (config.sealBackfill !== undefined && config.sealBackfill !== false) {
+    throw new TypeError('sealBackfill must be false when specified')
   }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
@@ -289,7 +328,11 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     timeoutMs,
     maxDeliveryAttemptsPerChild,
     maxDossierBytes,
-    maxSourceEvents,
+    maxSealedTailEvents,
+    maxLedgerEntries,
+    maxRecentExcerptBytes,
+    maxHotPacketBytes,
+    sealBackfill: false,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),

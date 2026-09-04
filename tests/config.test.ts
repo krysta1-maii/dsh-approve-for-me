@@ -72,7 +72,11 @@ describe('plugin config', () => {
     expect(normalized.mode).toBe('auto')
     expect(normalized.timeoutMs).toBe(30_000)
     expect(normalized.maxDossierBytes).toBe(256_000)
-    expect(normalized.maxSourceEvents).toBe(20_000)
+    expect(normalized.maxSealedTailEvents).toBe(512)
+    expect(normalized.maxLedgerEntries).toBe(256)
+    expect(normalized.maxRecentExcerptBytes).toBe(24_000)
+    expect(normalized.maxHotPacketBytes).toBe(96_000)
+    expect(normalized.sealBackfill).toBe(false)
     expect(normalized.preset).toMatchObject({
       version: 1,
       role: 'primary',
@@ -86,6 +90,24 @@ describe('plugin config', () => {
       toolsetVersion: 1,
     })
     expect(normalized.preset.configurationFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/)
+  })
+
+  it('accepts explicit approval ledger budget knobs', () => {
+    const normalized = normalizeConfig({
+      ...valid(),
+      maxSealedTailEvents: 1,
+      maxLedgerEntries: 2,
+      maxRecentExcerptBytes: 3,
+      maxHotPacketBytes: 256_000,
+      sealBackfill: false,
+    })
+    expect(normalized).toMatchObject({
+      maxSealedTailEvents: 1,
+      maxLedgerEntries: 2,
+      maxRecentExcerptBytes: 3,
+      maxHotPacketBytes: 256_000,
+      sealBackfill: false,
+    })
   })
 
   it('accepts explicit mode and timeout', () => {
@@ -219,8 +241,15 @@ describe('plugin config', () => {
     expect(() => normalizeConfig({ ...valid(), mode: 'never' as never })).toThrow(/mode/)
     expect(() => normalizeConfig({ ...valid(), maxDeliveryAttemptsPerChild: 0 })).toThrow(/maxDeliveryAttemptsPerChild/)
     expect(() => normalizeConfig({ ...valid(), maxDossierBytes: 0 })).toThrow(/maxDossierBytes/)
-    expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 0 })).toThrow(/maxSourceEvents/)
-    expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 20_001 })).toThrow(/maxSourceEvents/)
+    expect(() => normalizeConfig({ ...valid(), maxSealedTailEvents: 0 })).toThrow(/maxSealedTailEvents/)
+    expect(() => normalizeConfig({ ...valid(), maxLedgerEntries: -1 })).toThrow(/maxLedgerEntries/)
+    expect(() => normalizeConfig({ ...valid(), maxRecentExcerptBytes: 1.5 })).toThrow(/maxRecentExcerptBytes/)
+    expect(() => normalizeConfig({ ...valid(), maxHotPacketBytes: 256_001 })).toThrow(/maxHotPacketBytes/)
+    expect(() => normalizeConfig({ ...valid(), maxHotPacketBytes: 0 })).toThrow(/maxHotPacketBytes/)
+    expect(() => normalizeConfig({ ...valid(), sealBackfill: true })).toThrow(/sealBackfill is fixed off/)
+    expect(() => normalizeConfig({ ...valid(), sealBackfill: 'yes' as never })).toThrow(/sealBackfill/)
+    expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 20_000 } as never))
+      .toThrow(/maxSourceEvents has been removed.*sealed-tail and ledger budgets/)
     expect(() => normalizeConfig({ ...valid(), trustEnvelope: { tools: ['unknown'] as never } }))
       .toThrow(/unknown tool family/)
     expect(() => normalizeConfig({ ...valid(), reviewer: { ...valid().reviewer, toolsetVersion: 2 as never } }))

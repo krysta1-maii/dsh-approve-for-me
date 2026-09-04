@@ -304,6 +304,39 @@ describe('installApproveForMe composition root', () => {
     await plugin.dispose()
   })
 
+  it('does not reject an oversized session snapshot with the removed source-event budget', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const events = Array.from({ length: 20_001 }, (_, seq) => ({
+      seq,
+      time: 100 + seq,
+      type: seq === 0 ? 'approval/asked' : 'message/assistant',
+      data: seq === 0 ? { id: 'ask-1', callId: 'call-1', toolName: 'bash' } : {},
+    }))
+    const parent = {
+      id: 'parent-1',
+      session: {
+        id: 'parent-1',
+        header: { version: 1, createdAt: 100 },
+        snapshotEvents: vi.fn(() => events),
+      },
+    }
+    const policy = h.machinePolicy as {
+      decide(request: { agent: typeof parent; toolName: string; callId: string; requestId: string }): Promise<string>
+    }
+    await h.listeners.preExecute!({
+      agent: parent,
+      callId: 'call-1',
+      name: 'bash',
+      arguments: { command: 'pwd' },
+    }, async () => ({ kind: 'ask' }))
+
+    await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
+    expect(parent.session.snapshotEvents).toHaveBeenCalled()
+
+    await plugin.dispose()
+  })
+
   it('rejects catalog bindings without an exact registered semantic projector before provider registration', () => {
     const h = harness()
     const catalogConfig: Config = { ...config, toolCatalog: validToolCatalog() }

@@ -47,20 +47,6 @@ export interface SourceBackedGateFactResolverDependencies {
 
 const GATE_CONFIGURATION_HASH_DOMAIN = 'dsh-approve-for-me/gate-configuration/v1\0'
 
-/** Reject source histories that would monopolize the Host before dossier work starts. */
-export function assertApprovalSourceEventBudget(eventCount: number, maxSourceEvents: number): void {
-  if (!Number.isSafeInteger(eventCount) || eventCount < 0
-    || !Number.isSafeInteger(maxSourceEvents) || maxSourceEvents < 1) {
-    throw new TypeError('approval source-event work budget requires non-negative count and positive limit')
-  }
-  if (eventCount > maxSourceEvents) {
-    throw new GateFailure(
-      'retryable-capability',
-      `approval source history has ${eventCount} events, above the ${maxSourceEvents} event work budget`,
-    )
-  }
-}
-
 /** Commit both the immutable Reviewer composition and this call's effective catalog. */
 export function fingerprintGateConfigurationV1(
   reviewerConfigurationFingerprint: string,
