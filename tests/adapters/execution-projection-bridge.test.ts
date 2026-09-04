@@ -580,4 +580,70 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(rows[0]).toMatchObject({ seal: { sourceSeq: 0, approvalAsked: { eventSeq: 1 }, result: { status: 'completed' } }, activity: { occurredAt: 22, targetSummary: 'tool:bash' } })
     expect(JSON.stringify(rows)).not.toContain('secret')
   })
+
+  it('seals an approval-bound code-dispatch result by subCallId', async () => {
+    const repository = new InMemoryExecutionFactRepository(), approvals = new InMemoryApprovalSnapshotRepository(), rows: any[] = []
+    const ledger: SealedFactsLedger = { async read () { return rows }, async append (seal, activity) { rows.push({ seal, activity }); return 'created' } }
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'root-1', name: 'run_code' } },
+      { seq: 1, time: 21, type: 'tool/code-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' } } },
+      { seq: 2, time: 22, type: 'approval/asked', data: { id: 'a1', callId: 'sub-1', toolName: 'bash' } },
+      { seq: 3, time: 23, type: 'tool/code-dispatch', sourceEventSeqs: [1], data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' }, isError: false, content: [] } },
+    ]
+    const owner = agent(events), exec = { ...execution(owner), callId: 'sub-1', rootCallId: 'root-1', parent: {} as ToolExecution } as unknown as ToolExecution
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, ledger)
+    await bridge.project(exec); await bridge.observeSessionEvent(owner, events[2]!); bridge.observeResult(exec, { isError: false, value: null, content: [] })
+    await bridge.observeSessionEvent(owner, events[3]!);
+    expect(rows).toHaveLength(1); expect(rows[0].seal).toMatchObject({ sourceSeq: 1, request: { eventType: 'tool/code-dispatch-start', callId: 'sub-1' } })
+  })
+
+  it('does not seal an aborted execution when its result arrives afterward', async () => {
+    const repository = new InMemoryExecutionFactRepository(), approvals = new InMemoryApprovalSnapshotRepository(), rows: any[] = []
+    const ledger: SealedFactsLedger = { async read () { return rows }, async append (seal, activity) { rows.push({ seal, activity }); return 'created' } }
+    const events = [{ seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } }, { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } }]
+    const owner = agent(events), abort = new AbortController(), exec = { ...execution(owner), signal: abort.signal } as ToolExecution
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, ledger)
+    await bridge.project(exec); await bridge.observeSessionEvent(owner, events[1]!); abort.abort(); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await bridge.observeSessionEvent(owner, events[2]!)
+    expect(rows).toEqual([]); await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 })).resolves.toMatchObject({ result: { eventSeq: 2 } })
+  })
+
+  it('leaves the host result attached when the ledger read is unavailable', async () => {
+    const repository = new InMemoryExecutionFactRepository(), approvals = new InMemoryApprovalSnapshotRepository(), append = vi.fn()
+    const ledger: SealedFactsLedger = { async read () { return undefined }, append }
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const events = [{ seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } }, { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } }]
+    const owner = agent(events), bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, ledger), exec = execution(owner)
+    await bridge.project(exec); await bridge.observeSessionEvent(owner, events[1]!); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await expect(bridge.observeSessionEvent(owner, events[2]!)).resolves.toBeUndefined()
+    expect(append).not.toHaveBeenCalled(); expect(error).toHaveBeenCalledWith('[approve-for-me ledger] seal-chain-unavailable'); await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 })).resolves.toMatchObject({ result: { eventSeq: 2 } }); error.mockRestore()
+  })
+
+  it('links a new catalog epoch to the preceding seal', async () => {
+    const repository = new InMemoryExecutionFactRepository(), approvals = new InMemoryApprovalSnapshotRepository(), rows: any[] = []
+    const ledger: SealedFactsLedger = { async read () { return rows }, async append (seal, activity) { rows.push({ seal, activity }); return 'created' } }
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } }, { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
+      { seq: 3, time: 23, type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-2', name: 'bash' } }, { seq: 4, time: 24, type: 'approval/asked', data: { id: 'a2', callId: 'call-2', toolName: 'bash' } }, { seq: 5, time: 25, type: 'tool/result', sourceEventSeqs: [3], data: { turn: 1, step: 1, message: { source: { kind: 'tool', callId: 'call-2' }, content: [{ type: 'tool-result', toolCallId: 'call-2', isError: false, content: [] }] } } },
+    ]
+    const owner = agent(events); const source = (exec: ToolExecution) => ({ ...effectiveCatalog(exec), commitment: { ...effectiveCatalog(exec).commitment, fingerprint: exec.callId === 'call-2' ? 'sha256:' + 'c'.repeat(64) : effectiveCatalog(exec).commitment.fingerprint } })
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, source, repository, approvals, undefined, ledger)
+    for (const [ask, result, callId] of [[1, 2, 'call-1'], [4, 5, 'call-2']] as const) { const exec = { ...execution(owner), callId, rootCallId: callId } as ToolExecution; await bridge.project(exec); await bridge.observeSessionEvent(owner, events[ask]!); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await bridge.observeSessionEvent(owner, events[result]!) }
+    expect(rows[1].seal).toMatchObject({ catalog: { epoch: 1 }, epochBoundary: { previousEpoch: 0, changed: true }, previousSealHash: rows[0].seal.sealHash })
+  })
+
+  it.each([['completed', false, undefined], ['tool-error', true, undefined], ['sandbox-denied', false, { sandbox: { denied: true, mode: 'read-only' } }]])('seals %s result category', async (category, isError, value) => {
+    const repository = new InMemoryExecutionFactRepository(), approvals = new InMemoryApprovalSnapshotRepository(), rows: any[] = []
+    const ledger: SealedFactsLedger = { async read () { return rows }, async append (seal, activity) { rows.push({ seal, activity }); return 'created' } }
+    const events = [{ seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } }, { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError, content: [] }] } } }]
+    const owner = agent(events), bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, ledger), exec = execution(owner)
+    await bridge.project(exec); await bridge.observeSessionEvent(owner, events[1]!); const observed = isError ? { isError: true as const, error: new Error('private'), content: [] } : { isError: false as const, value: value ?? null, content: [] }; bridge.observeResult(exec, observed); await bridge.observeSessionEvent(owner, events[2]!); expect(rows[0]).toMatchObject({ seal: { result: { status: category } }, activity: { resultCategory: category } })
+  })
+
+  it('does not write a ledger row without a matching approval ask', async () => {
+    const repository = new InMemoryExecutionFactRepository(), rows: any[] = [], append = vi.fn(async () => 'created' as const)
+    const ledger: SealedFactsLedger = { async read () { return rows }, append }
+    const events = [{ seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } }]
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const owner = agent(events), bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, new InMemoryApprovalSnapshotRepository(), undefined, ledger), exec = execution(owner)
+    await bridge.project(exec); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await bridge.observeSessionEvent(owner, events[1]!); expect(append).not.toHaveBeenCalled(); expect(error).not.toHaveBeenCalled(); error.mockRestore()
+  })
 })
