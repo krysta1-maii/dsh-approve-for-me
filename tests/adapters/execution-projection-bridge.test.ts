@@ -824,4 +824,25 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(await recovered.repairHistoricalResults(owner, snapshot, 3)).toBe(1)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 })).resolves.toMatchObject({ result: { eventSeq: 1 } })
   })
+
+  it('keeps the poison permanent even when the first ask is beyond the sealed tail window', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    // window=2: the scan covers only seq10..seq11. The duplicate at seq11 is in the
+    // window, but the first ask at seq1 is not. Only the persistent poisoned index
+    // (not the bounded scan) can fail this closed, proving index poison-permanence.
+    const events: Array<{ seq: number; time: number; type: string; data: Record<string, unknown> }> = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      ...Array.from({ length: 9 }, (_value, index) => ({ seq: index + 2, time: index + 22, type: 'tool/result', data: {} })),
+      { seq: 11, time: 31, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, undefined, 2)
+    // First ask (beyond window) observed and settled; entry persists (方案 a).
+    await bridge.observeSessionEvent(owner, events[1]!)
+    // Duplicate near window observed → same key, different seq → must poison.
+    await bridge.observeSessionEvent(owner, events[11]!)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
 })
