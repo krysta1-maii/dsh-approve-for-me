@@ -524,6 +524,39 @@ describe('readSealedParentSessionFacts', () => {
     } }
     await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
   })
+
+  it('fails closed when two validated rows claim the same current action', async () => {
+    const fixture = sealedReaderFixture()
+    // A fourth legitimate chain row reuses the current identity (call-1/ask-1) via a
+    // fresh live call, so both the third and fourth rows validate to the same current
+    // action. Only the >1 conflict guard can see the collision; it must fail closed
+    // rather than pick one or degrade to an explainable 'missing current'.
+    fixture.events.push({ seq: 11, time: 111, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } })
+    fixture.events.push({ seq: 12, time: 112, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } })
+    fixture.events.push({ seq: 13, time: 113, type: 'tool/result', sourceEventSeqs: [11], data: { message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1' }] } } })
+    const third = fixture.rows[2]!.seal
+    const duplicate = createSealV1({
+      lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: 11,
+      request: { eventSeq: 11, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+      approvalAsked: { eventSeq: 12, requestId: 'ask-1' },
+      actionHash: sealedHash('a'), projectorId: 'default-v1',
+      catalog: { epoch: 1, headerEventSeq: 4, commitment: third.catalog.commitment },
+      wireSchemaFingerprint: sealedHash('d'),
+      result: { eventSeq: 13, status: 'completed' },
+      epochBoundary: { previousEpoch: 1, changed: false },
+      previousSealHash: third.sealHash,
+    })
+    fixture.rows.push({ seal: duplicate, activity: createActivityV1({ lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: 11, occurredAt: 113, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: duplicate.sealHash }) })
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ['genesis (first) row', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[0]!; f.rows[0] = { ...old, activity: reactivate(old.seal, old.activity, { classification: 'delegation:start' }) } }],
+    ['mid (second) row', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[1]!; f.rows[1] = { ...old, activity: reactivate(old.seal, old.activity, { classification: 'delegation:start' }) } }],
+  ] as const)('fails closed on a self-consistent classification forgery in the %s', async (_name, mutate) => {
+    const fixture = sealedReaderFixture(); mutate(fixture)
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
 })
 
 describe('activityClassificationFromDescriptorV1', () => {
