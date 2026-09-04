@@ -562,4 +562,22 @@ describe('DshExecutionFactProjectionBridge', () => {
       expect.objectContaining({ request: expect.objectContaining({ callId: 'call-1', eventSeq: 1 }), result: expect.objectContaining({ eventSeq: 2 }) }),
     ])
   })
+
+  it('writes one safe approval-bound ledger row and ignores duplicate delivery', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const rows: any[] = []
+    const ledger: SealedFactsLedger = { async read () { return rows }, async append (seal, activity) { if (rows.some(row => row.seal.sourceSeq === seal.sourceSeq)) return 'identical'; rows.push({ seal, activity }); return 'created' } }
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [{ text: 'secret' }] }] } } },
+    ]
+    const owner = agent(events); const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, ledger)
+    const exec = execution(owner); await bridge.project(exec); await bridge.observeSessionEvent(owner, events[1]!); bridge.observeResult(exec, { isError: false, value: null, content: [] })
+    await bridge.observeSessionEvent(owner, events[2]!); await bridge.observeSessionEvent(owner, events[2]!)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ seal: { sourceSeq: 0, approvalAsked: { eventSeq: 1 }, result: { status: 'completed' } }, activity: { occurredAt: 22, targetSummary: 'tool:bash' } })
+    expect(JSON.stringify(rows)).not.toContain('secret')
+  })
 })

@@ -210,7 +210,7 @@ export class DshExecutionFactProjectionBridge {
     const callId = String(exec.callId)
     const effective = this.catalogSource(exec)
     if (effective === undefined) return dbg('no-catalog', { name: exec.name, callId: String(exec.callId) })
-    const event = events[effective.execution.requestEventSeq]
+    const event = events.find(candidate => candidate.seq === effective.execution.requestEventSeq)
     if (event === undefined || event.seq !== effective.execution.requestEventSeq
       || event.type !== effective.execution.requestEventType) return dbg('event-binding')
     const eventData = event.data as Record<string, unknown>
@@ -340,7 +340,7 @@ export class DshExecutionFactProjectionBridge {
     if (requestEventSeq === undefined || typeof session.snapshotEvents !== 'function') return undefined
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return undefined
-    const source = events[requestEventSeq]
+    const source = events.find(candidate => candidate.seq === requestEventSeq)
     if (source === undefined || source.seq !== requestEventSeq) return undefined
     const sourceData = source.data as Record<string, unknown>
     const sourceMatches = (source.type === 'tool/call' && sourceData.callId === callId && sourceData.name === exec.name)
@@ -417,7 +417,7 @@ export class DshExecutionFactProjectionBridge {
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return false
     const candidate = await this.repository.get({ session: lifecycle, callId, requestEventSeq })
-    const call = events[requestEventSeq]
+    const call = events.find(candidate => candidate.seq === requestEventSeq)
     const callData = call?.data as Record<string, unknown> | undefined
     if (candidate?.request.kind !== 'model-tool-call' || candidate.request.callId !== callId
       || candidate.request.eventSeq !== requestEventSeq || candidate.request.eventSeq >= event.seq
