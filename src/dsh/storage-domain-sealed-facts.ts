@@ -20,17 +20,33 @@ export class DshStorageDomainSealedFacts {
   if (seal.lifecycleFingerprint !== activity.lifecycleFingerprint || seal.sourceSeq !== activity.sourceSeq || seal.sealHash !== activity.sourceSealHash) return 'conflict'
   return this.serial(seal.lifecycleFingerprint, async () => {
    if (!this.admissionOpen) return 'unavailable'; const domain = await this.ready; if (!domain) return 'unavailable'
-   try { const seals = domain.table('seals'), activities = domain.table('activity'), tips = domain.table('chain_tips'), sk = sealKey(seal.lifecycleFingerprint, seal.sourceSeq), ak = activityKey(seal.lifecycleFingerprint, seal.sourceSeq); const existing = seals.get(sk)
-    if (existing !== undefined) { try { if (canonicalJson(parseSealV1(existing)) !== canonicalJson(seal) || canonicalJson(parseActivityV1(activities.get(ak))) !== canonicalJson(activity)) return 'conflict'; return this.validated(domain, seal.lifecycleFingerprint) === undefined ? 'conflict' : 'identical' } catch { return 'conflict' } }
-    const rawTip = tips.get(sealedFactKey(seal.lifecycleFingerprint)); let previous = genesisSealHash(seal.lifecycleFingerprint); let keys: readonly string[] = []
-    if (rawTip !== undefined) { const old = parseTip(rawTip); const last = old.keys.at(-1); if (last === undefined) return 'conflict'; previous = parseSealV1(seals.get(last)).sealHash; keys = old.keys }
-    if (seal.previousSealHash !== previous || seal.sourceSeq !== keys.length) return 'conflict'
-    await seals.put(sk, seal); await activities.put(ak, activity); await tips.put(sealedFactKey(seal.lifecycleFingerprint), makeTip(seal.lifecycleFingerprint, [...keys, sk], seal.sealHash)); return this.validated(domain, seal.lifecycleFingerprint) === undefined ? 'unavailable' : 'created'
+   try {
+    const seals = domain.table('seals'), activities = domain.table('activity'), tips = domain.table('chain_tips'), sk = sealKey(seal.lifecycleFingerprint, seal.sourceSeq), ak = activityKey(seal.lifecycleFingerprint, seal.sourceSeq)
+    const existing = seals.get(sk)
+    if (existing !== undefined && canonicalJson(parseSealV1(existing)) !== canonicalJson(seal)) return 'conflict'
+    const old = tips.get(sealedFactKey(seal.lifecycleFingerprint)) === undefined ? undefined : parseTip(tips.get(sealedFactKey(seal.lifecycleFingerprint))!)
+    const priorKey = old?.keys.at(-1); const prior = priorKey === undefined ? undefined : parseSealV1(seals.get(priorKey))
+    const previous = prior?.sealHash ?? genesisSealHash(seal.lifecycleFingerprint)
+    const previousSeq = prior?.sourceSeq
+    if (seal.previousSealHash !== previous || (previousSeq !== undefined && seal.sourceSeq <= previousSeq)) return 'conflict'
+    if (existing === undefined) await seals.put(sk, seal)
+    // A crash after seals.put leaves an orphan. An identical replay resumes the
+    // remaining writes only when it is the exact next link; any other shape is conflict.
+    const storedActivity = activities.get(ak)
+    if (storedActivity !== undefined && canonicalJson(parseActivityV1(storedActivity)) !== canonicalJson(activity)) return 'conflict'
+    if (storedActivity === undefined) await activities.put(ak, activity)
+    const alreadyIndexed = old?.keys.includes(sk) ?? false
+    if (alreadyIndexed) return this.validated(domain, seal.lifecycleFingerprint) === undefined ? 'conflict' : 'identical'
+    await tips.put(sealedFactKey(seal.lifecycleFingerprint), makeTip(seal.lifecycleFingerprint, [...(old?.keys ?? []), sk], seal.sealHash))
+    // Re-validating the complete chain on idempotent paths intentionally fails
+    // closed if unrelated persistent corruption was observed (O(R), bounded tail).
+    return this.validated(domain, seal.lifecycleFingerprint) === undefined ? 'unavailable' : existing === undefined ? 'created' : 'identical'
    } catch { return 'unavailable' }
   })
  }
+ /** Undefined means unavailable or polluted; an empty array means no tip exists for this lifecycle. */
  async read(lifecycleFingerprint: string): Promise<readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined> { if (!this.admissionOpen) return undefined; const domain = await this.ready; return domain === undefined ? undefined : this.validated(domain, lifecycleFingerprint) }
  async drain(): Promise<void> { this.admissionOpen = false; await Promise.all(this.tails.values()); const domain = await this.ready; if (domain) await domain.close() }
- private validated(domain: StorageDomainHandle, lifecycleFingerprint: string): readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined { try { const raw = domain.table('chain_tips').get(sealedFactKey(lifecycleFingerprint)); if (raw === undefined) return Object.freeze([]); const t = parseTip(raw); if (t.lifecycleFingerprint !== lifecycleFingerprint) return undefined; let previous = genesisSealHash(lifecycleFingerprint); const rows: { seal: SealV1; activity: ActivityV1 }[] = []; for (let seq = 0; seq < t.keys.length; seq += 1) { const seal = parseSealV1(domain.table('seals').get(t.keys[seq]!)); const activity = parseActivityV1(domain.table('activity').get(activityKey(lifecycleFingerprint, seq))); if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq !== seq || seal.previousSealHash !== previous || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seq || activity.sourceSealHash !== seal.sealHash) return undefined; previous = seal.sealHash; rows.push({ seal, activity }) } if (t.keys.length === 0 || t.tipHash !== chainTipHash(lifecycleFingerprint, previous)) return undefined; return Object.freeze(rows) } catch { return undefined } }
+ private validated(domain: StorageDomainHandle, lifecycleFingerprint: string): readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined { try { const raw = domain.table('chain_tips').get(sealedFactKey(lifecycleFingerprint)); if (raw === undefined) return Object.freeze([]); const t = parseTip(raw); if (t.lifecycleFingerprint !== lifecycleFingerprint || t.keys.length === 0) return undefined; let previous = genesisSealHash(lifecycleFingerprint); let previousSeq = -1; const rows: { seal: SealV1; activity: ActivityV1 }[] = []; for (const key of t.keys) { const seal = parseSealV1(domain.table('seals').get(key)); const activity = parseActivityV1(domain.table('activity').get(activityKey(lifecycleFingerprint, seal.sourceSeq))); if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSeq || seal.previousSealHash !== previous || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash) return undefined; previous = seal.sealHash; previousSeq = seal.sourceSeq; rows.push({ seal, activity }) } if (t.tipHash !== chainTipHash(lifecycleFingerprint, previous)) return undefined; return Object.freeze(rows) } catch { return undefined } }
  private serial<T>(lifecycle: string, operation: () => Promise<T>): Promise<T> { const before = this.tails.get(lifecycle) ?? Promise.resolve(); const result = before.then(operation); const tail = result.then(() => undefined, () => undefined); this.tails.set(lifecycle, tail); return result.finally(() => { if (this.tails.get(lifecycle) === tail) this.tails.delete(lifecycle) }) }
 }

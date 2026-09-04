@@ -59,7 +59,7 @@ sealed execution facts 是可验证历史索引，不是授权。授权抽屉是
 
 | 模块 | 现状 → 目标 | 约束 | 测试 |
 |---|---|---|---|
-| src/dsh/execution-projection-bridge.ts | project 已冻结 catalog/action（179-274），但审批仍扫 log；捕获 execution/result 当下 create-once seal、前链尖和轨迹。 | 取消先于 seal；capture miss、wire/catalog/projector 不一致不盖章；result 不等于成功。 | native、code-dispatch、重复投递、崩溃尾部、取消、链断、catalog epoch。 |
+| src/dsh/execution-projection-bridge.ts | project 已冻结 catalog/action（179-274），但审批仍扫 log；仅当该 call 存在 approval/asked 时，捕获 execution/result 当下 create-once seal、前链尖和轨迹。 | 取消先于 seal；capture miss、wire/catalog/projector 不一致不盖章；result 不等于成功。workspace-write 内非提权副作用一期不进轨迹抽屉；一期接受，因累积外发风险主要经越墙动作。 | native、code-dispatch、重复投递、崩溃尾部、取消、链断、catalog epoch。 |
 | src/dsh/storage-domain-sealed-facts.ts（新） | 现有 facts repo 与 decision record 分散；新建私有 domain 保存 sealed execution、chain tip、activity。 | open(spec)、append-only/create-once、canonical/hash 校验、单 writer lane；污染视缺失。 | parser、同键幂等／冲突、重启续写、drain/close。 |
 | src/dsh/parent-session-fact-source.ts | snapshot 冻结全量连续 log；改为验证当前 seal 及从已验证锚点起的有界 seal 链，并将进入 hot packet 的 seal／轨迹逐条对 live eventAt(sourceSeq) exact 再绑定。 | 磁盘链不是信任根；exact Agent/Session、完整 lifecycle 不变；无章历史不回扫补信任。 | 裸 sessionId 复用、ask 非唯一、seq 缺口、live 重绑字段不符、header/catalog 篡改。 |
 | src/application/dossier-compiler.ts | 预算在构建后；增加 sealed-input 路径；完整卷宗仅保留给人工／显式调试入口。 | 热审批路径禁止保留或调用全量编译入口；编译器仍纯函数、品牌化、ask 时间 freeze、header 冻结、无 omissions；hot packet 只含当前分类、轨迹、tail、摘录。 | 尾部／台账边界、预建预算、封装后溢出、保守一致性。 |
@@ -71,9 +71,9 @@ sealed execution facts 是可验证历史索引，不是授权。授权抽屉是
 
 新 domain 暂定名 afm_approval_ledger，version 1；实现前以目标宿主实际 Storage Domain schema 定稿。表为 seals、chain_tips、activity 和仅供迁移诊断的 migration。键由完整 lifecycle fingerprint hash 派生，避免存储布局暴露 session/call 标识。
 
-SealV1 至少含 schema version、完整 lifecycle、request eventSeq/type/callId/toolName、approval asked 绑定、actionHash、projectorId、catalog commitment（含 header seq）、wire schema fingerprint、result status、previousSealHash、sealHash、canonical payload。链按 lifecycle 与连续 source seq 排列，**跨 catalog epoch 不分叉而继续链延续**；每行记录 epoch 边界和 commitment，使拓扑与 dossier catalogEpochs 对齐，genesis／tip 均域分隔 hash。ActivityV1 从 seal 确定性投影，只含时间、分类、目标摘要、结果类别和 source seal 引用，不含结果正文、ID 或 LLM 内容。
+SealV1 至少含 schema version、完整 lifecycle、request eventSeq/type/callId/toolName、approval asked 绑定、actionHash、projectorId、catalog commitment（含 header seq）、wire schema fingerprint、result status、previousSealHash、sealHash、canonical payload。链按 lifecycle 与**链内严格单调递增**的 source seq 排列（非 source seq 等于链位置），**跨 catalog epoch 不分叉而继续链延续**；每行记录 epoch 边界和 commitment，使拓扑与 dossier catalogEpochs 对齐，genesis／tip 均域分隔 hash。ActivityV1 从 seal 确定性投影，只含时间、分类、目标摘要、结果类别和 source seal 引用，不含结果正文、ID 或 LLM 内容。
 
-V1 只接受原子 create-once：相同 canonical 重放成功，不同 canonical 冲突；读取必须验证 parser、canonical、自身 hash、前链和 tip，随后对 hot packet 的每条 seal／activity sourceSeq 做 live Session exact 再绑定；磁盘自洽链永不单独授权。旧 execution sidecar 没有 seal 字段即不是 V1 seal，永久为无章；一期不回填，三期才可后台补章，且不能与自动授权并发。未知 row/domain version 或污染数据一律缺失。
+V1 只接受原子 create-once：相同 canonical 重放成功，不同 canonical 冲突；若崩溃仅留下 identical seal，重放只可在其正好是已验证链尖后的下一条时补齐 activity／tip，其他形状冲突。读取必须验证 parser、canonical、自身 hash、前链和 tip，随后对 hot packet 的每条 seal／activity sourceSeq 做 live Session exact 再绑定；磁盘自洽链永不单独授权。没有该 lifecycle 的 tip 返回空数组；Storage 不可用、未知 row/domain version 或任何污染返回缺失。幂等重放也完整重验链，发现无关持久化污染即冲突；当前有界 tail 内 O(R) 重读可接受。旧 execution sidecar 没有 seal 字段即不是 V1 seal，永久为无章；一期不回填，三期才可后台补章，且不能与自动授权并发。
 
 ### 4.3 配置旋钮
 
