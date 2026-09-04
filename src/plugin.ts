@@ -37,10 +37,9 @@ import {
 } from './application/source-backed-gate-facts.js'
 import type { SealedFactsReader } from './application/source-backed-gate-facts.js'
 import type { LiveAgentRegistry } from './ports/parent-session-facts.js'
-import { readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
+import { deriveRequesterDepthV1, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
 import { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
 import { assembleRecentExcerpts } from './application/recent-excerpts.js'
-import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { InMemoryDossierCompilationMetrics } from './application/instrumented-dossier-compiler.js'
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
@@ -339,7 +338,7 @@ export function installApproveForMe(
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
       const session = pending.agent.session as unknown as {
-        header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown }
+        header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown; delegationDepth?: unknown }
         eventAt?: (seq: number) => SealedSessionEventView | undefined
       }
       const approvalAskedSeq = await executionProjection.awaitApprovalSnapshot(
@@ -412,8 +411,14 @@ export function installApproveForMe(
       const parentSessionId = typeof session.header?.parentSession === 'string' && session.header.parentSession.length > 0
         ? session.header.parentSession
         : undefined
-      const effectiveDelegationDepth = delegationDepthOf(pending.agent)
-      if (!Number.isSafeInteger(effectiveDelegationDepth) || effectiveDelegationDepth < 0) return undefined
+      // WP4-c S-5: requester depth comes from the one shared derivation used by
+      // sessionIdentity (header + runtime evidence, fail-closed), so the depth
+      // can never fork between the plugin and the verified identity path.
+      const effectiveDelegationDepth = deriveRequesterDepthV1({
+        headerDelegationDepth: session.header?.delegationDepth as number | undefined,
+        runtimeSubagentDepth: (pending.agent as unknown as { options?: { subagentDepth?: unknown } }).options?.subagentDepth as number | undefined,
+      })
+      if (effectiveDelegationDepth === undefined) return undefined
       // Assemble the bounded recent-transcript excerpt channel (WP4-b4-2a). It is
       // an intent-understanding aid for the Reviewer, never an authorization fact:
       // any assembly failure or empty result degrades to no excerpts (the current

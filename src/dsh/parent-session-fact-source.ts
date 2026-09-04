@@ -1,5 +1,4 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import { activityClassificationFromDescriptorV1, genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
@@ -116,6 +115,35 @@ function snapshotEvents(events: readonly SessionEventLike[]): readonly SessionFa
     : Object.freeze(snapshots as SessionFactEventV1[])
 }
 
+/**
+ * Independent depth evidence for one requester. Both the plugin's snapshotInput
+ * and the session-identity extraction derive the effective delegation depth
+ * through this single pure function so the value can never fork between two
+ * code paths (WP4-c S-5).
+ */
+export interface RequesterDepthEvidenceV1 {
+  /** session.header.delegationDepth; absent means the top-level depth 0. */
+  readonly headerDelegationDepth?: number | undefined
+  /** agent.options.subagentDepth; absent means no runtime deepening of the depth. */
+  readonly runtimeSubagentDepth?: number | undefined
+}
+
+/**
+ * Derive the effective delegation depth from the header and runtime evidence,
+ * mirrored from `delegationDepthOf` (which is `Math.max(header ?? 0, runtime ??
+ * 0)`) but failing CLOSED instead of throwing: an invalid depth either returns
+ * undefined (the caller degrades to the conservative path) or is treated as the
+ * non-negative safe integer it records. The runtime depth may only deepen the
+ * header depth, never lower it (a resumed child must not delegate as top-level).
+ */
+export function deriveRequesterDepthV1(evidence: RequesterDepthEvidenceV1): number | undefined {
+  const header = evidence.headerDelegationDepth === undefined ? 0 : evidence.headerDelegationDepth
+  if (!Number.isSafeInteger(header) || header < 0 || Object.is(header, -0)) return undefined
+  const runtime = evidence.runtimeSubagentDepth
+  if (runtime !== undefined && (!Number.isSafeInteger(runtime) || runtime < 0 || Object.is(runtime, -0))) return undefined
+  return Math.max(header, runtime ?? 0)
+}
+
 function sessionIdentity(agent: Agent): { session: SessionLike; identity: PrincipalSessionIdentityV1 } | undefined {
   const agentId = text((agent as unknown as { id?: unknown }).id)
   const session = agent.session as unknown as SessionLike | undefined
@@ -135,13 +163,11 @@ function sessionIdentity(agent: Agent): { session: SessionLike; identity: Princi
   const runtimeDepth = (agent as unknown as { readonly options?: { readonly subagentDepth?: unknown } }).options?.subagentDepth
   const runtimeSubagentDepth = runtimeDepth === undefined ? undefined : nonNegative(runtimeDepth)
   if (runtimeDepth !== undefined && runtimeSubagentDepth === undefined) return undefined
-  let effectiveDelegationDepth: number
-  try {
-    effectiveDelegationDepth = delegationDepthOf(agent)
-  } catch {
-    return undefined
-  }
-  if (effectiveDelegationDepth !== Math.max(depth, runtimeSubagentDepth ?? 0)) return undefined
+  const effectiveDelegationDepth = deriveRequesterDepthV1({
+    headerDelegationDepth: session.header?.delegationDepth as number | undefined,
+    runtimeSubagentDepth,
+  })
+  if (effectiveDelegationDepth === undefined) return undefined
   const cwd = session.header.cwd === undefined ? undefined : text(session.header.cwd)
   if (session.header.cwd !== undefined && cwd === undefined) return undefined
   return {

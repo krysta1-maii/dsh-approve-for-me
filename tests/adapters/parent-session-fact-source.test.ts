@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
 import type { ActivityV1, SealV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
@@ -791,5 +791,38 @@ describe('activityClassificationFromDescriptorV1', () => {
     expect(() => activityClassificationFromDescriptorV1({ classification: 'ordinary' })).toThrow()
     expect(() => activityClassificationFromDescriptorV1({ classification: 'delegation' })).toThrow()
     expect(() => activityClassificationFromDescriptorV1({ classification: 'ordinary', classificationId: '' })).toThrow()
+  })
+})
+
+describe('deriveRequesterDepthV1 (WP4-c S-5)', () => {
+  it('derives the same effective depth as delegationDepthOf from header + runtime evidence', () => {
+    // header absent, runtime absent -> top level 0.
+    expect(deriveRequesterDepthV1({})).toBe(0)
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: undefined, runtimeSubagentDepth: undefined })).toBe(0)
+    // header only -> header wins (runtime may only deepen, never lower).
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: 2 })).toBe(2)
+    // runtime may deepen the header depth.
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: 2, runtimeSubagentDepth: 5 })).toBe(5)
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: 0, runtimeSubagentDepth: 3 })).toBe(3)
+  })
+
+  it('never lets a stale header mask a deeper runtime depth (resumed child cannot appear root)', () => {
+    // A resumed child arrives with fresh runtime depth but a possibly-stale
+    // header; the effective depth is the max of the two, never the header alone.
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: 1, runtimeSubagentDepth: 3 })).toBe(3)
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: 0, runtimeSubagentDepth: 1 })).toBe(1)
+  })
+
+  it('fails closed (undefined) instead of throwing on invalid depth evidence', () => {
+    // delegationDepthOf throws on a negative runtime subagentDepth; the shared
+    // derivation degrades to undefined so the hot path never crashes on a
+    // malformed Agent depth.
+    expect(deriveRequesterDepthV1({ runtimeSubagentDepth: -1 })).toBeUndefined()
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: -1 })).toBeUndefined()
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: Number.NaN })).toBeUndefined()
+    expect(deriveRequesterDepthV1({ runtimeSubagentDepth: 1.5 })).toBeUndefined()
+    const negativeZero = -0
+    expect(deriveRequesterDepthV1({ runtimeSubagentDepth: negativeZero })).toBeUndefined()
+    expect(deriveRequesterDepthV1({ headerDelegationDepth: negativeZero })).toBeUndefined()
   })
 })

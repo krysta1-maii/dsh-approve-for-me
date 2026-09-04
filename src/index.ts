@@ -368,8 +368,8 @@ export type {
   DossierSectionAggregateV1,
 } from './ports/dossier-compilation-metrics.js'
 export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
-export { DshParentSessionFactSource, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
-export type { SealedFactsReadResult, SealedParentSessionFactsV1 } from './dsh/parent-session-fact-source.js'
+export { DshParentSessionFactSource, deriveRequesterDepthV1, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
+export type { RequesterDepthEvidenceV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from './dsh/parent-session-fact-source.js'
 export type { LiveAgentRegistry, ParentSessionFactSource } from './ports/parent-session-facts.js'
 export {
   InMemoryApprovalSnapshotRepository,
