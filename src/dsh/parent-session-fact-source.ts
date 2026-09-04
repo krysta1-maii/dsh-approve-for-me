@@ -322,7 +322,8 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
 export interface SealedParentSessionFactsV1 {
   readonly version: 1
   readonly lifecycleFingerprint: string
-  readonly current: { readonly seal: SealV1; readonly activity: ActivityV1 }
+  /** Absent means the current action is still pending (asked precedes any seal), not a completeness failure. */
+  readonly current?: { readonly seal: SealV1; readonly activity: ActivityV1 }
   readonly seals: readonly SealV1[]
   readonly activities: readonly ActivityV1[]
   readonly catalogEpochs: readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[]
@@ -421,6 +422,9 @@ export async function readSealedParentSessionFacts(input: {
     }
   }
   const current = validatedRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
-  if (current.length !== 1) return undefined
-  return Object.freeze({ version: 1, lifecycleFingerprint, current: current[0]!, seals: Object.freeze(validatedRows.map(row => row.seal)), activities: Object.freeze(validatedRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
+  // Zero current rows is the normal pending state (asked precedes any result seal);
+  // more than one means a conflict and must stay fail-closed, never degrade to
+  // an explainable 'missing current' (that would disguise tampering as absence).
+  if (current.length > 1) return undefined
+  return Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(validatedRows.map(row => row.seal)), activities: Object.freeze(validatedRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
 }
