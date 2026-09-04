@@ -5,6 +5,7 @@ import type { JsonValue } from '../domain/json.js'
 import { genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
 import type { SealedFactsLedger } from './execution-projection-bridge.js'
+import type { ExecutionFactRepository } from '../application/fact-repositories.js'
 import type {
   EventRefV1,
   ParentSessionFactSnapshotV1,
@@ -332,6 +333,7 @@ export async function readSealedParentSessionFacts(input: {
   readonly agent: Agent
   readonly registry: LiveAgentRegistry
   readonly ledger: SealedFactsLedger | undefined
+  readonly executionFacts: Pick<ExecutionFactRepository, 'get'>
   readonly approvalRequestId: string
   readonly callId: string
   readonly toolName: string
@@ -347,6 +349,7 @@ export async function readSealedParentSessionFacts(input: {
   try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return undefined }
   if (input.signal?.aborted || rows === undefined || rows.length === 0) return undefined
   const epochs = new Map<number, { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }>()
+  const commitmentsByHeader = new Map<number, string>()
   const validatedRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
   let previousSealHash = genesisSealHash(lifecycleFingerprint)
   let previousSourceSeq = -1
@@ -373,6 +376,22 @@ export async function readSealedParentSessionFacts(input: {
       || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
       || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash
       || activity.occurredAt !== result.time || activity.resultCategory !== seal.result.status) return undefined
+      const fact = await input.executionFacts.get({
+        session: { sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) },
+        callId: seal.request.callId,
+        requestEventSeq: seal.request.eventSeq,
+      })
+      const headerData = header.data as { readonly header?: { readonly tools?: unknown } } | null
+      const priorHeaderCommitment = commitmentsByHeader.get(seal.catalog.headerEventSeq)
+      if (fact === undefined || fact.request.callId !== seal.request.callId || fact.request.eventSeq !== seal.request.eventSeq
+        || fact.catalogCommitment.requestHeaderEventSeq !== seal.catalog.headerEventSeq
+        || seal.catalog.commitment !== fact.catalogCommitment.fingerprint
+        || validateDurableToolCatalogCommitmentV1(fact.catalogCommitment).kind !== 'ok'
+        || canonicalJson(headerData?.header?.tools) !== canonicalJson(fact.catalogCommitment.wireSchemas)
+        || seal.catalog.headerEventSeq >= seal.request.eventSeq
+        || events.slice(seal.catalog.headerEventSeq + 1, seal.request.eventSeq + 1).some(event => event.type === 'request/header')
+        || (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment)) return undefined
+      commitmentsByHeader.set(seal.catalog.headerEventSeq, seal.catalog.commitment)
     const requestData = request.data as Record<string, unknown>
     const askedData = asked.data as Record<string, unknown>
     const resultData = result.data as Record<string, unknown>

@@ -288,7 +288,7 @@ describe('DshParentSessionFactSource', () => {
 
   it('fails closed when the ledger is absent, empty, polluted, or no longer matches live facts', async () => {
     const requester = agent()
-    const base = { agent: requester as never, registry: { get: () => requester as never }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
+    const base = { agent: requester as never, registry: { get: () => requester as never }, executionFacts: { async get() { return undefined } }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
     expect(await readSealedParentSessionFacts({ ...base, ledger: undefined })).toBeUndefined()
     expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return [] } } })).toBeUndefined()
     expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return undefined } } })).toBeUndefined()
@@ -314,15 +314,26 @@ function sealedReaderFixture() {
   ]
   const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, snapshotEvents: () => events } }
   const fingerprint = canonicalJson(lifecycle)
+  const commitments = new Map([
+    [0, createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)],
+    [4, createDshAlpha2CatalogCommitment(effective, 'native', 4, schemas)],
+  ])
   const make = (sourceSeq: number, askedSeq: number, resultSeq: number, callId: string, requestId: string, previousSealHash: string, epoch: number, headerEventSeq: number): SealedRow => {
-    const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: sealedHash(epoch === 0 ? 'b' : 'c') }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: sourceSeq === 1 ? null : sourceSeq === 5 ? 0 : 1, changed: sourceSeq === 5 }, previousSealHash })
+    const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: commitments.get(headerEventSeq)!.fingerprint }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: sourceSeq === 1 ? null : sourceSeq === 5 ? 0 : 1, changed: sourceSeq === 5 }, previousSealHash })
     return { seal, activity: createActivityV1({ lifecycleFingerprint: fingerprint, sourceSeq, occurredAt: events[resultSeq]!.time, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
   }
   const first = make(1, 2, 3, 'call-old', 'ask-old', genesisSealHash(fingerprint), 0, 0)
   const second = make(5, 6, 7, 'call-mid', 'ask-mid', first.seal.sealHash, 1, 4)
   const third = make(8, 9, 10, 'call-1', 'ask-1', second.seal.sealHash, 1, 4)
-  const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
-  return { events, rows: [first, second, third] as SealedRow[], base }
+  const rows = [first, second, third] as SealedRow[]
+  const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+    const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
+    if (row === undefined) return undefined
+    const seal = row.seal
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call', eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitments.get(seal.catalog.headerEventSeq)! } as ToolExecutionFactRecordV1
+  } }
+  const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
+  return { events, rows, base }
 }
 function ledger(rows: readonly SealedRow[] | undefined) { return { async append() { return 'unavailable' as const }, async read() { return rows } } }
 function reseal(seal: SealV1, changes: object): SealV1 { const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = seal; return createSealV1({ ...input, ...changes }) }
@@ -334,7 +345,7 @@ describe('readSealedParentSessionFacts', () => {
     const facts = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
     expect(facts).toMatchObject({ version: 1, lifecycleFingerprint: canonicalJson(lifecycle), current: { seal: { sourceSeq: 8 }, activity: { occurredAt: 110 } } })
     expect(facts?.seals).toHaveLength(3); expect(facts?.activities).toHaveLength(3)
-    expect(facts?.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 0, commitment: sealedHash('b') }, { epoch: 1, headerEventSeq: 4, commitment: sealedHash('c') }])
+    expect(facts?.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 0, commitment: fixture.rows[0]!.seal.catalog.commitment }, { epoch: 1, headerEventSeq: 4, commitment: fixture.rows[1]!.seal.catalog.commitment }])
   })
   it('rebinds a complete code-dispatch sealed row', async () => {
     const fixture = sealedReaderFixture()
@@ -380,6 +391,33 @@ describe('readSealedParentSessionFacts', () => {
   ] as const)('fails closed on rehashed forged epoch topology: %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); mutate(fixture)
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ['rehashed seal commitment detached from fact', async (f: ReturnType<typeof sealedReaderFixture>) => {
+      const middle = f.rows[1]!, middleSeal = reseal(middle.seal, { catalog: { ...middle.seal.catalog, commitment: sealedHash('e') } })
+      f.rows[1] = { seal: middleSeal, activity: reactivate(middleSeal, middle.activity) }
+      const last = f.rows[2]!, lastSeal = reseal(last.seal, { catalog: { ...last.seal.catalog, commitment: sealedHash('e') }, previousSealHash: middleSeal.sealHash })
+      f.rows[2] = { seal: lastSeal, activity: reactivate(lastSeal, last.activity) }
+    }],
+    ['rewritten live header tools', async (f: ReturnType<typeof sealedReaderFixture>) => {
+      f.events[4] = { ...f.events[4], data: { header: { tools: [{ ...schemas[0], name: 'other' }] } } }
+    }],
+  ] as const)('fails closed on self-consistent live commitment forgery: %s', async (_name, mutate) => {
+    const fixture = sealedReaderFixture(); await mutate(fixture)
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it('fails closed when a durable commitment does not validate', async () => {
+    const fixture = sealedReaderFixture(), old = fixture.rows[2]!
+    const invalidFingerprint = sealedHash('e')
+    const seal = reseal(old.seal, { catalog: { ...old.seal.catalog, epoch: 2, commitment: invalidFingerprint }, epochBoundary: { previousEpoch: 1, changed: true } })
+    fixture.rows[2] = { seal, activity: reactivate(seal, old.activity) }
+    const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+      const fact = await fixture.base.executionFacts.get(input)
+      return fact === undefined ? undefined : { ...fact, catalogCommitment: { ...fact.catalogCommitment, fingerprint: invalidFingerprint } }
+    } }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
   })
 
   it('fails closed rather than throwing for null live event data', async () => {
