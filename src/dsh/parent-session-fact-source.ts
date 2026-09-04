@@ -2,6 +2,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
+import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
+import type { SealedFactsLedger } from './execution-projection-bridge.js'
 import type {
   EventRefV1,
   ParentSessionFactSnapshotV1,
@@ -309,4 +311,70 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       approvalSnapshots: Object.freeze(frozenApprovals),
     })
   }
+}
+
+/**
+ * Bounded sealed-ledger input for WP4. Disk rows are only an integrity index:
+ * each row is re-bound to the exact live Session event before it is returned.
+ */
+export interface SealedParentSessionFactsV1 {
+  readonly version: 1
+  readonly lifecycleFingerprint: string
+  readonly current: { readonly seal: SealV1; readonly activity: ActivityV1 }
+  readonly seals: readonly SealV1[]
+  readonly activities: readonly ActivityV1[]
+  readonly catalogEpochs: readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[]
+}
+
+/** Return no facts for missing, polluted, unsealed, or non-live-rebindable history. */
+export async function readSealedParentSessionFacts(input: {
+  readonly agent: Agent
+  readonly registry: LiveAgentRegistry
+  readonly ledger: SealedFactsLedger | undefined
+  readonly approvalRequestId: string
+  readonly callId: string
+  readonly toolName: string
+  readonly signal?: AbortSignal
+}): Promise<SealedParentSessionFactsV1 | undefined> {
+  if (input.signal?.aborted || input.ledger === undefined) return undefined
+  const bound = sessionIdentity(input.agent)
+  if (bound === undefined || input.registry.get(bound.identity.sessionId) !== input.agent || typeof bound.session.snapshotEvents !== 'function') return undefined
+  const events = bound.session.snapshotEvents()
+  if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined)) return undefined
+  const lifecycleFingerprint = canonicalJson({ sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) })
+  let rows: readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined
+  try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return undefined }
+  if (input.signal?.aborted || rows === undefined || rows.length === 0) return undefined
+  const epochs = new Map<number, { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }>()
+  for (const row of rows) {
+    const { seal, activity } = row
+    const request = events[seal.request.eventSeq]
+    const asked = events[seal.approvalAsked.eventSeq]
+    const result = events[seal.result.eventSeq]
+    const header = events[seal.catalog.headerEventSeq]
+    if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
+      || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
+      || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash) return undefined
+    const requestData = request.data as Record<string, unknown>
+    const askedData = asked.data as Record<string, unknown>
+    const resultData = result.data as Record<string, unknown>
+    if (askedData.id !== seal.approvalAsked.requestId || askedData.callId !== seal.request.callId || askedData.toolName !== seal.request.toolName) return undefined
+    if (seal.request.eventType === 'tool/call') {
+      if (request.type !== 'tool/call' || requestData.callId !== seal.request.callId || requestData.name !== seal.request.toolName
+        || !Array.isArray(result.sourceEventSeqs) || result.sourceEventSeqs.length !== 1 || result.sourceEventSeqs[0] !== request.seq) return undefined
+      const message = resultData.message as Record<string, unknown> | undefined
+      const source = message?.source as Record<string, unknown> | undefined
+      const block = Array.isArray(message?.content) ? message?.content[0] as Record<string, unknown> | undefined : undefined
+      if (source?.kind !== 'tool' || source.callId !== seal.request.callId || block?.type !== 'tool-result' || block.toolCallId !== seal.request.callId) return undefined
+    } else if (request.type !== 'tool/code-dispatch-start' || requestData.subCallId !== seal.request.callId || requestData.name !== seal.request.toolName
+      || resultData.subCallId !== seal.request.callId || resultData.name !== seal.request.toolName
+      || requestData.rootCallId !== resultData.rootCallId || requestData.parentCallId !== resultData.parentCallId) return undefined
+    const prior = epochs.get(seal.catalog.epoch)
+    const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
+    if (prior !== undefined && canonicalJson(prior) !== canonicalJson(epoch)) return undefined
+    epochs.set(epoch.epoch, Object.freeze(epoch))
+  }
+  const current = rows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
+  if (current.length !== 1) return undefined
+  return Object.freeze({ version: 1, lifecycleFingerprint, current: current[0]!, seals: Object.freeze(rows.map(row => row.seal)), activities: Object.freeze(rows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
 }

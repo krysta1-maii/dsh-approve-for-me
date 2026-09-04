@@ -27,6 +27,7 @@ import type { ActionProjector } from './ports/action-projector.js'
 import { ToolFamilyActionProjectorRegistry } from './ports/tool-family-action-projector.js'
 import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-capture.js'
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
+import { DshStorageDomainSealedFacts } from './dsh/storage-domain-sealed-facts.js'
 import { DshScopedEffectiveCatalogResolver } from './dsh/effective-tool-catalog.js'
 import { createDshAlpha2StockProjectorRegistry } from './dsh/stock-tools.js'
 import {
@@ -213,6 +214,7 @@ export function installApproveForMe(
   let rollbackLanes: SerialLanes | undefined
   let rollbackDurableFacts: DshStorageDomainFactRepositories | undefined
   let rollbackRecords: DshStorageDomainGateDecisionRecordStore | undefined
+  let rollbackLedger: DshStorageDomainSealedFacts | undefined
   let stopPreExecute = () => {}
   let stopPostExecute = () => {}
   let stopResult = () => {}
@@ -255,6 +257,10 @@ export function installApproveForMe(
   )
   const executionFacts = new DshStorageDomainExecutionFactRepository(durableFacts)
   const approvalSnapshots = new DshStorageDomainApprovalSnapshotRepository(durableFacts)
+  const ledger = rollbackLedger = new DshStorageDomainSealedFacts(
+    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    () => ctx.logger.error(new Error('approval ledger storage unavailable')),
+  )
   const factSource = new DshParentSessionFactSource({
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
   })
@@ -343,6 +349,7 @@ export function installApproveForMe(
     executionFacts,
     approvalSnapshots,
     captures,
+    ledger,
   )
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns
@@ -467,6 +474,7 @@ export function installApproveForMe(
           () => lifecycle.dispose(),
           () => lanes.drain(),
           () => durableFacts.drain(),
+          () => ledger.drain(),
           () => records.drain(),
         ]) {
           try { await close() } catch (error) { errors.push(error) }
@@ -488,6 +496,7 @@ export function installApproveForMe(
         () => lifecycle.dispose(),
         () => rollbackLanes?.drain(),
         () => rollbackDurableFacts?.drain(),
+        () => rollbackLedger?.drain(),
         () => rollbackRecords?.drain(),
       ]) {
         try { await close() } catch (reason) { rollbackErrors.push(reason) }

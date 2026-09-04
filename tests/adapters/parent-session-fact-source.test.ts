@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DshParentSessionFactSource, createActionSnapshot, fingerprintDelegationToolCatalogV1 } from '../../src/index.js'
+import { DshParentSessionFactSource, createActionSnapshot, fingerprintDelegationToolCatalogV1, readSealedParentSessionFacts } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
@@ -283,6 +283,14 @@ describe('DshParentSessionFactSource', () => {
     expect(new DshParentSessionFactSource({ get: () => request.agent as never })
       .snapshot(request))
       .toBeUndefined()
+  })
+
+  it('fails closed when the ledger is absent, empty, polluted, or no longer matches live facts', async () => {
+    const requester = agent()
+    const base = { agent: requester as never, registry: { get: () => requester as never }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
+    expect(await readSealedParentSessionFacts({ ...base, ledger: undefined })).toBeUndefined()
+    expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return [] } } })).toBeUndefined()
+    expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return undefined } } })).toBeUndefined()
   })
 
 })
