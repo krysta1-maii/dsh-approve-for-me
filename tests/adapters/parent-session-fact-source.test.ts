@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DshParentSessionFactSource, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import { DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
 import type { ActivityV1, SealV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
@@ -320,7 +320,7 @@ function sealedReaderFixture() {
   ])
   const make = (sourceSeq: number, askedSeq: number, resultSeq: number, callId: string, requestId: string, previousSealHash: string, epoch: number, headerEventSeq: number): SealedRow => {
     const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: commitments.get(headerEventSeq)!.fingerprint }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: sourceSeq === 1 ? null : sourceSeq === 5 ? 0 : 1, changed: sourceSeq === 5 }, previousSealHash })
-    return { seal, activity: createActivityV1({ lifecycleFingerprint: fingerprint, sourceSeq, occurredAt: events[resultSeq]!.time, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
+    return { seal, activity: createActivityV1({ lifecycleFingerprint: fingerprint, sourceSeq, occurredAt: events[resultSeq]!.time, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
   }
   const first = make(1, 2, 3, 'call-old', 'ask-old', genesisSealHash(fingerprint), 0, 0)
   const second = make(5, 6, 7, 'call-mid', 'ask-mid', first.seal.sealHash, 1, 4)
@@ -354,7 +354,7 @@ describe('readSealedParentSessionFacts', () => {
     const old = fixture.rows[2]!.seal
     const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = old
     const seal = createSealV1({ ...input, request: { ...old.request, eventType: 'tool/code-dispatch-start' } })
-    fixture.rows[2] = { seal, activity: createActivityV1({ lifecycleFingerprint: old.lifecycleFingerprint, sourceSeq: old.sourceSeq, occurredAt: 110, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
+    fixture.rows[2] = { seal, activity: createActivityV1({ lifecycleFingerprint: old.lifecycleFingerprint, sourceSeq: old.sourceSeq, occurredAt: 110, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ current: { seal: { request: { eventType: 'tool/code-dispatch-start' } } } })
   })
   it('distinguishes missing, polluted, and empty ledger reads by failing closed', async () => {
@@ -467,5 +467,89 @@ describe('readSealedParentSessionFacts', () => {
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), signal: before.signal })).resolves.toBeUndefined()
     const after = new AbortController()
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: { async append() { return 'unavailable' as const }, async read() { after.abort(); return fixture.rows } }, signal: after.signal })).resolves.toBeUndefined()
+  })
+
+  it('returns facts with current absent when the current action has no seal yet', async () => {
+    const fixture = sealedReaderFixture()
+    // The pending action has a validated history but no seal yet: a normal
+    // pre-result state, not a completeness failure.
+    const facts = await readSealedParentSessionFacts({ ...fixture.base, approvalRequestId: 'ask-missing', callId: 'call-missing', toolName: 'bash', ledger: ledger(fixture.rows) })
+    expect(facts).toBeDefined()
+    expect(facts?.current).toBeUndefined()
+    expect(facts?.seals).toHaveLength(3)
+    expect(facts?.activities).toHaveLength(3)
+    expect(facts?.lifecycleFingerprint).toBe(canonicalJson(lifecycle))
+  })
+
+  it('fills current only for the validated seal that matches the pending action', async () => {
+    const fixture = sealedReaderFixture()
+    const facts = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(facts?.current?.seal.sourceSeq).toBe(8)
+    expect(facts?.current?.seal.request.callId).toBe('call-1')
+    expect(facts?.current?.seal.approvalAsked.requestId).toBe('ask-1')
+    expect(facts?.current?.activity.classification).toBe('approval-class:body-escalation')
+  })
+
+  it('fails closed when the current matching row itself is polluted', async () => {
+    const fixture = sealedReaderFixture(), old = fixture.rows[2]!
+    const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
+    fixture.rows[2] = { seal, activity: reactivate(seal, old.activity) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it('fails closed on a self-consistent activity classification forgery', async () => {
+    const fixture = sealedReaderFixture(), old = fixture.rows[2]!
+    // Recompute canonical/sourceSealHash so parse succeeds: only the classifier
+    // rule can see that the recorded classification no longer matches the
+    // descriptor the capture side sealed with.
+    fixture.rows[2] = { ...old, activity: reactivate(old.seal, old.activity, { classification: 'delegation:start' }) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it('fails closed when the execution fact behind the current seal is missing', async () => {
+    const fixture = sealedReaderFixture()
+    const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+      if (input.requestEventSeq === 8) return undefined // the current row's execution fact is missing
+      return fixture.base.executionFacts.get(input)
+    } }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it('fails closed when the execution fact has no classification descriptor', async () => {
+    const fixture = sealedReaderFixture()
+    const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+      const fact = await fixture.base.executionFacts.get(input)
+      if (fact === undefined) return undefined
+      return { ...fact, toolClassification: { classificationCatalogFingerprint: fact.toolClassification.classificationCatalogFingerprint, descriptor: undefined } } as never
+    } }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+})
+
+describe('activityClassificationFromDescriptorV1', () => {
+  const subagentSchemas = [...schemas, { name: 'subagent', description: 'subagent schema', parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' } }, required: ['description', 'prompt'] } }]
+  it('maps an ordinary descriptor byte-for-byte to its classificationId', () => {
+    const dossier = createDshAlpha2EffectiveCatalog(schemas).dossier
+    const bash = dossier.descriptors.find(item => item.toolName === 'bash')
+    if (bash === undefined || bash.classification !== 'ordinary') throw new Error('expected an ordinary bash descriptor')
+    expect(activityClassificationFromDescriptorV1(bash)).toBe('approval-class:body-escalation')
+    expect(activityClassificationFromDescriptorV1(bash)).toBe(bash.classificationId)
+  })
+  it('maps a delegation descriptor byte-for-byte to delegation:+operation', () => {
+    const dossier = createDshAlpha2EffectiveCatalog(subagentSchemas).dossier
+    const subagent = dossier.descriptors.find(item => item.toolName === 'subagent')
+    if (subagent === undefined || subagent.classification !== 'delegation') throw new Error('expected a delegation subagent descriptor')
+    expect(subagent.operation).toBe('start')
+    expect(activityClassificationFromDescriptorV1(subagent)).toBe('delegation:start')
+    expect(activityClassificationFromDescriptorV1(subagent)).toBe('delegation:' + subagent.operation)
+  })
+  it('fails closed on an unknown or malformed classification shape', () => {
+    expect(() => activityClassificationFromDescriptorV1({ classification: 'bogus' })).toThrow()
+    expect(() => activityClassificationFromDescriptorV1({})).toThrow()
+    expect(() => activityClassificationFromDescriptorV1(undefined)).toThrow()
+    expect(() => activityClassificationFromDescriptorV1(null)).toThrow()
+    expect(() => activityClassificationFromDescriptorV1({ classification: 'ordinary' })).toThrow()
+    expect(() => activityClassificationFromDescriptorV1({ classification: 'delegation' })).toThrow()
+    expect(() => activityClassificationFromDescriptorV1({ classification: 'ordinary', classificationId: '' })).toThrow()
   })
 })
