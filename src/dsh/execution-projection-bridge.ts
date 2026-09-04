@@ -410,15 +410,15 @@ export class DshExecutionFactProjectionBridge {
     let write: Promise<void>
     write = attempt.then(() => undefined).finally(() => {
       if (this.approvalWrites.get(key) === write) this.approvalWrites.delete(key)
-      // resultWrites-style cleanup: once the observed approval write for this exact
-      // requested seq settles, drop the resolved (non-poisoned) asked-index entry so
-      // the map stays bounded. Poisoned ambiguity markers are deliberately kept, so a
-      // duplicate-asked conflict stays fail-closed across settles.
-      {
-        const indexKey = `${canonicalJson(lifecycle)}\0${requestId}`
-        const entry = this.approvalAskedIndex.get(indexKey)
-        if (entry !== null && entry?.seq === event.seq) this.approvalAskedIndex.delete(indexKey)
-      }
+      // Deliberately NOT deleting the resolved asked-index entry here, even though
+      // resultWrites self-deletes after settle. A duplicate approval/asked for the
+      // same request id must always land on the existing entry so the
+      // same-seq-idempotent / different-seq-poison decision is deterministic.
+      // Cleaning a resolved key reintroduced a race: seq1 observed + settled deleted
+      // the key, then a duplicate seq2 arrived as a fresh entry, and a resolve
+      // racing before seq2's own write settled resolved to seq2 instead of failing
+      // closed. The index therefore lives for the bridge instance (a few hundred
+      // bytes per request id) and dies with the session.
     })
     this.approvalWrites.set(key, write)
     return write
