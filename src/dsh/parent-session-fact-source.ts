@@ -350,14 +350,22 @@ export async function readSealedParentSessionFacts(input: {
   const validatedRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
   let previousSealHash = genesisSealHash(lifecycleFingerprint)
   let previousSourceSeq = -1
+  let previousSeal: SealV1 | undefined
   for (const row of rows) {
-    let seal: SealV1
-    let activity: ActivityV1
-    try { seal = parseSealV1(row.seal); activity = parseActivityV1(row.activity) } catch { return undefined }
-    if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return undefined
-    previousSealHash = seal.sealHash
-    previousSourceSeq = seal.sourceSeq
-    const request = events[seal.request.eventSeq]
+    try {
+      const seal = parseSealV1(row.seal)
+      const activity = parseActivityV1(row.activity)
+      if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return undefined
+      // Match the bridge's epoch transition exactly; a rehashed disk row cannot
+      // invent an epoch topology independently of its preceding commitment.
+      if (previousSeal === undefined) {
+        if (seal.catalog.epoch !== 0 || seal.epochBoundary.previousEpoch !== null || seal.epochBoundary.changed !== false) return undefined
+      } else {
+        const changed = seal.catalog.commitment !== previousSeal.catalog.commitment
+        if (seal.epochBoundary.previousEpoch !== previousSeal.catalog.epoch || seal.epochBoundary.changed !== changed
+          || seal.catalog.epoch !== (changed ? previousSeal.catalog.epoch + 1 : previousSeal.catalog.epoch)) return undefined
+      }
+      const request = events[seal.request.eventSeq]
     const asked = events[seal.approvalAsked.eventSeq]
     const result = events[seal.result.eventSeq]
     const header = events[seal.catalog.headerEventSeq]
@@ -383,7 +391,15 @@ export async function readSealedParentSessionFacts(input: {
     const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
     if (prior !== undefined && canonicalJson(prior) !== canonicalJson(epoch)) return undefined
     epochs.set(epoch.epoch, Object.freeze(epoch))
-    validatedRows.push(Object.freeze({ seal, activity }))
+      validatedRows.push(Object.freeze({ seal, activity }))
+      previousSealHash = seal.sealHash
+      previousSourceSeq = seal.sourceSeq
+      previousSeal = seal
+    } catch {
+      // Live Session events are untrusted at this boundary too. Never allow a
+      // malformed (including null) data payload to escape as an exception.
+      return undefined
+    }
   }
   const current = validatedRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
   if (current.length !== 1) return undefined

@@ -315,7 +315,7 @@ function sealedReaderFixture() {
   const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, snapshotEvents: () => events } }
   const fingerprint = canonicalJson(lifecycle)
   const make = (sourceSeq: number, askedSeq: number, resultSeq: number, callId: string, requestId: string, previousSealHash: string, epoch: number, headerEventSeq: number): SealedRow => {
-    const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: sealedHash(epoch === 0 ? 'b' : 'c') }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: epoch === 0 ? null : epoch - 1, changed: epoch !== 0 }, previousSealHash })
+    const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: sealedHash(epoch === 0 ? 'b' : 'c') }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: sourceSeq === 1 ? null : sourceSeq === 5 ? 0 : 1, changed: sourceSeq === 5 }, previousSealHash })
     return { seal, activity: createActivityV1({ lifecycleFingerprint: fingerprint, sourceSeq, occurredAt: events[resultSeq]!.time, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
   }
   const first = make(1, 2, 3, 'call-old', 'ask-old', genesisSealHash(fingerprint), 0, 0)
@@ -358,6 +358,35 @@ describe('readSealedParentSessionFacts', () => {
     fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
   })
+  it.each([
+    ['first boundary', (f: ReturnType<typeof sealedReaderFixture>) => {
+      const old = f.rows[0]!; const seal = reseal(old.seal, { epochBoundary: { previousEpoch: null, changed: true } })
+      f.rows[0] = { seal, activity: reactivate(seal, old.activity) }
+      const next = f.rows[1]!; const resealed = reseal(next.seal, { previousSealHash: seal.sealHash })
+      f.rows[1] = { seal: resealed, activity: reactivate(resealed, next.activity) }
+      const last = f.rows[2]!; const relinked = reseal(last.seal, { previousSealHash: resealed.sealHash })
+      f.rows[2] = { seal: relinked, activity: reactivate(relinked, last.activity) }
+    }],
+    ['changed boundary', (f: ReturnType<typeof sealedReaderFixture>) => {
+      const old = f.rows[1]!; const seal = reseal(old.seal, { epochBoundary: { previousEpoch: 0, changed: false } })
+      f.rows[1] = { seal, activity: reactivate(seal, old.activity) }
+      const last = f.rows[2]!; const relinked = reseal(last.seal, { previousSealHash: seal.sealHash })
+      f.rows[2] = { seal: relinked, activity: reactivate(relinked, last.activity) }
+    }],
+    ['epoch rollback', (f: ReturnType<typeof sealedReaderFixture>) => {
+      const old = f.rows[2]!; const seal = reseal(old.seal, { catalog: { epoch: 0, headerEventSeq: 0, commitment: sealedHash('b') }, epochBoundary: { previousEpoch: 1, changed: true } })
+      f.rows[2] = { seal, activity: reactivate(seal, old.activity) }
+    }],
+  ] as const)('fails closed on rehashed forged epoch topology: %s', async (_name, mutate) => {
+    const fixture = sealedReaderFixture(); mutate(fixture)
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
+  it('fails closed rather than throwing for null live event data', async () => {
+    const fixture = sealedReaderFixture(); fixture.events[8] = { ...fixture.events[8], data: null }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
   it('fails closed on self-consistent non-monotonic source sequence', async () => {
     const fixture = sealedReaderFixture(), old = fixture.rows[1]!
     const seal = reseal(old.seal, { sourceSeq: 1, request: { ...old.seal.request, eventSeq: 1 }, previousSealHash: fixture.rows[0]!.seal.sealHash })
