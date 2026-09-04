@@ -25,7 +25,7 @@
 1. `scripts/profile-pending-resume-smoke.mjs`(新建):编排两阶段。
    - 校验 `.build/demo-kit/demo-kit.json` 与 `deployment-artifacts.lock.json` 一致、三 artifact sha256 匹配(复用 profile-artifact-smoke.mjs 的校验块)。
    - 安装 profile `approve-for-me-pending-smoke`(fork + managed-agent + probe + approve-for-me 四个 tarball,顺序同 artifact smoke)。
-   - cordis.patch.yml 插件配置:mode `auto-then-user`、timeoutMs 5000、trustEnvelope disabled、reviewer: generation `pending-smoke-v1`、provider `profile-smoke-provider`、model `profile-smoke-model`、policyVersion `policy-v2`、toolsetVersion 1。
+   - cordis.patch.yml 插件配置:mode `auto-then-user`、timeoutMs 5000、trustEnvelope disabled、reviewer: generation `pending-smoke-v1`、provider `profile-smoke-provider`、model `profile-smoke-model`、policyVersion `policy-v2`、toolsetVersion 1。**有意保留 policy-v2**(2026-09-04):本冒烟与 artifact smoke 一起充当旧政策的装载/行为回归,policy-v3 的验收由 quality smoke 承担。
    - Phase A(arm):env `DSH_APPROVE_FOR_ME_PROFILE_PROBE=<output>/probe-arm.json`、`DSH_APPROVE_FOR_ME_PROFILE_PROBE_PHASE=arm`、`DSH_APPROVE_FOR_ME_PROFILE_PROBE_SESSION=<固定 uuid>`。预期进程被 SIGKILL 杀死(execFileSync 抛错,signal SIGKILL — 这是成功路径,不是失败)。之后断言 probe-arm.json 含 `{phase:'armed', sessionId, requestId, callId}`。
    - Phase B(verify):同一 DSH_HOME,env PHASE=verify、同一 session id、marker `<output>/probe-verify.json`。预期进程正常退出(SIGTERM 自退,同现有 probe)。断言 probe-verify.json 各断言字段全为真(见下)。
    - 全部通过打印 `PASS pending approval cross-process cold-resume smoke`。

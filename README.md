@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 44 个测试文件、369 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；Web 人工审批、真实 LLM Guardian 判断质量与 pending 状态跨进程 cold-resume 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 44 个测试文件、373 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -149,17 +149,17 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - 从 Profile 自身解析依赖，验证 fork marker/API 与精确 rc.1 安装闭包；
 - 验证 `ctx.managedAgents` 的 create/renew/provider API、`ctx.approval.registerMachinePolicy()` 以及非空 Host tool catalog。
 
-它证明 artifact 安装图、Cordis loader boot、机器决策槽与两条业务路径在真实 Host 进程内可达；它**不证明**浏览器审批面板与人工点击流程、真实 LLM Reviewer 的判断质量，也不证明带 pending approval / Reviewer child 状态的跨进程 cold-resume（冒烟里的 Guardian 是脚本化 adapter，不是真实模型）。
+它证明 artifact 安装图、Cordis loader boot、机器决策槽与两条业务路径在真实 Host 进程内可达；它**不证明**浏览器审批面板与人工点击流程、真实 LLM Reviewer 的判断质量，也不证明带 pending approval / Reviewer child 状态的跨进程 cold-resume（冒烟里的 Guardian 是脚本化 adapter，不是真实模型）。后两者分别由 `profile:quality-smoke`（真实 LLM，S1/S2）与 `profile:pending-smoke`（SIGKILL cold-resume）覆盖，证据与 policy-v3 live 实测补记见 [验收记录](docs/acceptance-0.1.2.md)。
 
-## 仍需人工/真实环境 E2E
+## 仍需人工/真实环境 E2E（2026-09-04 对账）
 
-发布前仍需在真实 Web 与真实模型配置下验证：
+已完成：真实 LLM Guardian 授权内放行/授权外下沉（S1/S2）、SIGKILL 后 pending 状态 cold-resume、policy-v3 danger 升档授权内场景的 live 实测。发布前仍需验证：
 
-1. Guardian allow/deny/human_review 与真实工具调用的完整链；
-2. `auto-then-user` delegate 后官方 Web approval panel 可见且可操作；
+1. policy-v3 提示词下的 S1/S2 自动化回归、探针版 S3（规格已备）与 S3b（无授权 danger 必须 human/deny）；
+2. `auto-then-user` delegate 后官方 Web approval panel 的完整点击链（live 已观察到状态项与人工兜底，无自动化证据）;
 3. Reviewer 子代理树、只读 composer、Stop 与 pending approval 的 UI 优先级；
-4. 浏览器刷新与 DSH 进程彻底退出/重启后的 durable cold-resume；
-5. deadline、污染、renew、卸载/重载期间的真实并发与失败注入。
+4. deadline、污染、renew、卸载/重载期间的真实并发与失败注入；
+5. 长程 soak。
 
 ## 文档
 
@@ -168,8 +168,10 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - [宿主接口与生命周期契约](docs/host-contract.md)
 - [施工蓝图](docs/construction-spec.md)
 - [Guardian 案件卷宗接口与编译规范](docs/guardian-dossier.md)
+- [R4 风险与授权评估](docs/risk-assessment.md)
 - [集成验证清单](docs/integration.md)
 - [实现状态](docs/implementation.md)
+- [0.1.2 验收记录](docs/acceptance-0.1.2.md)
 
 ## 许可证与外部参照
 

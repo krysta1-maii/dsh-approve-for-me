@@ -1,6 +1,6 @@
 # DSH 0.1.2-rc.1 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、369 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、373 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级；已完成的 E2E 证据记录于 [验收记录](acceptance-0.1.2.md)。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# rc.1 实现检查点：44 files / 369 tests
+# rc.1 实现检查点：44 files / 373 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
@@ -197,12 +197,12 @@ npm run profile:artifact-smoke
 - managed service、machine-policy API 和 Host tools 服务在真实 boot 时可达；
 - 同一 Profile 可由全新 Host 进程再次启动，且暴露相同的 effective tool catalog。
 
-### 自动 smoke 未证明
+### 自动 smoke 未证明（2026-09-04 现状）
 
-- 浏览器中官方 approval panel 的展示、点击和恢复；
-- 真实 LLM provider/model 能完成 Guardian allow/deny/human_review；
-- 真实工具执行前后的副作用阻断；
-- pending approval、Reviewer child 与 Storage 状态在进程终止后的 cold-resume（smoke 只覆盖同一 Profile 的空载冷启动）；
+- 浏览器中官方 approval panel 的展示、点击和恢复（live 实例中已观察到审批状态项与人工链工作，未形成自动化证据）；
+- ~~真实 LLM provider/model 能完成 Guardian allow/deny/human_review~~——已由 `profile:quality-smoke` S1/S2 证明（见验收记录），policy-v3 提示词下尚未重跑；
+- 真实工具执行前后的副作用阻断（deny/拒绝路径已由 S2 与 artifact smoke 覆盖；deadline/abort 的真实并发注入仍未做）；
+- ~~pending approval、Reviewer child 与 Storage 状态在进程终止后的 cold-resume~~——已由 `profile:pending-smoke`（SIGKILL 后 resume）证明；
 - 浏览器刷新、网络断开、并发卸载或存储故障下的完整行为；
 - scoped/restricted Agent 的每条运行时组合。后者由组件/集成测试覆盖，但仍应纳入真实 E2E。
 
@@ -218,16 +218,16 @@ npm run demo:prepare
 
 脚本拒绝已存在的输出目录，也不会启动 server、修改默认 `~/.dsh` 或访问当前运行实例。测试者可按输出命令在单独端口手工完成真实模型和 Web 链路，但这些人工结果不计入自动 smoke 证据。
 
-## 10. 仍需 Web + 真实 LLM + cold-process E2E
+## 10. 仍需 Web + 真实 LLM + cold-process E2E（2026-09-04 对账）
 
-发布验收环境必须使用已打包 artifact 和精确目标 Profile，而不是源码链接。至少执行：
+发布验收环境必须使用已打包 artifact 和精确目标 Profile，而不是源码链接。当前进度：
 
-1. **真实 LLM Guardian**：普通自然语言动作分别产生 allow、deny、human_review；验证 source-backed dossier、R4 baseline 输入、Reviewer 直接 disposition 和 durable decision record。
-2. **Web 人工链**：`auto-then-user` 下 human_review 只经 `'delegate'` 到官方 `ui-approval`，面板可见、可批准/拒绝且不会被 managed composer 抢占。
-3. **真实工具执行**：终态 allow 只消费一次；deny、deadline、abort、错误身份和存储失败均在副作用前阻断。
-4. **cold-process**：完成一次 review 后彻底结束 DSH 进程，再从同一 Profile/Storage 启动；验证 child、generation、deliveryAttempts、request/header catalog、sidecar 和 pending state 的恢复。
-5. **污染与容量**：污染 child、达到 delivery attempt 上限、renew/rotate 和迟到旧结果在进程重启边界保持失败关闭。
-6. **卸载/重载**：machine policy、provider、pending human interaction 和 Web projection 按生命周期正确 settle/dispose/re-register。
+1. ~~**真实 LLM Guardian**~~：已由 `profile:quality-smoke` S1（授权内 allow + 副作用落盘）/S2（授权外 human_review、探针拒绝、零副作用）证明；policy-v3 的 danger 升档授权内场景已在 live 实例人工实测通过（见验收记录补记）。**欠账**：policy-v3 提示词下的 S1/S2 自动化回归、S3 场景尚未实现进探针脚本（规格已写在 `guardian-quality-smoke-spec.md`）、S3b（无授权 danger 必须 human/deny）未验证。
+2. **Web 人工链**：`auto-then-user` 下 human_review 只经 `'delegate'` 到官方 `ui-approval`；live 实例已观察到审批状态项与人工兜底工作，但面板可见/可点击/可恢复的完整点击链仍无自动化证据。
+3. **真实工具执行**：终态 allow 只消费一次（artifact smoke 覆盖）；deny 阻断由 S2 覆盖；deadline、abort、错误身份和存储失败的真实并发注入仍未做。
+4. ~~**cold-process**~~：已由 `profile:pending-smoke`（SIGKILL 崩溃后 resume：孤儿 asked 保留、turn 自动修复闭合、无补裁决、无迟到副作用）证明。
+5. **污染与容量**：污染 child、达到 delivery attempt 上限、renew/rotate 和迟到旧结果在进程重启边界保持失败关闭——仍未做真实注入。
+6. **卸载/重载**：machine policy、provider、pending human interaction 和 Web projection 按生命周期正确 settle/dispose/re-register——仍未做真实验证。
 
 这些项目不能由 unit tests、已存在脚本、`--dump-config` 或一次正常 Profile boot 替代。
 
@@ -243,3 +243,5 @@ npm run demo:prepare
 ### 11.2 产品级审批 E2E 通过
 
 在 11.1 之外，必须完成第 10 节的真实 Web、真实 LLM、真实工具副作用和 cold-process 场景，并确认所有 unknown/ambiguous/failure 路径均失败关闭。只有 11.1 不足以声明自动审批产品就绪。
+
+> 2026-09-04 现状：11.1 与第 10 节的 1（部分）、3（部分）、4 已通过（证据见 `acceptance-0.1.2.md` 及其 policy-v3 补记）；第 10 节 2、5、6 与 policy-v3 的 S3 自动化/S3b/v3 回归仍是发布欠账。

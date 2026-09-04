@@ -1,6 +1,6 @@
 # 文档地图与维护规则
 
-> 状态：2026-08-31。本文定义仓库文档的职责、权威顺序和维护纪律。
+> 状态：2026-09-04。本文定义仓库文档的职责、权威顺序和维护纪律。
 
 ## 阅读入口
 
@@ -11,10 +11,15 @@
 | 实现宿主、审批组合与生命周期 | [宿主接口与生命周期契约](host-contract.md) | v2 候选权威契约（机器决策槽） |
 | 按模块施工（抽象与接口蓝图） | [施工蓝图](construction-spec.md) | v2 实施蓝图 |
 | 实现 Guardian 卷宗与事实边界 | [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) | v1 候选权威契约 |
+| 查看 R4 风险分类与授权基线 | [R4 风险与授权评估](risk-assessment.md) | 当前事实（含 policy-v3 rubric） |
 | 查看当前代码已经做到什么 | [实现状态](implementation.md) | 当前事实 |
 | 查看阶段性功能与业务审查 | [2026-08-29 GPT 审查报告](reviews/2026-08-29-functional-business-review-gpt.md) | 非规范、按提交冻结的审查快照 |
 | 决定下一步施工顺序 | [施工计划](construction-plan.md) | 当前执行计划 |
-| 验收真实 DSH/Profile/Web 行为 | [集成验证清单](integration.md) | 目标验收清单 |
+| 验收真实 DSH/Profile/Web 行为 | [集成验证清单](integration.md) | 目标验收清单（含完成度对账） |
+| 查看 0.1.2 验收证据 | [0.1.2 验收记录](acceptance-0.1.2.md) | 四道闸复跑记录 + policy-v3 live 补记 |
+| 复跑真实 LLM 判断质量验收 | [Guardian 质量冒烟规格](guardian-quality-smoke-spec.md) | S1/S2 已实现，S3 仅规格 |
+| 复跑 pending cold-resume 验收 | [pending-resume 冒烟规格](pending-resume-smoke-spec.md) | 已实现并 PASS |
+| 查阅 alpha.5 升级分析 | [alpha.5 兼容性分析](compat-alpha5-analysis.md) | 历史分析快照 |
 | 建设完整 Reviewer 产品能力 | [Reviewer 独立实现路线](reviewer-roadmap.md) | 产品能力路线 |
 | 查阅已废弃方案 | [历史归档](archive/README.md) | 非规范材料 |
 
