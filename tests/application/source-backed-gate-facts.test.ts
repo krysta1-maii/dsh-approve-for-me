@@ -253,6 +253,22 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     expect(snapshotEvents).not.toHaveBeenCalled()
   })
 
+  it('fails closed when the packet epoch commitment disclaims the current catalog (WP4-c 2a/N1)', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue(validAskInput())
+    // The current action's frozen commitment must agree with the sealed packet's
+    // catalogEpochs entry that references the same header. Here the packet epoch
+    // (headerEventSeq 0, matching the capture-frozen requestHeaderEventSeq) carries
+    // a divergent commitment, so the resolver bails before it ever compiles.
+    subject.read.mockResolvedValue({
+      kind: 'ok',
+      facts: packet({ catalogEpochs: [{ epoch: 0, headerEventSeq: 0, commitment: hash('x') }] }),
+    })
+    await expect(subject.resolver.resolve(request)).resolves.toBeUndefined()
+    expect(subject.compile).not.toHaveBeenCalled()
+  })
+
   it('routes a compileSealed budget overflow to the retryable-capability code (S-2)', async () => {
     const subject = resolver()
     subject.resolver.register(pending())
@@ -292,12 +308,6 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     const breaker = new InMemoryExactDenialBreaker()
     breaker.recordGuardianDeny(first.breakerKey)
     expect(breaker.lookup(retrySameTurn.breakerKey)).toBe(true)
-    const secondDossier = sealedDossier()
-    const nextTurn = projector.project({
-      request, pending: pending(), facts,
-      sealedCurrent: carrier(),
-      verifiedDossier: secondDossier.verified,
-    })
     // force a different turn by projecting with a turn-2 dossier
     const turn2Compile = compileSealed()
     const turn2 = turn2Compile({ packet: packet(), current: currentFacts({ freeze: { ...currentFacts().freeze, currentTurn: 2 } }) })

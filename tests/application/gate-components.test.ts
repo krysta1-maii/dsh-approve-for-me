@@ -64,10 +64,14 @@ describe('InMemoryExactDenialBreaker', () => {
     expect(breaker.lookup(denyKey({ actionHash: hash('b') }))).toBe(false)
     expect(breaker.lookup(denyKey({ turn: 2 }))).toBe(false)
     // WP4-b4-1a 裁定 B2: the breaker key no longer contains the direct-user
-    // frontier. A new askedSeq in the same turn keeps the same key, so an old
-    // denial fast-rejects the retry; only a new turn/action/lifecycle produces a
+    // frontier. A same-turn retry whose ask/frontier changed still maps to the
+    // same lifecycle+turn+actionHash key, so an old denial fast-rejects it — the
+    // extra frontier field below is deliberately ignored (frontier-independence
+    // of the derived breakerKey is itself pinned at the projector level, B2 test;
+    // this assertion proves the breaker is frontier-agnostic rather than just
+    // repeating the lookup above). Only a new turn/action/lifecycle produces a
     // new key (turn and lifecycle scoping pinned here).
-    expect(breaker.lookup(denyKey())).toBe(true)
+    expect(breaker.lookup({ ...denyKey(), directUserFrontierSeq: 7 } as Parameters<InMemoryExactDenialBreaker['lookup']>[0])).toBe(true)
     expect(breaker.lookup(denyKey({ parentLifecycleFingerprint: 'parent-next-life' }))).toBe(false)
     breaker.clearParent('parent-a')
     expect(breaker.lookup(denyKey())).toBe(false)

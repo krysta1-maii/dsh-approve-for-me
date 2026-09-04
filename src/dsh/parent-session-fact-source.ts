@@ -423,6 +423,16 @@ export async function readSealedParentSessionFacts(input: {
   }
   // An over-budget tail is never silently truncated: the caller (WP4-b4) must
   // distinguish a capacity overflow from a tampering signal.
+  //
+  // WP4-b2 审查 S-3 telemetry note: this capacity guard runs BEFORE the per-row
+  // live eventAt re-binding loop below, so on a tail-budget-overflow the live
+  // re-binding has NOT been executed. A disk-valid-but-live-tampered chain is
+  // therefore returned as tail-budget-overflow (capacity) rather than
+  // unavailable (tamper): the tamper signal is masked by the capacity signal,
+  // yet the outcome is still safe because the caller routes the overflow to the
+  // explicit reason code and delegates to the human waterfall, never allow.
+  // Disk-layer pollution can never be masked because the disk-side chain
+  // validation above runs and fails first (order pinned).
   if (parsed.length > maxSealedTailEvents) return { kind: 'tail-budget-overflow', sealedCount: parsed.length, maxSealedTailEvents }
   // Live eventAt exact re-binding for every row entering the packet. Session
   // events remain untrusted input too: a malformed (including null) payload

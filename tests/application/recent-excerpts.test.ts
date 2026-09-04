@@ -122,6 +122,15 @@ describe('assembleRecentExcerpts', () => {
     expect(got.excerpts).toEqual([{ seq: 297, text: 'inside window' }])
   })
 
+  it('excludes a user/message at exactly the asked seq (the ask boundary is exclusive)', () => {
+    // The back-scan must only read events *before* the ask; a user message at the
+    // asked seq itself is the approval boundary and must never leak into the packet.
+    const subject = session([user(297, 'just before'), user(300, 'the ask itself')])
+    const got = assembleRecentExcerpts({ askedSeq: 300, maxRecentExcerptBytes: 24_000, eventAt: subject.eventAt })
+    expect(got.excerpts).toEqual([{ seq: 297, text: 'just before' }])
+    expect(got.stripped).toBe(0)
+  })
+
   it('defaults the window to DEFAULT_MAX_RECENT_EXCERPT_EVENTS (same order as the sealed tail)', () => {
     // askedSeq 2000, default window 512 => start 1488; only seq 1500 is collected.
     const subject = session([user(1_500, 'in default window')])
