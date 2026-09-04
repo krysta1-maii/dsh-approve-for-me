@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assembleRecentExcerpts,
   createActionSnapshot,
   createActivityV1,
   createSealV1,
   createSealedDossierCompiler,
   genesisSealHash,
   hashAction,
+  normalizeConfig,
   recomputeDossierHash,
 } from '../../src/index.js'
 import type {
@@ -503,5 +505,45 @@ describe('createSealedDossierCompiler excerpt channel (WP4-b4-2a)', () => {
     expect(result.kind).toBe('incomplete')
     if (result.kind !== 'incomplete' || !('metrics' in result)) return
     expect(result.reason).toBe('budget-overflow')
+  })
+
+  it('single-sources a non-default maxRecentExcerptBytes across assemblage and compile validation (S-3)', () => {
+    // A 48k budget taken from config must be honored identically by the excerpt
+    // assembler and the sealed-compiler per-excerpt guard, so a 30,000-byte human
+    // excerpt (which the 24k default rejects) stays usable end to end. This is the
+    // drift S-3 closes by wiring normalized.maxRecentExcerptBytes into the plugin's
+    // createSealedDossierCompiler call.
+    const normalized = normalizeConfig({
+      reviewer: {
+        generation: 'reviewer-v1',
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        reasoningEffort: 'high',
+        policyVersion: 'policy-v1',
+        toolsetVersion: 1 as const,
+      },
+      maxRecentExcerptBytes: 48_000,
+    })
+    expect(normalized.maxRecentExcerptBytes).toBe(48_000)
+    const userText = 'x'.repeat(30_000)
+    const assembled = assembleRecentExcerpts({
+      askedSeq: 2,
+      maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
+      eventAt: seq => seq === 1
+        ? { seq: 1, type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: userText }] } }
+        : undefined,
+    })
+    expect(assembled.excerpts.map(entry => entry.seq)).toEqual([1])
+    const compilerAtConfig = createSealedDossierCompiler({
+      maxHotPacketBytes: 256_000,
+      maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
+    })
+    const ready = compilerAtConfig(input({ current: currentFacts({ excerpts: [{ seq: 1, text: userText }], excerptTruncated: 0 }) }))
+    expect(ready.kind).toBe('ready')
+    // The shipped 24k default must reject the same 30k excerpt — exactly the
+    // assembler/compiler drift S-3 eliminates.
+    const compileAtDefault = createSealedDossierCompiler({ maxHotPacketBytes: 256_000 })
+    const incomplete = compileAtDefault(input({ current: currentFacts({ excerpts: [{ seq: 1, text: userText }] }) }))
+    expect(incomplete.kind).toBe('incomplete')
   })
 })

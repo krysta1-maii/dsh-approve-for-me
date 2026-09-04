@@ -37,7 +37,7 @@ import {
 } from './application/source-backed-gate-facts.js'
 import type { SealedFactsReader } from './application/source-backed-gate-facts.js'
 import type { LiveAgentRegistry } from './ports/parent-session-facts.js'
-import { DshParentSessionFactSource, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
+import { readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
 import { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
 import { assembleRecentExcerpts } from './application/recent-excerpts.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
@@ -307,11 +307,28 @@ export function installApproveForMe(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
     () => ctx.logger.error(new Error('approval ledger storage unavailable')),
   )
-  const factSource = new DshParentSessionFactSource({
+  const registry: LiveAgentRegistry = {
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
+  }
+  const sealedFacts: SealedFactsReader = {
+    read: ({ agent, approvalRequestId, callId, toolName, maxSealedTailEvents, signal }) =>
+      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
+  }
+  const compileSealed = createSealedDossierCompiler({
+    maxHotPacketBytes: normalized.maxHotPacketBytes,
+    // S-3 (WP4-b4-2b): the per-excerpt byte budget must come from the same config
+    // source as the assembler (assembleRecentExcerpts) so production assembly and
+    // compile-time validation agree even at a non-default maxRecentExcerptBytes.
+    maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
   })
   const dossierMetrics = new InMemoryDossierCompilationMetrics()
-  const compiler = new InstrumentedDossierCompiler(
+  // Full-history compile retained ONLY as an explicit human/debug wiring for the
+  // public getDossierCompilationMetrics() baseline and the optional
+  // dossierMetricsSink. The approval hot path never invokes it (WP4-b: the
+  // resolver uses createSealedDossierCompiler); it is deliberately not wired into
+  // any decision route and exists solely so an operator can call the complete
+  // footprint compiler for diagnostic comparison.
+  const legacyDossierCompiler = new InstrumentedDossierCompiler(
     new DefaultDossierCompiler({
       delegationProjector: new DefaultPrincipalDelegationProjector(),
       maxDossierBytes: normalized.maxDossierBytes,
@@ -323,14 +340,6 @@ export function installApproveForMe(
       },
     },
   )
-  const registry: LiveAgentRegistry = {
-    get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
-  }
-  const sealedFacts: SealedFactsReader = {
-    read: ({ agent, approvalRequestId, callId, toolName, maxSealedTailEvents, signal }) =>
-      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
-  }
-  const compileSealed = createSealedDossierCompiler({ maxHotPacketBytes: normalized.maxHotPacketBytes })
   const factStore = new SourceBackedGateFactResolver({
     sealedFacts,
     compileSealed,
