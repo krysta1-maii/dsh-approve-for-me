@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
-import type { ActivityV1, SealV1 } from '../../src/index.js'
+import type { ActivityV1, SealV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
@@ -44,6 +44,8 @@ function agent(overrides: object = {}) {
       id: 'parent-1',
       header: { version: 0, id: 'parent-1', createdAt: 100 },
       snapshotEvents: () => events,
+      get seq() { return events.length - 1 },
+      eventAt: (seq: number) => events[seq],
     },
     ...overrides,
   }
@@ -289,9 +291,9 @@ describe('DshParentSessionFactSource', () => {
   it('fails closed when the ledger is absent, empty, polluted, or no longer matches live facts', async () => {
     const requester = agent()
     const base = { agent: requester as never, registry: { get: () => requester as never }, executionFacts: { async get() { return undefined } }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
-    expect(await readSealedParentSessionFacts({ ...base, ledger: undefined })).toBeUndefined()
-    expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return [] } } })).toBeUndefined()
-    expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return undefined } } })).toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...base, ledger: undefined })).resolves.toMatchObject({ kind: 'unavailable' })
+    await expect(readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return [] } } })).resolves.toMatchObject({ kind: 'empty-ledger' })
+    await expect(readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return undefined } } })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
 })
@@ -312,7 +314,7 @@ function sealedReaderFixture() {
     { seq: 9, time: 109, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
     { seq: 10, time: 110, type: 'tool/result', sourceEventSeqs: [8], data: { message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1' }] } } },
   ]
-  const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, snapshotEvents: () => events } }
+  const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, snapshotEvents: () => events, get seq() { return events.length - 1 }, eventAt: (seq: number) => events[seq] } }
   const fingerprint = canonicalJson(lifecycle)
   const commitments = new Map([
     [0, createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)],
@@ -339,13 +341,60 @@ function ledger(rows: readonly SealedRow[] | undefined) { return { async append(
 function reseal(seal: SealV1, changes: object): SealV1 { const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = seal; return createSealV1({ ...input, ...changes }) }
 function reactivate(seal: SealV1, activity: ActivityV1, changes: object = {}): ActivityV1 { const { version: _version, canonical: _canonical, ...input } = activity; return createActivityV1({ ...input, ...changes, sourceSealHash: seal.sealHash }) }
 
+
+function buildSealedChain(count: number) {
+  const events: any[] = [{ seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } }]
+  const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
+  const rows: SealedRow[] = []
+  let previousSealHash = genesisSealHash(canonicalJson(lifecycle))
+  for (let i = 1; i <= count; i += 1) {
+    const requestSeq = 3 * i - 2
+    const askedSeq = 3 * i - 1
+    const resultSeq = 3 * i
+    const callId = 'call-' + i
+    const requestId = 'ask-' + i
+    events.push({ seq: requestSeq, time: 100 + requestSeq, type: 'tool/call', data: { callId, name: 'bash' } })
+    events.push({ seq: askedSeq, time: 100 + askedSeq, type: 'approval/asked', data: { id: requestId, callId, toolName: 'bash' } })
+    events.push({ seq: resultSeq, time: 100 + resultSeq, type: 'tool/result', sourceEventSeqs: [requestSeq], data: { message: { source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId }] } } })
+    const seal = createSealV1({
+      lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: requestSeq,
+      request: { eventSeq: requestSeq, eventType: 'tool/call', callId, toolName: 'bash' },
+      approvalAsked: { eventSeq: askedSeq, requestId },
+      actionHash: sealedHash('a'), projectorId: 'default-v1',
+      catalog: { epoch: 0, headerEventSeq: 0, commitment: commitment.fingerprint },
+      wireSchemaFingerprint: sealedHash('d'),
+      result: { eventSeq: resultSeq, status: 'completed' },
+      epochBoundary: { previousEpoch: i === 1 ? null : 0, changed: false },
+      previousSealHash,
+    })
+    const activity = createActivityV1({ lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: requestSeq, occurredAt: 100 + resultSeq, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash })
+    rows.push({ seal, activity })
+    previousSealHash = seal.sealHash
+  }
+  const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, get seq() { return events.length - 1 }, eventAt: (seq: number) => events[seq] } }
+  const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+    const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
+    if (row === undefined) return undefined
+    const seal = row.seal
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitment } as ToolExecutionFactRecordV1
+  } }
+  const last = rows[count - 1]!.seal
+  const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: last.approvalAsked.requestId, callId: last.request.callId, toolName: last.request.toolName }
+  return { events, rows, base }
+}
+
+function okFacts(result: SealedFactsReadResult): SealedParentSessionFactsV1 {
+  if (result.kind !== 'ok') throw new Error('expected an ok sealed-facts result, got ' + result.kind)
+  return result.facts
+}
+
 describe('readSealedParentSessionFacts', () => {
   it('returns a complete, live-rebound multi-seal fact chain', async () => {
     const fixture = sealedReaderFixture()
-    const facts = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
     expect(facts).toMatchObject({ version: 1, lifecycleFingerprint: canonicalJson(lifecycle), current: { seal: { sourceSeq: 8 }, activity: { occurredAt: 110 } } })
-    expect(facts?.seals).toHaveLength(3); expect(facts?.activities).toHaveLength(3)
-    expect(facts?.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 0, commitment: fixture.rows[0]!.seal.catalog.commitment }, { epoch: 1, headerEventSeq: 4, commitment: fixture.rows[1]!.seal.catalog.commitment }])
+    expect(facts.seals).toHaveLength(3); expect(facts.activities).toHaveLength(3)
+    expect(facts.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 0, commitment: fixture.rows[0]!.seal.catalog.commitment }, { epoch: 1, headerEventSeq: 4, commitment: fixture.rows[1]!.seal.catalog.commitment }])
   })
   it('rebinds a complete code-dispatch sealed row', async () => {
     const fixture = sealedReaderFixture()
@@ -355,19 +404,19 @@ describe('readSealedParentSessionFacts', () => {
     const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = old
     const seal = createSealV1({ ...input, request: { ...old.request, eventType: 'tool/code-dispatch-start' } })
     fixture.rows[2] = { seal, activity: createActivityV1({ lifecycleFingerprint: old.lifecycleFingerprint, sourceSeq: old.sourceSeq, occurredAt: 110, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ current: { seal: { request: { eventType: 'tool/code-dispatch-start' } } } })
+    expect(okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))).toMatchObject({ current: { seal: { request: { eventType: 'tool/code-dispatch-start' } } } })
   })
   it('distinguishes missing, polluted, and empty ledger reads by failing closed', async () => {
     const fixture = sealedReaderFixture()
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: undefined })).resolves.toBeUndefined()
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(undefined) })).resolves.toBeUndefined()
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger([]) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: undefined })).resolves.toMatchObject({ kind: 'unavailable' })
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(undefined) })).resolves.toMatchObject({ kind: 'unavailable' })
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger([]) })).resolves.toMatchObject({ kind: 'empty-ledger' })
   })
   it('fails closed on a self-consistent disconnected seal chain', async () => {
     const fixture = sealedReaderFixture(), old = fixture.rows[1]!
     const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
     fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
   it.each([
     ['first boundary', (f: ReturnType<typeof sealedReaderFixture>) => {
@@ -390,7 +439,7 @@ describe('readSealedParentSessionFacts', () => {
     }],
   ] as const)('fails closed on rehashed forged epoch topology: %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); mutate(fixture)
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed on a self-consistent inflated epoch transition', async () => {
@@ -399,7 +448,7 @@ describe('readSealedParentSessionFacts', () => {
     fixture.rows[1] = { seal: middleSeal, activity: reactivate(middleSeal, middle.activity) }
     const last = fixture.rows[2]!, lastSeal = reseal(last.seal, { catalog: { ...last.seal.catalog, epoch: 5 }, epochBoundary: { previousEpoch: 5, changed: false }, previousSealHash: middleSeal.sealHash })
     fixture.rows[2] = { seal: lastSeal, activity: reactivate(lastSeal, last.activity) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it.each([
@@ -414,7 +463,7 @@ describe('readSealedParentSessionFacts', () => {
     }],
   ] as const)('fails closed on self-consistent live commitment forgery: %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); await mutate(fixture)
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed when a durable commitment does not validate', async () => {
@@ -426,19 +475,19 @@ describe('readSealedParentSessionFacts', () => {
       const fact = await fixture.base.executionFacts.get(input)
       return fact === undefined ? undefined : { ...fact, catalogCommitment: { ...fact.catalogCommitment, fingerprint: invalidFingerprint } }
     } }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed rather than throwing for null live event data', async () => {
     const fixture = sealedReaderFixture(); fixture.events[8] = { ...fixture.events[8], data: null }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed on self-consistent non-monotonic source sequence', async () => {
     const fixture = sealedReaderFixture(), old = fixture.rows[1]!
     const seal = reseal(old.seal, { sourceSeq: 1, request: { ...old.seal.request, eventSeq: 1 }, previousSealHash: fixture.rows[0]!.seal.sealHash })
     fixture.rows[1] = { seal, activity: reactivate(seal, old.activity, { sourceSeq: 1 }) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
   it.each([
     ['activity source seal hash', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[2]!; const { version: _version, canonical: _canonical, ...input } = old.activity; f.rows[2] = { ...old, activity: createActivityV1({ ...input, sourceSealHash: sealedHash('f') }) } }],
@@ -446,7 +495,7 @@ describe('readSealedParentSessionFacts', () => {
     ['activity result category', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[2]!; f.rows[2] = { ...old, activity: reactivate(old.seal, old.activity, { resultCategory: 'tool-error' }) } }],
   ] as const)('fails closed when self-consistent activity rebinding rejects %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); mutate(fixture)
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
   it.each([
     ['request callId', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[8].data.callId = 'other' }],
@@ -460,41 +509,40 @@ describe('readSealedParentSessionFacts', () => {
     ['activity classification', (f: ReturnType<typeof sealedReaderFixture>) => { f.rows[2] = { ...f.rows[2]!, activity: { ...f.rows[2]!.activity, classification: 'other' } as ActivityV1 } }],
   ] as const)('fails closed when live rebinding rejects %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); mutate(fixture)
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
   it('fails closed when cancelled before or after ledger read', async () => {
     const fixture = sealedReaderFixture(); const before = new AbortController(); before.abort()
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), signal: before.signal })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), signal: before.signal })).resolves.toMatchObject({ kind: 'unavailable' })
     const after = new AbortController()
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: { async append() { return 'unavailable' as const }, async read() { after.abort(); return fixture.rows } }, signal: after.signal })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: { async append() { return 'unavailable' as const }, async read() { after.abort(); return fixture.rows } }, signal: after.signal })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('returns facts with current absent when the current action has no seal yet', async () => {
     const fixture = sealedReaderFixture()
     // The pending action has a validated history but no seal yet: a normal
     // pre-result state, not a completeness failure.
-    const facts = await readSealedParentSessionFacts({ ...fixture.base, approvalRequestId: 'ask-missing', callId: 'call-missing', toolName: 'bash', ledger: ledger(fixture.rows) })
-    expect(facts).toBeDefined()
-    expect(facts?.current).toBeUndefined()
-    expect(facts?.seals).toHaveLength(3)
-    expect(facts?.activities).toHaveLength(3)
-    expect(facts?.lifecycleFingerprint).toBe(canonicalJson(lifecycle))
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, approvalRequestId: 'ask-missing', callId: 'call-missing', toolName: 'bash', ledger: ledger(fixture.rows) }))
+    expect(facts.current).toBeUndefined()
+    expect(facts.seals).toHaveLength(3)
+    expect(facts.activities).toHaveLength(3)
+    expect(facts.lifecycleFingerprint).toBe(canonicalJson(lifecycle))
   })
 
   it('fills current only for the validated seal that matches the pending action', async () => {
     const fixture = sealedReaderFixture()
-    const facts = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
-    expect(facts?.current?.seal.sourceSeq).toBe(8)
-    expect(facts?.current?.seal.request.callId).toBe('call-1')
-    expect(facts?.current?.seal.approvalAsked.requestId).toBe('ask-1')
-    expect(facts?.current?.activity.classification).toBe('approval-class:body-escalation')
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
+    expect(facts.current?.seal.sourceSeq).toBe(8)
+    expect(facts.current?.seal.request.callId).toBe('call-1')
+    expect(facts.current?.seal.approvalAsked.requestId).toBe('ask-1')
+    expect(facts.current?.activity.classification).toBe('approval-class:body-escalation')
   })
 
   it('fails closed when the current matching row itself is polluted', async () => {
     const fixture = sealedReaderFixture(), old = fixture.rows[2]!
     const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
     fixture.rows[2] = { seal, activity: reactivate(seal, old.activity) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed on a self-consistent activity classification forgery', async () => {
@@ -503,7 +551,7 @@ describe('readSealedParentSessionFacts', () => {
     // rule can see that the recorded classification no longer matches the
     // descriptor the capture side sealed with.
     fixture.rows[2] = { ...old, activity: reactivate(old.seal, old.activity, { classification: 'delegation:start' }) }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed when the execution fact behind the current seal is missing', async () => {
@@ -512,7 +560,7 @@ describe('readSealedParentSessionFacts', () => {
       if (input.requestEventSeq === 8) return undefined // the current row's execution fact is missing
       return fixture.base.executionFacts.get(input)
     } }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed when the execution fact has no classification descriptor', async () => {
@@ -522,7 +570,7 @@ describe('readSealedParentSessionFacts', () => {
       if (fact === undefined) return undefined
       return { ...fact, toolClassification: { classificationCatalogFingerprint: fact.toolClassification.classificationCatalogFingerprint, descriptor: undefined } } as never
     } }
-    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it('fails closed when two validated rows claim the same current action', async () => {
@@ -547,7 +595,7 @@ describe('readSealedParentSessionFacts', () => {
       previousSealHash: third.sealHash,
     })
     fixture.rows.push({ seal: duplicate, activity: createActivityV1({ lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: 11, occurredAt: 113, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: duplicate.sealHash }) })
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })
 
   it.each([
@@ -555,7 +603,85 @@ describe('readSealedParentSessionFacts', () => {
     ['mid (second) row', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[1]!; f.rows[1] = { ...old, activity: reactivate(old.seal, old.activity, { classification: 'delegation:start' }) } }],
   ] as const)('fails closed on a self-consistent classification forgery in the %s', async (_name, mutate) => {
     const fixture = sealedReaderFixture(); mutate(fixture)
-    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
+  })
+
+  it('fits exactly maxSealedTailEvents seals into the bounded packet', async () => {
+    const fixture = buildSealedChain(512)
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 512, ledger: ledger(fixture.rows) }))
+    expect(facts.seals).toHaveLength(512)
+    expect(facts.activities).toHaveLength(512)
+    expect(facts.current?.seal.sourceSeq).toBe(512 * 3 - 2)
+  })
+
+  it('returns tail-budget-overflow when the sealed tail exceeds the budget', async () => {
+    const fixture = buildSealedChain(513)
+    const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 512, ledger: ledger(fixture.rows) })
+    expect(result).toEqual({ kind: 'tail-budget-overflow', sealedCount: 513, maxSealedTailEvents: 512 })
+  })
+
+  it('honours a caller-supplied smaller maxSealedTailEvents budget', async () => {
+    const fixture = buildSealedChain(3)
+    const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 2, ledger: ledger(fixture.rows) })
+    expect(result).toEqual({ kind: 'tail-budget-overflow', sealedCount: 3, maxSealedTailEvents: 2 })
+  })
+
+  it('prefers a tampering signal over tail-budget-overflow for a polluted chain', async () => {
+    const fixture = buildSealedChain(513)
+    // Break the disk chain before the over-budget check can fire.
+    const old = fixture.rows[1]!
+    const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
+    fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 512, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable' })
+  })
+
+  it('does not live-rebind rows beyond the tail budget (disk chain only)', async () => {
+    const fixture = buildSealedChain(513)
+    // Poison the live events behind an early (beyond-window) row: the reader
+    // must fail on the budget before any live re-binding, so this is overflow,
+    // not a tampering signal.
+    fixture.events[1].data.callId = 'not-the-request'
+    const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 512, ledger: ledger(fixture.rows) })
+    expect(result).toEqual({ kind: 'tail-budget-overflow', sealedCount: 513, maxSealedTailEvents: 512 })
+  })
+
+  it('fails closed when eventAt returns a malformed event for a referenced seq', async () => {
+    const fixture = sealedReaderFixture()
+    fixture.events[8] = { seq: 8, time: 108, type: 'user/message', data: { id: 'user-9' } }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result.kind).toBe('unavailable')
+  })
+
+  it('fails closed when a referenced live event is absent from eventAt', async () => {
+    const fixture = sealedReaderFixture()
+    fixture.events[10] = undefined as never
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result.kind).toBe('unavailable')
+  })
+
+  it('keeps the current seal inside the bounded tail rather than consuming extra budget', async () => {
+    const fixture = buildSealedChain(512)
+    const current = fixture.rows[100]!.seal
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), maxSealedTailEvents: 512, approvalRequestId: current.approvalAsked.requestId, callId: current.request.callId, toolName: current.request.toolName }))
+    expect(facts.seals).toHaveLength(512)
+    expect(facts.current?.seal.sourceSeq).toBe(current.sourceSeq)
+  })
+
+  it('fails closed on an invalid maxSealedTailEvents budget', async () => {
+    const fixture = sealedReaderFixture()
+    const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 0, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', reason: 'max-sealed-tail-events-invalid' })
+  })
+
+  it('resolves via exact live eventAt reads, never the full session snapshot', async () => {
+    const fixture = sealedReaderFixture()
+    // The reader must re-bind against exact eventAt reads (WP4-b2). A reader
+    // that regressed to the full snapshot would read this emptied array and
+    // fail, so this pins the bounded path.
+    ;(fixture.base.agent as unknown as { session: { snapshotEvents: () => object[] } }).session.snapshotEvents = () => []
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
+    expect(facts.seals).toHaveLength(3)
   })
 })
 
