@@ -64,6 +64,7 @@ export interface GatePreReviewInput {
   readonly assessment?: RiskAssessmentV1
   readonly reason?: string
   readonly signal?: AbortSignal
+  readonly deadlineAt: number
   readonly generation: string
   readonly configurationFingerprint: string
   /** Whether this review must use the cited assessment schema. */
@@ -308,6 +309,7 @@ export class DefaultGatePipeline implements GatePipeline {
 
   async decide(request: GateMachineRequestV1): Promise<GateMachineDecisionV1> {
     if (request.signal?.aborted) return 'cancelled'
+    if (!Number.isSafeInteger(request.deadlineAt) || request.deadlineAt <= this.now()) return 'unavailable'
     if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
     let outcome: GateMachineDecisionV1
     try {
@@ -329,7 +331,8 @@ export class DefaultGatePipeline implements GatePipeline {
     const callId = request.callId
     if (requestId === undefined || callId === undefined) return 'unavailable'
     const facts = await this.deps.facts.resolve(request)
-    if (request.signal?.aborted) return 'cancelled'
+    const afterFacts = this.terminalBoundary(request)
+    if (afterFacts !== undefined) return afterFacts
     if (facts === undefined) return 'unavailable'
     // This precedes every trust/cache/replay route; a packet-less action can
     // never acquire an automatic authorization in the real plugin.
@@ -361,11 +364,13 @@ export class DefaultGatePipeline implements GatePipeline {
     }
 
     if (facts.trustEnvelope !== undefined && this.deps.trustEnvelope.evaluate(facts.trustEnvelope).kind === 'inside') {
-      if (request.signal?.aborted) return 'cancelled'
+      const beforeRecord = this.terminalBoundary(request)
+      if (beforeRecord !== undefined) return beforeRecord
       const record = recordFor(request, facts, 'allow', 'trust-envelope', 'allow')
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'confirmed') {
-        if (request.signal?.aborted) return 'cancelled'
+        const beforeGrant = this.terminalBoundary(request)
+        if (beforeGrant !== undefined) return beforeGrant
         this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
         return 'allowed-once'
       }
@@ -377,10 +382,11 @@ export class DefaultGatePipeline implements GatePipeline {
       // A cache entry is only an optimization over a prior Guardian decision;
       // each distinct approval ask still needs its own durable confirmation
       // before it can receive an automatic grant.
+      const beforeRecord = this.terminalBoundary(request)
+      if (beforeRecord !== undefined) return beforeRecord
       const result = await this.deps.records.createConfirmed(recordFor(request, facts, 'allow', 'allow-cache', 'allow'))
       if (result === 'confirmed') {
-        if (request.signal?.aborted) return 'cancelled'
-        return 'allowed-once'
+        return this.terminalBoundary(request) ?? 'allowed-once'
       }
       if (result === 'conflict') return 'unavailable'
       return this.delegateOrUnavailable()
@@ -389,7 +395,9 @@ export class DefaultGatePipeline implements GatePipeline {
     if (authorizationFastPathsAllowed) {
       const replay = this.deps.seals.lookup(requestId, callId, request.actionHash)
       if (replay.kind === 'sealed') {
-        const now = this.deps.now?.() ?? Date.now()
+        const now = this.now()
+        const beforeReplay = this.terminalBoundary(request)
+        if (beforeReplay !== undefined) return beforeReplay
         if (!replay.disposition.replayable || replay.disposition.deadlineAt <= now) {
           return this.finishPostFactsFailure(request, facts, 'unavailable', 'sealed-replay')
         }
@@ -412,14 +420,17 @@ export class DefaultGatePipeline implements GatePipeline {
           ))
           return mapped
         }
+        const beforeRecord = this.terminalBoundary(request)
+        if (beforeRecord !== undefined) return beforeRecord
         const result = await this.deps.records.createConfirmed(
           recordFor(request, facts, 'allow', 'sealed-replay', 'allow', replay.disposition.reviewRunId, replay.disposition),
         )
         if (result !== 'confirmed') return result === 'conflict'
           ? 'unavailable'
           : this.finishPostFactsFailure(request, facts, this.delegateOrUnavailable(), 'sealed-replay')
-        if (request.signal?.aborted) return 'cancelled'
-        if (replay.disposition.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
+        const beforeGrant = this.terminalBoundary(request)
+        if (beforeGrant !== undefined) return beforeGrant
+        if (replay.disposition.deadlineAt <= this.now()) return 'unavailable'
         return 'allowed-once'
       }
       if (replay.kind === 'consumed' || replay.kind === 'mismatch') {
@@ -427,6 +438,8 @@ export class DefaultGatePipeline implements GatePipeline {
       }
     }
 
+    const beforeReview = this.terminalBoundary(request)
+    if (beforeReview !== undefined) return beforeReview
     let sealed: SealedDispositionV1
     try {
       sealed = await this.deps.preReview.preReview({
@@ -438,6 +451,7 @@ export class DefaultGatePipeline implements GatePipeline {
         ...facts.assessment === undefined ? {} : { assessment: facts.assessment },
         ...request.reason === undefined ? {} : { reason: request.reason },
         ...request.signal === undefined ? {} : { signal: request.signal },
+        deadlineAt: request.deadlineAt,
         generation: facts.generation,
         configurationFingerprint: facts.configurationFingerprint,
         ...facts.policyVersion === undefined ? {} : { policyVersion: facts.policyVersion },
@@ -464,8 +478,9 @@ export class DefaultGatePipeline implements GatePipeline {
         now: this.deps.now?.() ?? Date.now(),
       }))
     }
-    if (request.signal?.aborted) return 'cancelled'
-    if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
+    const afterReview = this.terminalBoundary(request)
+    if (afterReview !== undefined) return afterReview
+    if (sealed.deadlineAt <= this.now()) return 'unavailable'
     const mapped = this.mapDisposition(sealed.disposition)
     const pluginDisposition: GatePluginDispositionV1 = sealed.disposition === 'allow'
       ? 'allow'
@@ -473,13 +488,16 @@ export class DefaultGatePipeline implements GatePipeline {
     const record = recordFor(request, facts, sealed.disposition === 'human' ? 'human_review' : sealed.disposition, 'guardian', pluginDisposition, sealed.reviewRunId, sealed)
 
     if (mapped === 'allowed-once') {
+      const beforeRecord = this.terminalBoundary(request)
+      if (beforeRecord !== undefined) return beforeRecord
       const result = await this.deps.records.createConfirmed(record)
       if (result === 'conflict') return 'unavailable'
       if (result !== 'confirmed') return this.delegateOrUnavailable()
       // Durable confirmation is asynchronous; expiration while it was pending
       // must not turn a previously-valid disposition into a late grant.
-      if (request.signal?.aborted) return 'cancelled'
-      if (sealed.deadlineAt <= (this.deps.now?.() ?? Date.now())) return 'unavailable'
+      const beforeGrant = this.terminalBoundary(request)
+      if (beforeGrant !== undefined) return beforeGrant
+      if (sealed.deadlineAt <= this.now()) return 'unavailable'
       this.deps.allowCache.recordGuardianAllow(facts.allowCacheKey)
     } else {
       // Audit failure cannot convert a deny/human result into authorization or
@@ -493,6 +511,17 @@ export class DefaultGatePipeline implements GatePipeline {
       }
     }
     return mapped
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now()
+  }
+
+  /** Re-check the complete authorization boundary after every asynchronous step. */
+  private terminalBoundary(request: GateMachineRequestV1): 'cancelled' | 'unavailable' | undefined {
+    if (request.signal?.aborted) return 'cancelled'
+    if (!Number.isSafeInteger(request.deadlineAt) || request.deadlineAt <= this.now()) return 'unavailable'
+    return undefined
   }
 
   private async recordBestEffortSafely(record: GateDecisionRecord): Promise<void> {

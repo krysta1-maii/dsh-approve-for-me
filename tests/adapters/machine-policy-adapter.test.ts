@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { GateFailure, createMachinePolicyAdapter } from '../../src/index.js'
+import { ApprovalRunLifecycle, GateFailure, createMachinePolicyAdapter } from '../../src/index.js'
 import type { GateMachinePolicyV1, GateMachineRequestV1 } from '../../src/approval-gate/machine-policy.js'
 
 function fakeAgent(id = 'parent-1'): Agent {
@@ -26,6 +26,8 @@ describe('createMachinePolicyAdapter', () => {
     const adapter = createMachinePolicyAdapter({
       gate,
       mode: 'auto',
+      timeoutMs: 500,
+      now: () => 1_000,
       resolveActionHash: vi.fn(() => `sha256:${'a'.repeat(64)}`),
     })
 
@@ -47,6 +49,7 @@ describe('createMachinePolicyAdapter', () => {
       toolName: 'bash',
       reason: 'requires a wider sandbox',
       actionHash: `sha256:${'a'.repeat(64)}`,
+      deadlineAt: 1_500,
       mode: 'auto',
     })
     expect(decisions[0]!.signal).toBeInstanceOf(AbortSignal)
@@ -106,6 +109,55 @@ describe('createMachinePolicyAdapter', () => {
     const ask = { agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1' }
     await expect(auto.decide(ask)).resolves.toBe('unavailable')
     await expect(user.decide(ask)).resolves.toBe('delegate')
+  })
+
+  it('returns cancelled promptly when caller aborts a non-cooperative gate', async () => {
+    const lifecycle = new ApprovalRunLifecycle()
+    let release!: () => void
+    const gate: GateMachinePolicyV1 = {
+      id: 'dsh-approve-for-me/v1',
+      decide: vi.fn(async () => new Promise<'unavailable'>(resolve => { release = () => resolve('unavailable') })),
+    }
+    const adapter = createMachinePolicyAdapter({
+      gate,
+      lifecycle,
+      mode: 'auto',
+      resolveActionHash: () => `sha256:${'e'.repeat(64)}`,
+    })
+    const abort = new AbortController()
+    const decision = adapter.decide({ agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1', signal: abort.signal })
+    await vi.waitFor(() => expect(gate.decide).toHaveBeenCalledOnce())
+
+    abort.abort({ kind: 'user' })
+    await expect(decision).resolves.toBe('cancelled')
+    release()
+    await lifecycle.dispose()
+  })
+
+  it('bounds a non-cooperative gate with the complete approval deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const lifecycle = new ApprovalRunLifecycle(100)
+      let release!: () => void
+      const gate: GateMachinePolicyV1 = {
+        id: 'dsh-approve-for-me/v1',
+        decide: vi.fn(async () => new Promise<'unavailable'>(resolve => { release = () => resolve('unavailable') })),
+      }
+      const adapter = createMachinePolicyAdapter({
+        gate,
+        lifecycle,
+        mode: 'auto-then-user',
+        resolveActionHash: () => `sha256:${'f'.repeat(64)}`,
+      })
+      const decision = adapter.decide({ agent: fakeAgent(), toolName: 'bash', requestId: 'ask-1', callId: 'call-1' })
+      await vi.advanceTimersByTimeAsync(100)
+
+      await expect(decision).resolves.toBe('unavailable')
+      release()
+      await lifecycle.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('cancels an already aborted request and exposes a stable id', async () => {

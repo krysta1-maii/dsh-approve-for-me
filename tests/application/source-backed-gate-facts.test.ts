@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
-import { DossierGateFactProjector, SourceBackedGateFactResolver, fingerprintGateConfigurationV1 } from '../../src/application/source-backed-gate-facts.js'
+import {
+  DossierGateFactProjector,
+  SourceBackedGateFactResolver,
+  assertApprovalSourceEventBudget,
+  fingerprintGateConfigurationV1,
+} from '../../src/application/source-backed-gate-facts.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
 
@@ -10,7 +15,7 @@ const authority = { sessionId: 'session-1' } as unknown as ParentAuthority<Agent
 const reviewerConfigurationFingerprint = `sha256:${'9'.repeat(64)}`
 const request = {
   requestId: 'ask-1', parentSessionId: 'session-1', callId: 'call-1',
-  toolName: 'bash', actionHash: 'hash-1', mode: 'auto' as const,
+  toolName: 'bash', actionHash: 'hash-1', deadlineAt: Number.MAX_SAFE_INTEGER, mode: 'auto' as const,
 }
 
 function resolver() {
@@ -27,6 +32,14 @@ function resolver() {
     }),
   }
 }
+
+describe('source event work budget', () => {
+  it('fails a dense history before dossier projection with a retryable capability gap', () => {
+    expect(() => assertApprovalSourceEventBudget(20_000, 20_000)).not.toThrow()
+    expect(() => assertApprovalSourceEventBudget(20_001, 20_000))
+      .toThrow(expect.objectContaining({ code: 'retryable-capability' }))
+  })
+})
 
 describe('DossierGateFactProjector', () => {
   it('rebuilds cache scope from branded direct-user evidence only', () => {

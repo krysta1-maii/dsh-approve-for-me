@@ -29,7 +29,11 @@ import { createCaptureBridge, createDefaultActionProjector } from './dsh/action-
 import { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 import { DshScopedEffectiveCatalogResolver } from './dsh/effective-tool-catalog.js'
 import { createDshAlpha2StockProjectorRegistry } from './dsh/stock-tools.js'
-import { DossierGateFactProjector, SourceBackedGateFactResolver } from './application/source-backed-gate-facts.js'
+import {
+  DossierGateFactProjector,
+  SourceBackedGateFactResolver,
+  assertApprovalSourceEventBudget,
+} from './application/source-backed-gate-facts.js'
 import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
 import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
@@ -170,7 +174,8 @@ export function installApproveForMe(
     throw new Error('caseCapture.mode "full" requires a host-private durable case-capture adapter, which is not available')
   }
   const channel = new DefaultDecisionChannel()
-  const lifecycle = new ApprovalRunLifecycle()
+  // One complete deadline covers fact repair/compilation as well as Reviewer I/O.
+  const lifecycle = new ApprovalRunLifecycle(normalized.timeoutMs)
   const captures = new DefaultActionCapture<Agent, string>()
   const configuredProjectors = options.toolFamilyActionProjectors
     ?? (normalized.toolCatalog.descriptors.length === 0
@@ -275,9 +280,21 @@ export function installApproveForMe(
     ),
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
-      await executionProjection.awaitApprovalSnapshot(pending.agent, pending.requestId, pending.callId, pending.toolName)
-      if (signal?.aborted) return undefined
-      const session = pending.agent.session as unknown as { header?: { version?: unknown; createdAt?: unknown; cwd?: unknown } }
+      const session = pending.agent.session as unknown as {
+        header?: { version?: unknown; createdAt?: unknown; cwd?: unknown }
+        snapshotEvents?: () => readonly unknown[]
+      }
+      const sourceEvents = session.snapshotEvents?.()
+      if (!Array.isArray(sourceEvents)) return undefined
+      assertApprovalSourceEventBudget(sourceEvents.length, normalized.maxSourceEvents)
+      const approvalAskedSeq = await executionProjection.awaitApprovalSnapshot(
+        pending.agent,
+        pending.requestId,
+        pending.callId,
+        pending.toolName,
+        signal,
+      )
+      if (approvalAskedSeq === undefined || signal?.aborted) return undefined
       const version = session.header?.version
       const createdAt = session.header?.createdAt
       const cwd = session.header?.cwd
@@ -290,13 +307,30 @@ export function installApproveForMe(
         createdAt: createdAt as number,
         ...(cwd === undefined ? {} : { cwd }),
       }
+      let projectedExecutions = await executionFacts.list(lifecycle, signal)
+      const projectedApprovals = await approvalSnapshots.list(lifecycle, signal)
+      if (signal?.aborted) return undefined
+      const currentSnapshots = projectedApprovals.filter(snapshot =>
+        snapshot.approvalRequestId === pending.requestId && snapshot.approvalAskedSeq === approvalAskedSeq)
+      const currentRequestEventSeq = currentSnapshots.length === 1
+        ? currentSnapshots[0]!.execution.requestEventSeq
+        : undefined
+      const repaired = await executionProjection.repairHistoricalResults(
+        pending.agent,
+        projectedExecutions,
+        approvalAskedSeq,
+        signal,
+        currentRequestEventSeq,
+      )
+      if (signal?.aborted) return undefined
+      if (repaired > 0) projectedExecutions = await executionFacts.list(lifecycle, signal)
       return {
         agent: pending.agent,
         approvalRequestId: pending.requestId,
         callId: pending.callId,
         toolName: pending.toolName,
-        executionFacts: await executionFacts.list(lifecycle),
-        approvalSnapshots: await approvalSnapshots.list(lifecycle),
+        executionFacts: projectedExecutions,
+        approvalSnapshots: projectedApprovals,
         ...signal === undefined ? {} : { signal },
       }
     },
@@ -336,7 +370,7 @@ export function installApproveForMe(
         configurationFingerprint: input.configurationFingerprint,
         ...input.policyVersion === undefined ? {} : { policyVersion: input.policyVersion },
         issuedAt,
-        deadlineAt: issuedAt + normalized.timeoutMs,
+        deadlineAt: input.deadlineAt,
       })
     },
   }
@@ -364,6 +398,7 @@ export function installApproveForMe(
   const machinePolicy = createMachinePolicyAdapter({
     gate,
     mode: normalized.mode,
+    timeoutMs: normalized.timeoutMs,
     lifecycle,
     resolveActionHash: ({ agent, callId, requestId, toolName }) => {
       if (callId === undefined) {

@@ -1,6 +1,6 @@
 # DSH 0.1.2-rc.1 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、356 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、369 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# rc.1 实现检查点：44 files / 356 tests
+# rc.1 实现检查点：44 files / 369 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag
@@ -141,7 +141,11 @@ session never
 3. `'delegate'` 才进入官方 waterfall，并可到达 `ui-approval`；
 4. 重复 machine-policy id、非法返回值、策略异常、abort race 与 disposer 后调用均失败关闭；
 5. `approval/asked` 与 `approval/decided` 审计事件严格绑定同一 requestId，decided 位于 asked 之后；
-6. 本插件挂载时必须验证 fork marker 和 `registerMachinePolicy()`，同版本官方包不得静默降级。
+6. 本插件挂载时必须验证 fork marker 和 `registerMachinePolicy()`，同版本官方包不得静默降级；
+7. approval barrier 禁止全历史 result replay；native result 与 approval snapshot 必须按 source event seq 做 exact `get`，不得在 per-result 路径调用全表 `list`；
+8. `maxSourceEvents` 超限必须在全量 sidecar 读取／dossier snapshot 前返回 typed retryable gap：`auto-then-user` delegate，`auto` unavailable；
+9. Storage Domain 大索引读取须周期性让出 macrotask并检查 signal，Web Stop 的 cancel RPC 不得被 Promise microtask 链饿死；
+10. `timeoutMs` 必须从 machine-policy 入口覆盖事实准备到 Reviewer/record 全链；abort/deadline 结束调用方等待后，迟到任务仍受 lifecycle 管理且不能授权。
 
 ## 7. Reviewer deliveryAttempts 与 deadline
 

@@ -92,6 +92,8 @@ export interface Config {
   readonly maxDeliveryAttemptsPerChild?: number
   /** Maximum UTF-8 bytes of a complete serialized Guardian dossier. */
   readonly maxDossierBytes?: number
+  /** Maximum source events admitted to dossier work; deployments may lower the safe 20k ceiling. */
+  readonly maxSourceEvents?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
   readonly caseCapture?: GuardianCaseCaptureConfigV1
@@ -110,6 +112,7 @@ export const Config: z<Config> = z.object({
   timeoutMs: z.number().default(30_000),
   maxDeliveryAttemptsPerChild: z.number().min(1),
   maxDossierBytes: z.number().min(1),
+  maxSourceEvents: z.number().min(1).max(20_000),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
@@ -132,6 +135,7 @@ export interface NormalizedConfig {
   readonly timeoutMs: number
   readonly maxDeliveryAttemptsPerChild: number
   readonly maxDossierBytes: number
+  readonly maxSourceEvents: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
@@ -141,6 +145,8 @@ export interface NormalizedConfig {
 const DEFAULT_MAX_DELIVERY_ATTEMPTS_PER_CHILD = 64
 /** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
 const DEFAULT_MAX_DOSSIER_BYTES = 256_000
+/** Work budget preventing dense long histories from starving Host I/O. */
+const DEFAULT_MAX_SOURCE_EVENTS = 20_000
 
 const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = (() => {
   const unsealed = {
@@ -262,6 +268,10 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(maxDossierBytes) || maxDossierBytes < 1) {
     throw new TypeError('maxDossierBytes must be a positive safe integer')
   }
+  const maxSourceEvents = config.maxSourceEvents ?? DEFAULT_MAX_SOURCE_EVENTS
+  if (!Number.isSafeInteger(maxSourceEvents) || maxSourceEvents < 1 || maxSourceEvents > DEFAULT_MAX_SOURCE_EVENTS) {
+    throw new TypeError(`maxSourceEvents must be a positive safe integer no greater than ${DEFAULT_MAX_SOURCE_EVENTS}`)
+  }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
     modelRoute: {
@@ -279,6 +289,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     timeoutMs,
     maxDeliveryAttemptsPerChild,
     maxDossierBytes,
+    maxSourceEvents,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),

@@ -7,7 +7,7 @@ import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 
 export interface ExecutionFactRepository {
   /** List an exact immutable session lifecycle; never merge reused session IDs. */
-  list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]>
+  list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ToolExecutionFactRecordV1[]>
   /** Create once; a repeat must be byte-identical or report a conflict. */
   create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'>
   /**
@@ -38,7 +38,7 @@ export interface ExecutionFactRepository {
 
 export interface ApprovalSnapshotRepository {
   /** List an exact immutable session lifecycle; never merge reused session IDs. */
-  list(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]>
+  list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ApprovalSnapshotRecordV1[]>
   create(record: ApprovalSnapshotRecordV1): Promise<'created' | 'identical' | 'conflict'>
   get(input: {
     session: SessionLifecycleIdentityV1
@@ -50,7 +50,8 @@ export interface ApprovalSnapshotRepository {
 export class InMemoryExecutionFactRepository implements ExecutionFactRepository {
   private readonly rows = new Map<string, ToolExecutionFactRecordV1>()
 
-  async list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]> {
+  async list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ToolExecutionFactRecordV1[]> {
+    signal?.throwIfAborted()
     const prefix = `${this.lifecycleKey(session)}\0`
     return Object.freeze([...this.rows.entries()]
       .filter(([key]) => key.startsWith(prefix))
@@ -135,7 +136,8 @@ export class InMemoryExecutionFactRepository implements ExecutionFactRepository 
 export class InMemoryApprovalSnapshotRepository implements ApprovalSnapshotRepository {
   private readonly rows = new Map<string, ApprovalSnapshotRecordV1>()
 
-  async list(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]> {
+  async list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ApprovalSnapshotRecordV1[]> {
+    signal?.throwIfAborted()
     const prefix = `${this.lifecycleKey(session)}\0`
     return Object.freeze([...this.rows.entries()]
       .filter(([key]) => key.startsWith(prefix))

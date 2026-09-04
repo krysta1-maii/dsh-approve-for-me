@@ -34,6 +34,21 @@ function sameJson(left: unknown, right: unknown): boolean {
   }
 }
 
+function codeDispatchSignature(event: EventLike): string | undefined {
+  if (event.data === null || typeof event.data !== 'object' || Array.isArray(event.data)) return undefined
+  const data = event.data as Record<string, unknown>
+  const rootCallId = string(data.rootCallId)
+  const parentCallId = string(data.parentCallId)
+  const callId = string(data.subCallId)
+  const toolName = string(data.name)
+  if (rootCallId === undefined || parentCallId === undefined || callId === undefined || toolName === undefined) return undefined
+  try {
+    return canonicalJson({ rootCallId, parentCallId, callId, toolName, arguments: data.arguments } as JsonValue)
+  } catch {
+    return undefined
+  }
+}
+
 type SandboxDenialOutcome = Extract<NonNullable<ToolExecutionFactRecordV1['result']>['outcome'], { readonly kind: 'sandbox-denied' }>
 
 function sandboxMode(value: unknown): SandboxDenialOutcome['mode'] | undefined {
@@ -344,11 +359,8 @@ export class DshExecutionFactProjectionBridge {
         ? this.attachResult(agent, event)
         : this.attachCodeDispatchResult(agent, event)
       let write: Promise<void>
-      write = attempt.then(attached => {
-        if (!attached && this.resultWrites.get(key) === write) this.resultWrites.delete(key)
-      }, error => {
+      write = attempt.then(() => undefined).finally(() => {
         if (this.resultWrites.get(key) === write) this.resultWrites.delete(key)
-        throw error
       })
       this.resultWrites.set(key, write)
       return write
@@ -363,13 +375,10 @@ export class DshExecutionFactProjectionBridge {
     const key = `${canonicalJson(lifecycle)}\0${event.seq}`
     const existing = this.approvalWrites.get(key)
     if (existing !== undefined) return existing
-    const attempt = this.writeApprovalSnapshot(lifecycle, event.seq, requestId, callId, toolName)
+    const attempt = this.writeApprovalSnapshot(agent, lifecycle, event.seq, requestId, callId, toolName)
     let write: Promise<void>
-    write = attempt.then(persisted => {
-      if (!persisted && this.approvalWrites.get(key) === write) this.approvalWrites.delete(key)
-    }, error => {
+    write = attempt.then(() => undefined).finally(() => {
       if (this.approvalWrites.get(key) === write) this.approvalWrites.delete(key)
-      throw error
     })
     this.approvalWrites.set(key, write)
     return write
@@ -398,15 +407,13 @@ export class DshExecutionFactProjectionBridge {
     if (typeof session.snapshotEvents !== 'function') return false
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return false
-    const candidates = (await this.repository.list(lifecycle)).filter(record => {
-      const call = events[record.request.eventSeq]
-      const callData = call?.data as Record<string, unknown> | undefined
-      return record.request.kind === 'model-tool-call' && record.request.callId === callId
-        && record.request.eventSeq === requestEventSeq && record.request.eventSeq < event.seq && call?.type === 'tool/call'
-        && callData?.turn === turn && callData?.step === step
-    })
-    if (candidates.length !== 1) return false
-    const candidate = candidates[0]!
+    const candidate = await this.repository.get({ session: lifecycle, callId, requestEventSeq })
+    const call = events[requestEventSeq]
+    const callData = call?.data as Record<string, unknown> | undefined
+    if (candidate?.request.kind !== 'model-tool-call' || candidate.request.callId !== callId
+      || candidate.request.eventSeq !== requestEventSeq || candidate.request.eventSeq >= event.seq
+      || call?.type !== 'tool/call' || callData?.callId !== callId || callData?.name !== candidate.request.toolName
+      || callData.turn !== turn || callData.step !== step) return false
     const eventOutcome = Object.freeze(isError
       ? { kind: 'tool-error' as const }
       : { kind: 'completed' as const })
@@ -495,6 +502,53 @@ export class DshExecutionFactProjectionBridge {
     return outcome === 'updated' || outcome === 'identical'
   }
 
+  /** Attaches one already-correlated code result without rescanning Session history. */
+  private async attachKnownCodeDispatchResult(
+    agent: Agent,
+    event: EventLike,
+    start: EventLike,
+    known: ToolExecutionFactRecordV1,
+  ): Promise<boolean> {
+    const lifecycle = this.lifecycle(agent)
+    const data = event.data as Record<string, unknown>
+    const isError = data.isError
+    if (lifecycle === undefined || typeof isError !== 'boolean' || start.type !== 'tool/code-dispatch-start'
+      || codeDispatchSignature(start) === undefined || codeDispatchSignature(start) !== codeDispatchSignature(event)
+      || !sameJson(known.session, lifecycle) || known.request.kind !== 'code-dispatch'
+      || known.request.eventSeq !== start.seq || known.request.eventType !== start.type
+      || known.request.callId !== data.subCallId || known.request.toolName !== data.name
+      || known.request.rootCallId !== data.rootCallId || known.request.parentCallId !== data.parentCallId) return false
+    const candidate = await this.repository.get({
+      session: lifecycle,
+      callId: known.request.callId,
+      requestEventSeq: known.request.eventSeq,
+    })
+    if (candidate?.request.kind !== 'code-dispatch' || candidate.request.eventSeq !== start.seq
+      || candidate.request.callId !== known.request.callId || candidate.request.toolName !== known.request.toolName) return false
+    const resultKey = this.resultKey(lifecycle, candidate.request.callId, candidate.request.eventSeq)
+    const volatileTerminal = this.terminalOutcomes.get(resultKey)
+    const compatible = (terminal: TerminalEvidence): boolean => terminal.isError === isError
+      && (terminal.outcome.kind === 'sandbox-denied' || isError === (terminal.outcome.kind === 'tool-error'))
+    const terminal = volatileTerminal !== undefined
+      ? (compatible(volatileTerminal) ? volatileTerminal : undefined)
+      : (candidate.terminalEvidence !== undefined && compatible(candidate.terminalEvidence)
+        ? candidate.terminalEvidence
+        : undefined)
+    const eventOutcome = Object.freeze(isError
+      ? { kind: 'tool-error' as const }
+      : { kind: 'completed' as const })
+    const receipt = terminal === undefined ? undefined : this.receiptRecord(candidate, terminal, event)
+    const outcome = await this.repository.attachResult({
+      session: lifecycle,
+      callId: candidate.request.callId,
+      requestEventSeq: candidate.request.eventSeq,
+      result: { eventSeq: event.seq, eventType: 'tool/code-dispatch', outcome: terminal?.outcome ?? eventOutcome },
+      ...receipt === undefined ? {} : { delegationReceipt: receipt },
+    })
+    if (outcome === 'updated' || outcome === 'identical') this.terminalOutcomes.delete(resultKey)
+    return outcome === 'updated' || outcome === 'identical'
+  }
+
   private receiptRecord(
     record: ToolExecutionFactRecordV1,
     terminal: TerminalEvidence,
@@ -518,25 +572,138 @@ export class DshExecutionFactProjectionBridge {
   }
 
   /**
-   * Closes the observer-policy race: a machine decision waits for the write
-   * already scheduled by the same durable approval event (or schedules it from
-   * canonical history itself). Missing/ambiguous history remains non-authorizing.
+   * Closes only the exact observer-policy race for this approval event. Bounded
+   * cold repair runs later from one validated fact snapshot; replaying every
+   * prior result here made the first post-restart approval quadratic.
    */
-  async awaitApprovalSnapshot(agent: Agent, requestId: string, callId: string, toolName: string): Promise<void> {
+  async awaitApprovalSnapshot(
+    agent: Agent,
+    requestId: string,
+    callId: string,
+    toolName: string,
+    signal?: AbortSignal,
+  ): Promise<number | undefined> {
+    if (signal?.aborted) return
     const session = agent.session as unknown as SessionLike
     if (typeof session.snapshotEvents !== 'function') return
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return
-    const event = events.filter(candidate => candidate.type === 'approval/asked'
+    const matches = events.filter(candidate => candidate.type === 'approval/asked'
       && (candidate.data as Record<string, unknown>)?.id === requestId
       && (candidate.data as Record<string, unknown>)?.callId === callId
       && (candidate.data as Record<string, unknown>)?.toolName === toolName)
-    if (event.length !== 1 || event[0] === undefined) return
-    await Promise.all(events
-      .filter(candidate => (candidate.type === 'tool/result' || candidate.type === 'tool/code-dispatch')
-        && candidate.seq < event[0]!.seq)
-      .map(candidate => this.observeSessionEvent(agent, candidate)))
-    await this.observeSessionEvent(agent, event[0])
+    const event = matches.length === 1 ? matches[0] : undefined
+    if (event === undefined || signal?.aborted) return
+    const lifecycle = this.lifecycle(agent)
+    if (lifecycle === undefined) return
+    const prefix = `${canonicalJson(lifecycle)}\0`
+    const pendingResults = [...this.resultWrites.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, write]) => write)
+    if (!await this.settleUnlessAborted(Promise.all(pendingResults), signal) || signal?.aborted) return
+    if (!await this.settleUnlessAborted(this.observeSessionEvent(agent, event), signal) || signal?.aborted) return
+    return event.seq
+  }
+
+  /**
+   * Cold-repairs only execution rows already known to be missing a canonical
+   * result. The caller supplies one validated repository snapshot, preventing
+   * result-by-result full-table reads while preserving crash-tail recovery.
+   */
+  async repairHistoricalResults(
+    agent: Agent,
+    records: readonly ToolExecutionFactRecordV1[],
+    throughSeq: number,
+    signal?: AbortSignal,
+    excludeRequestEventSeq?: number,
+  ): Promise<number> {
+    if (signal?.aborted || !Number.isSafeInteger(throughSeq) || throughSeq < 0) return 0
+    const session = agent.session as unknown as SessionLike
+    if (typeof session.snapshotEvents !== 'function') return 0
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return 0
+    const missingBySeq = new Map<number, ToolExecutionFactRecordV1>()
+    for (const record of records) {
+      if (record.result === undefined && record.request.eventSeq < throughSeq
+        && record.request.eventSeq !== excludeRequestEventSeq) {
+        missingBySeq.set(record.request.eventSeq, record)
+      }
+    }
+    if (missingBySeq.size === 0) return 0
+
+    let repaired = 0
+    const codeStartsBySeq = new Map<number, EventLike>()
+    const pendingCodeStarts = new Map<string, EventLike[]>()
+    for (let index = 0; index < events.length; index += 1) {
+      if (signal?.aborted || missingBySeq.size === 0) break
+      if (index > 0 && index % 256 === 0) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (signal?.aborted) break
+      }
+      const event = events[index]!
+      if (event.seq >= throughSeq) break
+      if (event.type === 'tool/result') {
+        const sourceSeq = event.sourceEventSeqs?.length === 1 ? event.sourceEventSeqs[0] : undefined
+        const missing = sourceSeq === undefined ? undefined : missingBySeq.get(sourceSeq)
+        if (missing?.request.kind !== 'model-tool-call') continue
+        if (await this.attachResult(agent, event)) {
+          missingBySeq.delete(sourceSeq!)
+          repaired += 1
+        }
+        continue
+      }
+      if (event.type === 'tool/code-dispatch-start') {
+        const signature = codeDispatchSignature(event)
+        if (signature !== undefined) {
+          codeStartsBySeq.set(event.seq, event)
+          const pending = pendingCodeStarts.get(signature) ?? []
+          pending.push(event)
+          pendingCodeStarts.set(signature, pending)
+        }
+        continue
+      }
+      if (event.type !== 'tool/code-dispatch') continue
+      const signature = codeDispatchSignature(event)
+      if (signature === undefined) continue
+      const pending = pendingCodeStarts.get(signature) ?? []
+      const explicitSourceSeqs: readonly number[] | undefined = event.sourceEventSeqs
+        ?.filter((seq: number) => Number.isSafeInteger(seq))
+      const candidates = explicitSourceSeqs !== undefined && explicitSourceSeqs.length > 0
+        ? explicitSourceSeqs
+          .map((seq: number) => codeStartsBySeq.get(seq))
+          .filter((start: EventLike | undefined): start is EventLike => start !== undefined && codeDispatchSignature(start) === signature)
+        : pending
+      const start = candidates.length === 1 ? candidates[0] : undefined
+      // Every terminal closes the pending window for this exact dispatch shape,
+      // matching attachCodeDispatchResult's preceding-terminal ambiguity rule.
+      pendingCodeStarts.set(signature, [])
+      if (start === undefined) continue
+      const missing = missingBySeq.get(start.seq)
+      if (missing?.request.kind !== 'code-dispatch') continue
+      if (await this.attachKnownCodeDispatchResult(agent, event, start, missing)) {
+        missingBySeq.delete(start.seq)
+        repaired += 1
+      }
+    }
+    return repaired
+  }
+
+  private async settleUnlessAborted(work: Promise<unknown>, signal?: AbortSignal): Promise<boolean> {
+    if (signal === undefined) {
+      await work
+      return true
+    }
+    if (signal.aborted) return false
+    let onAbort!: () => void
+    const aborted = new Promise<boolean>(resolve => {
+      onAbort = () => resolve(false)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      return await Promise.race([work.then(() => true), aborted])
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+    }
   }
 
   private lifecycle(agent: Agent): { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string } | undefined {
@@ -551,13 +718,38 @@ export class DshExecutionFactProjectionBridge {
     return { sessionId, sessionFormatVersion: version as number, createdAt: createdAt as number, ...(cwd === undefined ? {} : { cwd }) }
   }
 
-  private async writeApprovalSnapshot(lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string }, approvalAskedSeq: number, requestId: string, callId: string, toolName: string): Promise<boolean> {
-    const matches = (await this.repository.list(lifecycle)).filter(record =>
-      record.request.callId === callId && record.request.toolName === toolName && record.request.eventSeq < approvalAskedSeq)
-      .sort((left, right) => right.request.eventSeq - left.request.eventSeq)
-    if (matches.length === 0 || this.approvals === undefined) return false
-    const execution = matches[0]!
-    if (matches[1]?.request.eventSeq === execution.request.eventSeq) return false
+  private async writeApprovalSnapshot(
+    agent: Agent,
+    lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string },
+    approvalAskedSeq: number,
+    requestId: string,
+    callId: string,
+    toolName: string,
+  ): Promise<boolean> {
+    if (this.approvals === undefined) return false
+    const session = agent.session as unknown as SessionLike
+    if (typeof session.snapshotEvents !== 'function') return false
+    const events = session.snapshotEvents()
+    if (!Array.isArray(events)) return false
+    // Approval is requested synchronously from inside the current execution, so
+    // its source is the latest exact canonical request before approval/asked.
+    let source: EventLike | undefined
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!
+      if (event.seq >= approvalAskedSeq || event.data === null || typeof event.data !== 'object' || Array.isArray(event.data)) continue
+      const data = event.data as Record<string, unknown>
+      if ((event.type === 'tool/call' && data.callId === callId && data.name === toolName)
+        || (event.type === 'tool/code-dispatch-start' && data.subCallId === callId && data.name === toolName)) {
+        source = event
+        break
+      }
+    }
+    if (source === undefined) return false
+    const execution = await this.repository.get({ session: lifecycle, callId, requestEventSeq: source.seq })
+    const captured = this.captures?.lookup(agent, callId, toolName)
+    if (execution === undefined || execution.request.callId !== callId || execution.request.toolName !== toolName
+      || execution.request.eventSeq !== source.seq || execution.request.eventType !== source.type
+      || (this.captures !== undefined && (captured === undefined || hashAction(captured) !== execution.projection.actionHash))) return false
     const snapshot: ApprovalSnapshotRecordV1 = Object.freeze({
       version: 1, session: Object.freeze(lifecycle), approvalRequestId: requestId, approvalAskedSeq,
       execution: Object.freeze({

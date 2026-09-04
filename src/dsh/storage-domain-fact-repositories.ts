@@ -130,10 +130,15 @@ export class DshStorageDomainFactRepositories {
     return this.createOnce('executions', 'executions', record.session, this.executionKey(record.session, record.request.callId, record.request.eventSeq), record)
   }
 
-  async list(session: SessionLifecycleIdentityV1): Promise<readonly ToolExecutionFactRecordV1[]> {
-    const rows = await this.listRows('executions', 'executions', session)
-    if (rows === undefined || rows.some(row => !this.validExecution(row) || !sameLifecycle((row as ToolExecutionFactRecordV1).session, session))) return Object.freeze([])
-    return Object.freeze(rows as ToolExecutionFactRecordV1[])
+  async list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ToolExecutionFactRecordV1[]> {
+    const rows = await this.listRows(
+      'executions',
+      'executions',
+      session,
+      row => this.validExecution(row) && sameLifecycle(row.session, session),
+      signal,
+    )
+    return Object.freeze(rows === undefined ? [] : rows as ToolExecutionFactRecordV1[])
   }
 
   async get(input: { session: SessionLifecycleIdentityV1; callId: string; requestEventSeq: number }): Promise<ToolExecutionFactRecordV1 | undefined> {
@@ -191,10 +196,15 @@ export class DshStorageDomainFactRepositories {
     return this.createOnce('approval_snapshots', 'approval_snapshots', record.session, this.approvalKey(record.session, record.approvalRequestId, record.approvalAskedSeq), record)
   }
 
-  async listApprovals(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]> {
-    const rows = await this.listRows('approval_snapshots', 'approval_snapshots', session)
-    if (rows === undefined || rows.some(row => !this.validApproval(row) || !sameLifecycle((row as ApprovalSnapshotRecordV1).session, session))) return Object.freeze([])
-    return Object.freeze(rows as ApprovalSnapshotRecordV1[])
+  async listApprovals(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ApprovalSnapshotRecordV1[]> {
+    const rows = await this.listRows(
+      'approval_snapshots',
+      'approval_snapshots',
+      session,
+      row => this.validApproval(row) && sameLifecycle(row.session, session),
+      signal,
+    )
+    return Object.freeze(rows === undefined ? [] : rows as ApprovalSnapshotRecordV1[])
   }
 
   async getApproval(input: { session: SessionLifecycleIdentityV1; approvalRequestId: string; approvalAskedSeq: number }): Promise<ApprovalSnapshotRecordV1 | undefined> {
@@ -268,9 +278,16 @@ export class DshStorageDomainFactRepositories {
     return confirmed.canonical === canonical
   }
 
-  private async listRows(tableName: string, indexName: string, session: SessionLifecycleIdentityV1): Promise<readonly unknown[] | undefined> {
+  private async listRows(
+    tableName: string,
+    indexName: string,
+    session: SessionLifecycleIdentityV1,
+    validate: (row: unknown) => boolean,
+    signal?: AbortSignal,
+  ): Promise<readonly unknown[] | undefined> {
     if (!this.admissionOpen) throw new GateFailure('lifecycle', 'approval fact storage is draining')
     try {
+      signal?.throwIfAborted()
       const domain = await this.domain()
       if (domain === undefined) throw new GateFailure('retryable-capability', 'approval fact storage is unavailable')
       const index = domain.table(indexName).get(this.lifecycleKey(session))
@@ -279,9 +296,12 @@ export class DshStorageDomainFactRepositories {
       if (!sameLifecycle(parsed.session, session)) return undefined
       const rows: unknown[] = []
       for (const key of parsed.keys) {
+        signal?.throwIfAborted()
         const row = await this.readRow(tableName, key)
-        if (row === undefined) return undefined
+        if (row === undefined || !validate(row)) return undefined
         rows.push(row)
+        // Reads and full schema/canonical validation both yield as one batch.
+        if (rows.length % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
       }
       return Object.freeze(rows)
     } catch (cause: unknown) {
@@ -441,7 +461,7 @@ export class DshStorageDomainFactRepositories {
 /** Facades retain the existing distinct application repository ports. */
 export class DshStorageDomainExecutionFactRepository implements ExecutionFactRepository {
   constructor(private readonly shared: DshStorageDomainFactRepositories) {}
-  list(session: SessionLifecycleIdentityV1) { return this.shared.list(session) }
+  list(session: SessionLifecycleIdentityV1, signal?: AbortSignal) { return this.shared.list(session, signal) }
   create(record: ToolExecutionFactRecordV1) { return this.shared.create(record) }
   stageTerminal(input: Parameters<ExecutionFactRepository['stageTerminal']>[0]) { return this.shared.stageTerminal(input) }
   attachResult(input: Parameters<ExecutionFactRepository['attachResult']>[0]) { return this.shared.attachResult(input) }
@@ -450,7 +470,7 @@ export class DshStorageDomainExecutionFactRepository implements ExecutionFactRep
 
 export class DshStorageDomainApprovalSnapshotRepository implements ApprovalSnapshotRepository {
   constructor(private readonly shared: DshStorageDomainFactRepositories) {}
-  list(session: SessionLifecycleIdentityV1) { return this.shared.listApprovals(session) }
+  list(session: SessionLifecycleIdentityV1, signal?: AbortSignal) { return this.shared.listApprovals(session, signal) }
   create(record: ApprovalSnapshotRecordV1) { return this.shared.createApproval(record) }
   get(input: Parameters<ApprovalSnapshotRepository['get']>[0]) { return this.shared.getApproval(input) }
 }

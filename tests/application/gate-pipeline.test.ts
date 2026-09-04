@@ -29,6 +29,7 @@ function request(mode: 'auto' | 'auto-then-user' = 'auto', withCallId = true): G
     parentSessionId: 'parent-1',
     toolName: 'bash',
     actionHash: hash('a'),
+    deadlineAt: Number.MAX_SAFE_INTEGER,
     mode,
   }
   return withCallId ? { ...base, callId: 'call-1' } : base
@@ -410,6 +411,20 @@ describe('DefaultGatePipeline', () => {
     await expect(humanUser.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
   })
 
+  it('never authorizes when wall time passes the absolute deadline before timer dispatch', async () => {
+    let now = 100
+    const records = recordsStub()
+    const preReview = { preReview: vi.fn(async () => {
+      now = 201
+      return { ...sealed('allow'), issuedAt: 100, deadlineAt: 500 }
+    }) }
+    const { pipeline, deps } = makePipeline({ records, preReview, now: () => now })
+
+    await expect(pipeline.decide({ ...request(), deadlineAt: 200 })).resolves.toBe('unavailable')
+    expect(records.createConfirmed).not.toHaveBeenCalled()
+    expect(deps.allowCache.recordGuardianAllow).not.toHaveBeenCalled()
+  })
+
   it('does not allow when the decision record conflicts', async () => {
     const { pipeline } = makePipeline({
       records: recordsStub({
@@ -418,6 +433,16 @@ describe('DefaultGatePipeline', () => {
       mode: 'auto-then-user',
     })
     await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+  })
+
+  it('delegates a retryable source-history work-budget overflow only in user-fallback mode', async () => {
+    const auto = makePipeline({ mode: 'auto' })
+    auto.factsResolver.resolve.mockRejectedValue(new GateFailure('retryable-capability', 'source history exceeds work budget'))
+    await expect(auto.pipeline.decide(request())).resolves.toBe('unavailable')
+
+    const user = makePipeline({ mode: 'auto-then-user' })
+    user.factsResolver.resolve.mockRejectedValue(new GateFailure('retryable-capability', 'source history exceeds work budget'))
+    await expect(user.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
   })
 
   it('delegates only explicit retryable pre-review failures', async () => {

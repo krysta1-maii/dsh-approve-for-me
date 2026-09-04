@@ -34,6 +34,9 @@ export interface PatchedMachineApprovalPolicyLike {
 export interface MachinePolicyAdapterOptions {
   readonly gate: GateMachinePolicyV1
   readonly mode: ReviewMode
+  /** Complete machine-policy budget, including fact preparation. */
+  readonly timeoutMs?: number
+  readonly now?: () => number
   /** Abort/drain barrier owned by the plugin lifecycle. */
   readonly lifecycle?: ApprovalRunLifecycle
   /**
@@ -58,11 +61,20 @@ export interface MachinePolicyAdapterOptions {
  * returns the gate's closed outcome.
  */
 export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions): PatchedMachineApprovalPolicyLike {
+  const timeoutMs = options.timeoutMs ?? 30_000
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError('machine policy timeoutMs must be a positive safe integer')
+  }
+  const now = options.now ?? Date.now
   return Object.freeze({
     id: 'dsh-approve-for-me/v1',
     async decide(request: PatchedApprovalRequestLike): Promise<ApprovalOutcome | 'delegate'> {
+      const startedAt = now()
+      const deadlineAt = startedAt + timeoutMs
+      if (!Number.isSafeInteger(startedAt) || startedAt < 0 || !Number.isSafeInteger(deadlineAt)) return 'unavailable'
       const execute = async (signal: AbortSignal): Promise<ApprovalOutcome | 'delegate'> => {
         if (signal.aborted) return 'cancelled'
+        if (now() >= deadlineAt) return 'unavailable'
         // requestId and callId are mandatory links to durable approval and tool
         // history. Their absence is not a recoverable reason to ask a human.
         if (request.requestId === undefined || request.callId === undefined) return 'unavailable'
@@ -95,10 +107,13 @@ export function createMachinePolicyAdapter(options: MachinePolicyAdapterOptions)
           toolName: request.toolName,
           ...request.reason === undefined ? {} : { reason: request.reason },
           actionHash,
+          deadlineAt,
           mode: options.mode,
           signal,
         }
         const outcome = await options.gate.decide(gateRequest)
+        if (signal.aborted) return 'cancelled'
+        if (now() >= deadlineAt && outcome === 'allowed-once') return 'unavailable'
         if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
           console.error('[approve-for-me machine-policy] gate outcome', {
             requestId: request.requestId,

@@ -72,6 +72,7 @@ describe('plugin config', () => {
     expect(normalized.mode).toBe('auto')
     expect(normalized.timeoutMs).toBe(30_000)
     expect(normalized.maxDossierBytes).toBe(256_000)
+    expect(normalized.maxSourceEvents).toBe(20_000)
     expect(normalized.preset).toMatchObject({
       version: 1,
       role: 'primary',
@@ -218,6 +219,8 @@ describe('plugin config', () => {
     expect(() => normalizeConfig({ ...valid(), mode: 'never' as never })).toThrow(/mode/)
     expect(() => normalizeConfig({ ...valid(), maxDeliveryAttemptsPerChild: 0 })).toThrow(/maxDeliveryAttemptsPerChild/)
     expect(() => normalizeConfig({ ...valid(), maxDossierBytes: 0 })).toThrow(/maxDossierBytes/)
+    expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 0 })).toThrow(/maxSourceEvents/)
+    expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 20_001 })).toThrow(/maxSourceEvents/)
     expect(() => normalizeConfig({ ...valid(), trustEnvelope: { tools: ['unknown'] as never } }))
       .toThrow(/unknown tool family/)
     expect(() => normalizeConfig({ ...valid(), reviewer: { ...valid().reviewer, toolsetVersion: 2 as never } }))

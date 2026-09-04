@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-09-03，rc.1 基线）：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），机器决策槽 v3。宿主闭包直接安装 npm 上已发布的 `0.1.2-rc.1` 包；`npm run check` 通过 44 个测试文件、356 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 rc.1 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
+> 当前代码状态（2026-09-03，rc.1 基线）：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），机器决策槽 v3。宿主闭包直接安装 npm 上已发布的 `0.1.2-rc.1` 包；`npm run check` 通过 44 个测试文件、369 项测试。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 rc.1 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。
 >
 > 尚未完成的是“产品级 E2E”：真实 LLM Reviewer 的 allow/deny/human_review、浏览器中官方审批面板、带 pending approval/child 状态的真实跨进程冷恢复、污染/容量/卸载的故障注入与长程 soak。当前 automatic allow 必须来自 branded source-verified dossier 上 identity-valid 的 Reviewer allow，并在返回前完成 durable decision record；R4 baseline 作为 Reviewer 输入和 authorization-derived cache/replay fast-path 边界。
 
@@ -85,10 +85,19 @@
 - 设置提交先同步撤销旧 machine policy，再异步校验新 route；只有最新 generation 可以重新安装。慢旧 lookup、unavailable route、provider detach 与卸载 race 都不能恢复过期策略；
 - 切换到其他 route 时删除部署模型专属 reasoning effort，使用新 adapter 默认值；重置为部署 route 时恢复部署 effort。provider credential、retry 与私有设置始终由 DSH 持有。
 
+### H7 长 Session 审批饥饿与 Stop 修复（完成）
+
+- 事故根因是 `awaitApprovalSnapshot()` 在首次冷审批中重放全部历史 result，而 native `attachResult()` 每次又执行全表 `repository.list()`，在 151k events／1323 results 的会话中形成约 175 万次完整记录校验和约 400GB 逻辑重序列化；Promise microtask 风暴阻塞 WebSocket、timer 与持久化；
+- native result 现在用 durable `sourceEventSeqs[0]` 对 exact execution `repository.get()`；approval snapshot 从 ask 之前最后一条 exact canonical request 做单点 get，并与 volatile capture actionHash 复核；
+- approval barrier 只等待当前进程已开始的 result writes 与 exact approval write，不再冷重放全部 Session result；随后基于一次已验证 execution snapshot 扫描 canonical history，只对明确缺少 result 的 exact row 做 bounded cold repair；无法精确修复的 crash-tail 仍失败关闭；
+- `maxSourceEvents` 默认且最高为 20000（部署只能下调），在读取全量 sidecar/构建 dossier 前形成显式 work budget；超预算在 `auto-then-user` 下进入官方人工链，在 `auto` 下 unavailable；
+- Storage Domain 大索引读取每 32 条让出一次 macrotask并检查 AbortSignal；`ApprovalRunLifecycle(timeoutMs)` 从 machine-policy 入口约束全链，Stop／deadline 立即结束调用方等待，同时保留底层任务的 lifecycle drain，迟到任务不能授权；
+- 事故回归覆盖 10k historical result 的 O(1) exact lookup、无全表 replay、event-loop heartbeat/abort、完整 deadline、non-cooperative gate Stop、work-budget 模式映射与 cold correlation。
+
 ## 验证
 
 ```bash
-npm run check                       # typecheck + 44 files / 356 tests + build
+npm run check                       # typecheck + 44 files / 369 tests + build
 npm run verify:managed-source       # sibling clean HEAD/remote/tree = reviewed lock
 npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host

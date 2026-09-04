@@ -11,6 +11,8 @@ export interface GateMachineRequestV1 {
   readonly toolName: string
   readonly reason?: string
   readonly actionHash: string
+  /** Host-owned absolute deadline for the complete machine-policy path. */
+  readonly deadlineAt: number
   readonly mode: 'auto' | 'auto-then-user'
   readonly signal?: AbortSignal
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { DshExecutionFactProjectionBridge } from '../../src/dsh/execution-projection-bridge.js'
@@ -123,7 +123,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     expect(Object.isFrozen(snapshot)).toBe(true)
   })
 
-  it('attaches one matching native result without copying result content', async () => {
+  it('attaches one matching native result by exact source without listing history', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const owner = agent([
       { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
@@ -133,7 +133,9 @@ describe('DshExecutionFactProjectionBridge', () => {
     const exec = execution(owner)
     await bridge.project(exec)
     bridge.observeResult(exec, { isError: false, value: null, content: [] })
+    const list = vi.spyOn(repository, 'list')
     await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown; readonly sourceEventSeqs?: readonly number[] }[] }).snapshotEvents()[1]!)
+    expect(list).not.toHaveBeenCalled()
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
       .resolves.toMatchObject({ result: { eventSeq: 1, eventType: 'tool/result', outcome: { kind: 'completed' } } })
   })
@@ -314,7 +316,7 @@ describe('DshExecutionFactProjectionBridge', () => {
     })).resolves.toMatchObject({ result: { eventSeq: 1, outcome: { kind: 'tool-error' } } })
   })
 
-  it('drains prior durable result writes at the approval barrier', async () => {
+  it('avoids barrier replay and cold-repairs only missing rows from one validated snapshot', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const approvals = new InMemoryApprovalSnapshotRepository()
     const owner = agent([
@@ -327,11 +329,69 @@ describe('DshExecutionFactProjectionBridge', () => {
     const first = { ...execution(owner), callId: 'call-0' as ToolExecution['callId'], rootCallId: 'call-0' as ToolExecution['callId'] }
     await bridge.project(first)
     bridge.observeResult(first, { isError: false, value: null, content: [] })
-    const second = execution(owner)
-    await bridge.project(second)
+    await bridge.project(execution(owner))
+    const list = vi.spyOn(repository, 'list')
+
     await bridge.awaitApprovalSnapshot(owner, 'approval-1', 'call-1', 'bash')
+
+    expect(list).not.toHaveBeenCalled()
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-0', requestEventSeq: 0 }))
+      .resolves.not.toHaveProperty('result')
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    await expect(bridge.repairHistoricalResults(owner, snapshot, 3)).resolves.toBe(1)
     await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-0', requestEventSeq: 0 }))
       .resolves.toMatchObject({ result: { eventSeq: 1, outcome: { kind: 'completed' } } })
+    await expect(approvals.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, approvalRequestId: 'approval-1', approvalAskedSeq: 3 }))
+      .resolves.toMatchObject({ execution: { requestEventSeq: 2, callId: 'call-1' } })
+  })
+
+  it('yields cold repair scans so Stop can abort before a historical write', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const events = [
+      { seq: 0, time: 1, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      ...Array.from({ length: 511 }, (_value, index) => ({ seq: index + 1, time: index + 2, type: 'assistant/chunk', data: {} })),
+      { seq: 512, time: 513, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+    await bridge.project(execution(owner))
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    const abort = new AbortController()
+    setImmediate(() => abort.abort({ kind: 'user' }))
+
+    await expect(bridge.repairHistoricalResults(owner, snapshot, 513, abort.signal)).resolves.toBe(0)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 }))
+      .resolves.not.toHaveProperty('result')
+  })
+
+  it('keeps a 10k-result cold history to one exact fact lookup per approval', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = Array.from({ length: 10_000 }, (_value, seq) => ({
+      seq,
+      time: seq + 1,
+      type: 'tool/result',
+      data: {},
+    }))
+    events.push(
+      { seq: 10_000, time: 10_001, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 10_001, time: 10_002, type: 'approval/asked', data: { id: 'approval-1', callId: 'call-1', toolName: 'bash' } },
+    )
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    await bridge.project(execution(owner))
+    const get = vi.spyOn(repository, 'get')
+    const list = vi.spyOn(repository, 'list')
+
+    await bridge.awaitApprovalSnapshot(owner, 'approval-1', 'call-1', 'bash')
+
+    expect(list).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledTimes(1)
+    await expect(approvals.get({
+      session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 },
+      approvalRequestId: 'approval-1',
+      approvalAskedSeq: 10_001,
+    })).resolves.toMatchObject({ execution: { requestEventSeq: 10_000 } })
   })
 
   it('rejects a result whose durable source sequence differs from the call', async () => {
@@ -386,6 +446,63 @@ describe('DshExecutionFactProjectionBridge', () => {
         request: { kind: 'code-dispatch', eventType: 'tool/code-dispatch-start' },
         result: { eventSeq: 2, eventType: 'tool/code-dispatch', outcome: { kind: 'completed' } },
       })
+  })
+
+  it('cold-repairs one unambiguous source-less code dispatch in one history pass', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'root-1', name: 'run_code', arguments: '{}' } },
+      { seq: 1, time: 21, type: 'tool/code-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' } } },
+      { seq: 2, time: 22, type: 'tool/code-dispatch', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' }, isError: false, content: [] } },
+    ])
+    const nested = {
+      ...execution(owner),
+      callId: 'sub-1' as ToolExecution['callId'],
+      rootCallId: 'root-1' as ToolExecution['callId'],
+      parent: Symbol('root') as NonNullable<ToolExecution['parent']>,
+    } as ToolExecution
+    const live = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+    await live.project(nested)
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    const recovered = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+
+    await expect(recovered.repairHistoricalResults(owner, snapshot, 3)).resolves.toBe(1)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'sub-1', requestEventSeq: 1 }))
+      .resolves.toMatchObject({ result: { eventSeq: 2, eventType: 'tool/code-dispatch', outcome: { kind: 'completed' } } })
+  })
+
+  it('cold-repairs concurrent identical code dispatches with explicit source edges', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const events: Array<{ seq: number; time: number; type: string; data: Record<string, unknown>; sourceEventSeqs?: readonly number[] }> = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'root-1', name: 'run_code', arguments: '{}' } },
+      { seq: 1, time: 21, type: 'tool/code-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' } } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+    const first = {
+      ...execution(owner), callId: 'sub-1' as ToolExecution['callId'], rootCallId: 'root-1' as ToolExecution['callId'],
+      parent: Symbol('root-a') as NonNullable<ToolExecution['parent']>,
+    } as ToolExecution
+    await bridge.project(first)
+    events.push({ seq: 2, time: 22, type: 'tool/code-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' } } })
+    const second = {
+      ...execution(owner), callId: 'sub-1' as ToolExecution['callId'], rootCallId: 'root-1' as ToolExecution['callId'],
+      parent: Symbol('root-b') as NonNullable<ToolExecution['parent']>,
+    } as ToolExecution
+    await bridge.project(second)
+    events.push(
+      { seq: 3, time: 23, type: 'tool/code-dispatch', sourceEventSeqs: [1], data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' }, isError: false, content: [] } },
+      { seq: 4, time: 24, type: 'tool/code-dispatch', sourceEventSeqs: [2], data: { rootCallId: 'root-1', parentCallId: 'root-1', subCallId: 'sub-1', name: 'bash', arguments: { command: 'pwd' }, isError: false, content: [] } },
+    )
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    const recovered = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+
+    await expect(recovered.repairHistoricalResults(owner, snapshot, 5)).resolves.toBe(2)
+    const repaired = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    expect(repaired).toEqual(expect.arrayContaining([
+      expect.objectContaining({ request: expect.objectContaining({ eventSeq: 1 }), result: expect.objectContaining({ eventSeq: 3 }) }),
+      expect.objectContaining({ request: expect.objectContaining({ eventSeq: 2 }), result: expect.objectContaining({ eventSeq: 4 }) }),
+    ]))
   })
 
   it('does not attach a code-dispatch result when an earlier identical start has no terminal', async () => {

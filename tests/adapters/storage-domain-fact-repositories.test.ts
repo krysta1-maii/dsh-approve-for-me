@@ -201,6 +201,24 @@ describe('DshStorageDomainFactRepositories', () => {
     await shared.drain()
   })
 
+  it('yields large index reads to Host I/O and observes cancellation', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    for (let index = 0; index < 64; index += 1) {
+      await executions.create(execution(`call-${index}`, index + 1))
+    }
+    const controller = new AbortController()
+    let heartbeat = false
+    setImmediate(() => {
+      heartbeat = true
+      controller.abort(new Error('stop'))
+    })
+
+    await expect(executions.list(session, controller.signal)).rejects.toMatchObject({ code: 'retryable-capability' })
+    expect(heartbeat).toBe(true)
+    await shared.drain()
+  })
+
   it('surfaces missing read capability for the typed human fallback and keeps writes closed', async () => {
     const unavailable = repositories(undefined as unknown as StorageDomainFacility)
     await expect(unavailable.executions.create(execution())).resolves.toBe('conflict')
