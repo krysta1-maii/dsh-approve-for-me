@@ -7,6 +7,8 @@ import type { ApprovalSnapshotRecordV1, DelegationReceiptFactRecordV1, Principal
 import type { DshAlpha2EffectiveCatalog } from './effective-tool-catalog.js'
 import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
+import { createActivityV1, createSealV1, genesisSealHash } from '../domain/sealed-facts.js'
+import type { ActivityV1, SealResultStatusV1, SealV1 } from '../domain/sealed-facts.js'
 
 interface EventLike {
   readonly seq: number
@@ -14,6 +16,12 @@ interface EventLike {
   readonly type: string
   readonly data: unknown
   readonly sourceEventSeqs?: readonly number[]
+}
+
+/** Durable ledger dependency; undefined deliberately leaves legacy capture non-authorizing. */
+export interface SealedFactsLedger {
+  append(seal: SealV1, activity: ActivityV1): Promise<'created' | 'identical' | 'conflict' | 'unavailable'>
+  read(lifecycleFingerprint: string): Promise<readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined>
 }
 
 interface SessionLike {
@@ -153,6 +161,7 @@ export class DshExecutionFactProjectionBridge {
     private readonly approvals?: ApprovalSnapshotRepository,
     /** Reuse the exact volatile projection when capture and fact bridging share one. */
     private readonly captures?: ActionCapture<Agent, string>,
+    private readonly ledger?: SealedFactsLedger,
   ) {}
 
   async preExecute(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {
@@ -430,7 +439,10 @@ export class DshExecutionFactProjectionBridge {
       result: { eventSeq: event.seq, eventType: 'tool/result', outcome: terminal?.outcome ?? eventOutcome },
       ...receipt === undefined ? {} : { delegationReceipt: receipt },
     })
-    if (outcome === 'updated' || outcome === 'identical') this.terminalOutcomes.delete(resultKey)
+    if (outcome === 'updated' || outcome === 'identical') {
+      this.terminalOutcomes.delete(resultKey)
+      await this.appendSealForResult(agent, event, callId, requestEventSeq)
+    }
     return outcome === 'updated' || outcome === 'identical'
   }
 
@@ -498,7 +510,10 @@ export class DshExecutionFactProjectionBridge {
       result: { eventSeq: event.seq, eventType: 'tool/code-dispatch', outcome: terminal?.outcome ?? eventOutcome },
       ...receipt === undefined ? {} : { delegationReceipt: receipt },
     })
-    if (outcome === 'updated' || outcome === 'identical') this.terminalOutcomes.delete(resultKey)
+    if (outcome === 'updated' || outcome === 'identical') {
+      this.terminalOutcomes.delete(resultKey)
+      await this.appendSealForResult(agent, event, callId, start.seq)
+    }
     return outcome === 'updated' || outcome === 'identical'
   }
 
@@ -545,8 +560,66 @@ export class DshExecutionFactProjectionBridge {
       result: { eventSeq: event.seq, eventType: 'tool/code-dispatch', outcome: terminal?.outcome ?? eventOutcome },
       ...receipt === undefined ? {} : { delegationReceipt: receipt },
     })
-    if (outcome === 'updated' || outcome === 'identical') this.terminalOutcomes.delete(resultKey)
+    if (outcome === 'updated' || outcome === 'identical') {
+      this.terminalOutcomes.delete(resultKey)
+      await this.appendSealForResult(agent, event, candidate.request.callId, candidate.request.eventSeq)
+    }
     return outcome === 'updated' || outcome === 'identical'
+  }
+
+  /** Seal only an exact approval-bound result; all failures remain non-blocking. */
+  private async appendSealForResult(agent: Agent, event: EventLike, callId: string, requestEventSeq: number): Promise<void> {
+    if (this.ledger === undefined || this.approvals === undefined) return
+    try {
+      const lifecycle = this.lifecycle(agent)
+      if (lifecycle === undefined) return
+      const record = await this.repository.get({ session: lifecycle, callId, requestEventSeq })
+      if (record === undefined || record.result === undefined || record.result.eventSeq !== event.seq
+        || record.request.callId !== callId || record.request.eventSeq !== requestEventSeq) return
+      const asked = (await this.approvals.list(lifecycle)).filter(snapshot =>
+        snapshot.execution.requestEventSeq === requestEventSeq
+        && snapshot.execution.callId === callId
+        && snapshot.execution.toolName === record.request.toolName
+        && snapshot.execution.actionHash === record.projection.actionHash
+        && snapshot.execution.projectorId === record.projection.projectorId
+        && snapshot.execution.classificationCatalogFingerprint === record.toolClassification.classificationCatalogFingerprint)
+      // An approval snapshot is the only binding authority. No ask, ambiguity, or
+      // capture/catalog mismatch can be promoted into the execution ledger.
+      if (asked.length !== 1) return
+      const lifecycleFingerprint = canonicalJson(lifecycle)
+      const previous = await this.ledger.read(lifecycleFingerprint)
+      if (previous === undefined) {
+        console.error('[approve-for-me ledger] seal-chain-unavailable')
+        return
+      }
+      const prior = previous.at(-1)?.seal
+      const sameEpoch = prior?.catalog.commitment === record.catalogCommitment.fingerprint
+      const epoch = prior === undefined ? 0 : sameEpoch ? prior.catalog.epoch : prior.catalog.epoch + 1
+      const descriptor = record.toolClassification.descriptor
+      const classification = descriptor.classification === 'ordinary'
+        ? descriptor.classificationId
+        : `delegation:${descriptor.operation}`
+      const status: SealResultStatusV1 = record.result.outcome.kind === 'sandbox-denied'
+        ? 'sandbox-denied'
+        : record.result.outcome.kind === 'tool-error' ? 'tool-error' : 'completed'
+      const seal = createSealV1({
+        lifecycleFingerprint, sourceSeq: requestEventSeq,
+        request: { eventSeq: requestEventSeq, eventType: record.request.eventType, callId, toolName: record.request.toolName },
+        approvalAsked: { eventSeq: asked[0]!.approvalAskedSeq, requestId: asked[0]!.approvalRequestId },
+        actionHash: record.projection.actionHash, projectorId: record.projection.projectorId,
+        catalog: { epoch, headerEventSeq: record.catalogCommitment.requestHeaderEventSeq, commitment: record.catalogCommitment.fingerprint },
+        wireSchemaFingerprint: descriptor.toolSchemaFingerprint,
+        result: { eventSeq: record.result.eventSeq, status },
+        epochBoundary: { previousEpoch: prior?.catalog.epoch ?? null, changed: prior !== undefined && !sameEpoch },
+        previousSealHash: prior?.sealHash ?? genesisSealHash(lifecycleFingerprint),
+      })
+      // Deliberately generic and bounded: never derive an ID, argument, result body, or model text.
+      const activity = createActivityV1({ lifecycleFingerprint, sourceSeq: requestEventSeq, occurredAt: event.time, classification, targetSummary: `tool:${record.request.toolName}`, resultCategory: status, sourceSealHash: seal.sealHash })
+      const appended = await this.ledger.append(seal, activity)
+      if (appended === 'conflict' || appended === 'unavailable') console.error('[approve-for-me ledger] seal-append-failed')
+    } catch {
+      console.error('[approve-for-me ledger] seal-projection-failed')
+    }
   }
 
   private receiptRecord(
