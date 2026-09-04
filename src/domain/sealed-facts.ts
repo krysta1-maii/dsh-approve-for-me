@@ -37,4 +37,14 @@ export function parseSealV1(input: unknown): SealV1 {
 export function createSealV1(input: Omit<SealV1,'version'|'sealHash'|'canonical'>): SealV1 { const base={version:1 as const,...input}; const hashed={...base,sealHash:sealHash(base)}; return parseSealV1({...hashed,canonical:canonicalJson(hashed)}) }
 export function parseActivityV1(input:unknown):ActivityV1 { const o=object(input,'activity');keys(o,['version','lifecycleFingerprint','sourceSeq','occurredAt','classification','targetSummary','resultCategory','sourceSealHash','canonical'],'activity'); if(o.version!==1)throw new TypeError('activity.version'); const resultCategory=['completed','tool-error','sandbox-denied'].includes(o.resultCategory as string)?o.resultCategory as SealResultStatusV1:(()=>{throw new TypeError('activity.status')})(); const p={version:1 as const,lifecycleFingerprint:str(o.lifecycleFingerprint,'activity.lifecycle'),sourceSeq:int(o.sourceSeq,'activity.seq'),occurredAt:int(o.occurredAt,'activity.time'),classification:str(o.classification,'activity.classification'),targetSummary:str(o.targetSummary,'activity.target'),resultCategory,sourceSealHash:str(o.sourceSealHash,'activity.seal')}; if(!HASH.test(p.sourceSealHash)||o.canonical!==canonicalJson(p)) throw new TypeError('invalid activity'); return Object.freeze({...p,canonical:o.canonical as string}) }
 export function createActivityV1(input: Omit<ActivityV1,'version'|'canonical'>):ActivityV1 { const row={version:1 as const,...input}; return parseActivityV1({...row,canonical:canonicalJson(row)}) }
+/**
+ * Derive the sealed activity classification from a catalog descriptor. This is
+ * the domain-authoritative classifier shared by the capture bridge and the
+ * sealed-facts reader (WP4-c switches the bridge onto it); it throws on any
+ * descriptor it cannot map so untrusted sidecars fail closed. It reproduces the
+ * exact production rule: ordinary -> classificationId, delegation ->
+ * 'delegation:'+operation.
+ */
+export function activityClassificationFromDescriptorV1(descriptor: unknown): string {
+ const d=object(descriptor,'descriptor'); if(d.classification==='ordinary')return str(d.classificationId,'descriptor.classificationId'); if(d.classification==='delegation')return `delegation:${str(d.operation,'descriptor.operation')}`; throw new TypeError('descriptor.classification') }
 export function sealedFactKey(lifecycleFingerprint:string):string { return 'l1_'+createHash('sha256').update('l1\0').update(lifecycleFingerprint).digest('hex') }

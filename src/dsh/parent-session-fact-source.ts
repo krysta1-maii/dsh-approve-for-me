@@ -2,7 +2,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
-import { genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
+import { activityClassificationFromDescriptorV1, genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
 import type { SealedFactsLedger } from './execution-projection-bridge.js'
 import type { ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -392,6 +392,11 @@ export async function readSealedParentSessionFacts(input: {
         || seal.catalog.headerEventSeq >= seal.request.eventSeq
         || events.slice(seal.catalog.headerEventSeq + 1, seal.request.eventSeq + 1).some(event => event.type === 'request/header')
         || (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment)) return undefined
+      // Derive the classification from the descriptor the capture side sealed with
+      // and require a byte-exact match. A forged row that recomputed its own
+      // canonical/chain but derived a different classification is still caught:
+      // the descriptor is anchored by the catalog commitment already validated above.
+      if (activity.classification !== activityClassificationFromDescriptorV1(fact.toolClassification.descriptor)) return undefined
       commitmentsByHeader.set(seal.catalog.headerEventSeq, seal.catalog.commitment)
     const requestData = request.data as Record<string, unknown>
     const askedData = asked.data as Record<string, unknown>

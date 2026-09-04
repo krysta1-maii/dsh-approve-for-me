@@ -6,7 +6,7 @@ export {
   snapshotJson,
 } from './domain/json.js'
 export type { JsonPrimitive, JsonValue } from './domain/json.js'
-export { chainTipHash, createActivityV1, createSealV1, genesisSealHash, parseActivityV1, parseSealV1, sealHash, sealedFactKey } from './domain/sealed-facts.js'
+export { activityClassificationFromDescriptorV1, chainTipHash, createActivityV1, createSealV1, genesisSealHash, parseActivityV1, parseSealV1, sealHash, sealedFactKey } from './domain/sealed-facts.js'
 export type { ActivityV1, SealV1, SealResultStatusV1 } from './domain/sealed-facts.js'
 export {
   DECISION_PAYLOAD_HASH_DOMAIN,
