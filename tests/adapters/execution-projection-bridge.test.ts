@@ -753,4 +753,75 @@ describe('DshExecutionFactProjectionBridge', () => {
     await bridge.observeSessionEvent(owner, events[11]!)
     await expect(approvals.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
   })
+
+  it('fails closed when a live duplicate approval/asked reuses the request id at a different seq', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      { seq: 2, time: 22, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    // Inject each ask through the live observer. After each write settles the
+    // resolved index entry is cleaned; the second ask then resolves via a re-scan
+    // whose duplicate guard must fail closed.
+    await bridge.observeSessionEvent(owner, events[1]!)
+    await bridge.observeSessionEvent(owner, events[2]!)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
+
+  it('poisons the volatile asked index on a live duplicate ask so a racing resolve fails closed', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      { seq: 2, time: 22, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    // Fire-and-forget: the second observer runs before either write settles, so the
+    // same key with a different seq must poison the index immediately.
+    void bridge.observeSessionEvent(owner, events[1]!)
+    void bridge.observeSessionEvent(owner, events[2]!)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
+
+  it('fails closed when the re-read eventAt diverges from the resolved asked identity', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    // Populate the index without letting its settle cleanup run (fire-and-forget).
+    void bridge.observeSessionEvent(owner, events[1]!)
+    // Re-read seq 1 as a different request: the resolved identity must be rechecked,
+    // not merely that the event is some approval/asked.
+    const session = (owner as unknown as { session: { eventAt: (seq: number) => unknown } }).session
+    session.eventAt = () => ({ seq: 1, time: 21, type: 'approval/asked', data: { id: 'a2', callId: 'call-2', toolName: 'bash' } })
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
+
+  it('pins the cold-repair lower bound as inclusive so a result exactly at the edge is repaired', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
+      { seq: 2, time: 22, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-2', name: 'bash' } },
+    ]
+    const owner = agent(events)
+    const live = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+    await live.project(execution(owner))
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    // window=2, throughSeq=3 → inclusive lower=1; the result at seq1 is exactly at the
+    // edge and must be repaired. An exclusive lower=2 would drop it.
+    const recovered = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, undefined, undefined, undefined, 2)
+    expect(await recovered.repairHistoricalResults(owner, snapshot, 3)).toBe(1)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 })).resolves.toMatchObject({ result: { eventSeq: 1 } })
+  })
 })
