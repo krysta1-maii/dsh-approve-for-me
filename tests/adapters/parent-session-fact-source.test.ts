@@ -393,6 +393,15 @@ describe('readSealedParentSessionFacts', () => {
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
   })
 
+  it('fails closed on a self-consistent inflated epoch transition', async () => {
+    const fixture = sealedReaderFixture()
+    const middle = fixture.rows[1]!, middleSeal = reseal(middle.seal, { catalog: { ...middle.seal.catalog, epoch: 5 }, epochBoundary: { previousEpoch: 0, changed: true } })
+    fixture.rows[1] = { seal: middleSeal, activity: reactivate(middleSeal, middle.activity) }
+    const last = fixture.rows[2]!, lastSeal = reseal(last.seal, { catalog: { ...last.seal.catalog, epoch: 5 }, epochBoundary: { previousEpoch: 5, changed: false }, previousSealHash: middleSeal.sealHash })
+    fixture.rows[2] = { seal: lastSeal, activity: reactivate(lastSeal, last.activity) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+
   it.each([
     ['rehashed seal commitment detached from fact', async (f: ReturnType<typeof sealedReaderFixture>) => {
       const middle = f.rows[1]!, middleSeal = reseal(middle.seal, { catalog: { ...middle.seal.catalog, commitment: sealedHash('e') } })
