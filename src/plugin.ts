@@ -345,6 +345,7 @@ export function installApproveForMe(
     approvalSnapshots,
     captures,
     ledger,
+    normalized.maxSealedTailEvents,
   )
   // The target profile supplies the alpha.1 Storage Domain form. An absent or
   // failed domain remains non-authorizing: record confirmation returns
