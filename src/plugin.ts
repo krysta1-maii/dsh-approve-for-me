@@ -120,28 +120,44 @@ export interface ApproveForMeInstallOptions {
 
 export { Config }
 
-interface LiveSessionEvent {
-  readonly seq: number
-  readonly type: string
-  readonly data: unknown
+interface LiveSessionBinding {
+  readonly id?: unknown
+  readonly header?: { readonly id?: unknown; readonly parentSession?: unknown; readonly delegationDepth?: unknown }
+  readonly seq?: unknown
+  readonly eventAt?: (seq: number) => { readonly type: string; readonly data: unknown } | undefined
 }
 
-function validateLiveApprovalBinding(agent: Agent, requestId: string, callId: string, toolName: string): string {
-  const session = agent.session as unknown as { id?: unknown; header?: { id?: unknown; parentSession?: unknown; delegationDepth?: unknown }; snapshotEvents?: () => readonly LiveSessionEvent[] }
+/**
+ * Bind the approval ask to exactly one live Agent/Session and confirm its unique
+ * durable approval/asked audit event. The ask is located with a bounded,
+ * tail-anchored eventAt back-scan (window = maxSealedTailEvents) mirroring the
+ * sealed reader and execution-bridge cold-start rule; it never materializes the
+ * full session log. Window selection reuses the shared bounded-tail knob already
+ * governing the sealed ledger, so every bounded live-session view is O(maxSealedTailEvents)
+ * instead of O(N). A zero, duplicate, or out-of-window ask fails closed (integrity).
+ */
+function validateLiveApprovalBinding(agent: Agent, requestId: string, callId: string, toolName: string, maxSealedTailEvents: number): string {
+  const session = agent.session as unknown as LiveSessionBinding
   const agentId = String((agent as unknown as { id?: unknown }).id ?? '')
   const sessionId = typeof session.id === 'string' ? session.id : ''
-  if (sessionId.length === 0 || agentId !== sessionId || session.header?.id !== sessionId || typeof (session as { snapshotEvents?: unknown }).snapshotEvents !== 'function') {
+  if (sessionId.length === 0 || agentId !== sessionId || session.header?.id !== sessionId
+    || typeof session.eventAt !== 'function' || typeof session.seq !== 'number') {
     throw new GateFailure('integrity', 'approval ask is not bound to an exact live Agent/Session')
   }
-  const events = session.snapshotEvents!()
-  if (!Array.isArray(events)) {
+  const tail = session.seq
+  if (!Number.isSafeInteger(tail) || tail < 0) {
     throw new GateFailure('integrity', 'approval ask is not bound to an exact live Agent/Session')
   }
-  const asked = events.filter(event => event.type === 'approval/asked' && (() => {
+  const lower = Math.max(0, tail - maxSealedTailEvents)
+  let matched = 0
+  for (let seq = tail - 1; seq >= lower; seq -= 1) {
+    const event = session.eventAt!(seq)
+    if (event === undefined) continue
+    if (event.type !== 'approval/asked') continue
     const data = event.data as Record<string, unknown>
-    return data.id === requestId && data.callId === callId && data.toolName === toolName
-  })())
-  if (asked.length !== 1) throw new GateFailure('integrity', 'approval ask does not have one matching durable audit event')
+    if (data.id === requestId && data.callId === callId && data.toolName === toolName) matched += 1
+  }
+  if (matched !== 1) throw new GateFailure('integrity', 'approval ask does not have one matching durable audit event')
   return sessionId
 }
 
@@ -511,7 +527,7 @@ export function installApproveForMe(
       if (callId === undefined) {
         throw new GateFailure('integrity', 'cannot resolve action hash for an approval ask without a tool call id')
       }
-      const parentSessionId = validateLiveApprovalBinding(agent, requestId, callId, toolName)
+      const parentSessionId = validateLiveApprovalBinding(agent, requestId, callId, toolName, normalized.maxSealedTailEvents)
       const captured = captures.lookup(agent, callId, toolName)
       if (captured === undefined) {
         throw new GateFailure('integrity', `cannot resolve action hash for uncaptured tool call "${toolName}" (${callId})`)

@@ -304,21 +304,27 @@ describe('installApproveForMe composition root', () => {
     await plugin.dispose()
   })
 
-  it('does not reject an oversized session snapshot with the removed source-event budget', async () => {
+  it('does not reject an oversized session and proves the approve hot path is zero full-snapshot (WP4-b4-2b S-4)', async () => {
     const h = harness()
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)
-    const events = Array.from({ length: 20_001 }, (_, seq) => ({
-      seq,
-      time: 100 + seq,
-      type: seq === 0 ? 'approval/asked' : 'message/assistant',
-      data: seq === 0 ? { id: 'ask-1', callId: 'call-1', toolName: 'bash' } : {},
-    }))
+    // An oversized (20001-event) live session whose approval ask sits inside the
+    // bounded sealed-tail window. The remapped hot path must locate that ask via
+    // exact eventAt reads only — never by materializing the full snapshot on the
+    // decide path — and must still not throw the removed maxSourceEvents budget.
+    const seqCount = 20_001
+    const askedSeq = 20_000
+    const eventAt = vi.fn((seq: number) => seq === askedSeq
+      ? { type: 'approval/asked' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } }
+      : undefined)
+    const snapshotEvents = vi.fn(() => [])
     const parent = {
       id: 'parent-1',
       session: {
         id: 'parent-1',
-        header: { version: 1, createdAt: 100 },
-        snapshotEvents: vi.fn(() => events),
+        header: { id: 'parent-1', version: 1, createdAt: 100 },
+        eventAt,
+        seq: seqCount,
+        snapshotEvents,
       },
     }
     const policy = h.machinePolicy as {
@@ -330,10 +336,88 @@ describe('installApproveForMe composition root', () => {
       name: 'bash',
       arguments: { command: 'pwd' },
     }, async () => ({ kind: 'ask' }))
+    // The capture/pre-execute step legitimately touches snapshotEvents (an
+    // accepted, out-of-scope capture-path remnant). Clear it so a later call can
+    // only represent the approval decide/pipeline segment.
+    snapshotEvents.mockClear()
 
     await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
-    expect(parent.session.snapshotEvents).toHaveBeenCalled()
 
+    // The approval hot path (resolveActionHash -> validateLiveApprovalBinding ->
+    // resolver) never materializes the full session snapshot.
+    expect(snapshotEvents).not.toHaveBeenCalled()
+    // Every live read is an exact eventAt inside the bounded sealed-tail window,
+    // so the locate cost stays O(maxSealedTailEvents) even at 20k events.
+    const readSeqs = eventAt.mock.calls.map(call => call[0] as number)
+    expect(readSeqs.length).toBeGreaterThan(0)
+    expect(Math.max(...readSeqs)).toBeLessThan(seqCount)
+    expect(Math.min(...readSeqs)).toBeGreaterThanOrEqual(seqCount - 512)
+
+    await plugin.dispose()
+  })
+
+  it('fails closed when the approval ask lies outside the bounded sealed-tail window (guard mutation)', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const seqCount = 20_001
+    const eventAt = vi.fn((seq: number) => seq === 0
+      ? { type: 'approval/asked' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } }
+      : undefined)
+    const parent = {
+      id: 'parent-1',
+      session: {
+        id: 'parent-1',
+        header: { id: 'parent-1', version: 1, createdAt: 100 },
+        eventAt,
+        seq: seqCount,
+        snapshotEvents: vi.fn(() => []),
+      },
+    }
+    const policy = h.machinePolicy as {
+      decide(request: { agent: typeof parent; toolName: string; callId: string; requestId: string }): Promise<string>
+    }
+    await h.listeners.preExecute!({
+      agent: parent, callId: 'call-1', name: 'bash', arguments: { command: 'pwd' },
+    }, async () => ({ kind: 'ask' }))
+    parent.session.snapshotEvents.mockClear()
+
+    await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
+    // The guard never scanned beneath the sealed-tail window: a full-history
+    // eventAt scan would have reached seq 0, found the (stale) ask, and reopened a
+    // closed ask — this mutation is killed by the lower-bound assertion below.
+    const readSeqs = eventAt.mock.calls.map(call => call[0] as number)
+    expect(readSeqs.length).toBeGreaterThan(0)
+    expect(Math.min(...readSeqs)).toBeGreaterThanOrEqual(seqCount - 512)
+    await plugin.dispose()
+  })
+
+  it('fails closed on a duplicate matching approval ask within the bounded window (contract pin)', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const seqCount = 20_001
+    const eventAt = vi.fn((seq: number) => (seq === 20_000 || seq === 19_999)
+      ? { type: 'approval/asked' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } }
+      : undefined)
+    const parent = {
+      id: 'parent-1',
+      session: {
+        id: 'parent-1',
+        header: { id: 'parent-1', version: 1, createdAt: 100 },
+        eventAt,
+        seq: seqCount,
+        snapshotEvents: vi.fn(() => []),
+      },
+    }
+    const policy = h.machinePolicy as {
+      decide(request: { agent: typeof parent; toolName: string; callId: string; requestId: string }): Promise<string>
+    }
+    await h.listeners.preExecute!({
+      agent: parent, callId: 'call-1', name: 'bash', arguments: { command: 'pwd' },
+    }, async () => ({ kind: 'ask' }))
+
+    // Two distinct but matching approval/asked events for one request are
+    // ambiguous and must fail closed, never resolve to one of the competing asks.
+    await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
     await plugin.dispose()
   })
 
