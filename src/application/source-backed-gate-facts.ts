@@ -69,6 +69,10 @@ export interface SealedAskFactsInputV1 {
   readonly freeze: DossierFreezeV1
   readonly requester: SealedPrincipalRequesterV1
   readonly signal?: AbortSignal
+  /** Bounded recent human user-message excerpts assembled around the ask (intent aid). */
+  readonly excerpts?: readonly { readonly seq: number; readonly text: string }[]
+  /** Count of candidate excerpts the assembler dropped for its byte budget. */
+  readonly excerptTruncated?: number
 }
 
 /**
@@ -457,6 +461,10 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
       ...requestedSandboxMode === undefined ? {} : { requestedSandboxMode },
       // earlierSandboxDenials: Phase-1 default empty (WP4-b4-1 裁定 3). Each
       // approval is judged independently; a fresh Guardian still correlates.
+      // Bounded recent excerpt channel flows through as an intent aid; compileSealed
+      // is the safety boundary that validates each entry against the closed set.
+      ...(input.excerpts === undefined ? {} : { excerpts: input.excerpts }),
+      ...(input.excerptTruncated === undefined ? {} : { excerptTruncated: input.excerptTruncated }),
     })
   }
 

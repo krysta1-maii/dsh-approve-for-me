@@ -13,6 +13,7 @@ import { createSealedDossierCompiler } from '../../src/application/sealed-dossie
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
 import type { SealedDossierCurrentFactsV1, CompileSealed } from '../../src/application/sealed-dossier-compiler.js'
+import type { SealedAskFactsInputV1 } from '../../src/application/source-backed-gate-facts.js'
 import type { SealedParentSessionFactsV1, SealedFactsReadResult } from '../../src/dsh/parent-session-fact-source.js'
 
 const agent = { id: 'session-1', session: { id: 'session-1' } } as unknown as Agent
@@ -90,7 +91,7 @@ function carrier() {
   }
 }
 
-function validAskInput(userAgent: Agent = agent) {
+function validAskInput(userAgent: Agent = agent, overrides: Partial<SealedAskFactsInputV1> = {}): SealedAskFactsInputV1 {
   const action = baseAction()
   const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
   const effective = createDshAlpha2EffectiveCatalog(schemas)
@@ -119,7 +120,7 @@ function validAskInput(userAgent: Agent = agent) {
     currentStep: 0,
     frozenAt: 1_007,
   }
-  return { agent: userAgent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', executionFact, approvalSnapshot, approvalAsked: { seq: 6, type: 'approval/asked', turn: 1, step: 0 }, freeze, requester: { effectiveDelegationDepth: 0 } }
+  return { agent: userAgent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', executionFact, approvalSnapshot, approvalAsked: { seq: 6, type: 'approval/asked', turn: 1, step: 0 }, freeze, requester: { effectiveDelegationDepth: 0 }, ...overrides }
 }
 
 function resolver() {
@@ -274,7 +275,7 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     const subject = resolver()
     subject.resolver.register(pending())
     const input = validAskInput()
-    input.approvalSnapshot.execution.actionHash = hash('x')
+    ;(input.approvalSnapshot.execution as { actionHash: string }).actionHash = hash('x')
     subject.snapshotInput.mockResolvedValue(input)
     subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
     await expect(subject.resolver.resolve(request)).resolves.toBeUndefined()
@@ -303,6 +304,47 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     if (turn2.kind !== 'ready') throw new Error('expected ready')
     const nextTurnFacts = projector.project({ request, pending: pending(), facts, sealedCurrent: carrier(), verifiedDossier: turn2.verified })!
     expect(breaker.lookup(nextTurnFacts.breakerKey)).toBe(false)
+  })
+
+  it('carries bounded excerpts through the resolver into the Reviewer-visible dossier (WP4-b4-2a)', async () => {
+    const read = vi.fn(async (): Promise<SealedFactsReadResult> => ({ kind: 'ok', facts: packet() }))
+    const snapshotInput = vi.fn(async (): Promise<SealedAskFactsInputV1> => validAskInput(agent, {
+      excerpts: [{ seq: 2, text: 'inspect the workspace' }, { seq: 4, text: 'then commit the fix' }],
+      excerptTruncated: 1,
+    }))
+    const subject = new SourceBackedGateFactResolver({
+      sealedFacts: { read },
+      compileSealed: compileSealed(),
+      maxSealedTailEvents: 512,
+      projector: new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2'),
+      snapshotInput,
+    })
+    subject.register(pending())
+    const facts = await subject.resolve(request)
+    expect(facts).toBeDefined()
+    const dossier = (facts as unknown as { verifiedDossier: { dossier: { interaction: { sealed: { excerpts: readonly { readonly seq: number; readonly text: string }[]; readonly excerptTruncated: number } } } } }).verifiedDossier.dossier
+    expect(dossier.interaction.sealed.excerpts).toEqual([
+      { seq: 2, text: 'inspect the workspace' },
+      { seq: 4, text: 'then commit the fix' },
+    ])
+    expect(dossier.interaction.sealed.excerptTruncated).toBe(1)
+  })
+
+  it('leaves the Reviewer dossier unchanged when no excerpts flow through the resolver', async () => {
+    const read = vi.fn(async (): Promise<SealedFactsReadResult> => ({ kind: 'ok', facts: packet() }))
+    const snapshotInput = vi.fn(async (): Promise<SealedAskFactsInputV1> => validAskInput(agent))
+    const subject = new SourceBackedGateFactResolver({
+      sealedFacts: { read },
+      compileSealed: compileSealed(),
+      maxSealedTailEvents: 512,
+      projector: new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2'),
+      snapshotInput,
+    })
+    subject.register(pending())
+    const facts = await subject.resolve(request)
+    expect(facts).toBeDefined()
+    const dossier = (facts as unknown as { verifiedDossier: { dossier: { interaction: { sealed: { excerpts?: unknown } } } } }).verifiedDossier.dossier
+    expect(dossier.interaction.sealed.excerpts).toBeUndefined()
   })
 })
 
