@@ -37,6 +37,8 @@ interface SessionLike {
     readonly delegationDepth?: unknown
   }
   readonly snapshotEvents?: () => readonly SessionEventLike[]
+  readonly seq?: number
+  readonly eventAt?: (seq: number) => SessionEventLike | undefined
 }
 
 function text(value: unknown): string | undefined {
@@ -329,6 +331,20 @@ export interface SealedParentSessionFactsV1 {
   readonly catalogEpochs: readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[]
 }
 
+/**
+ * Discriminated result of a sealed-facts read. WP4-b4's design input requires
+ * the caller to distinguish an incomplete-but-explainable ledger
+ * (empty-ledger), an over-budget tail (tail-budget-overflow), and any
+ * tampering / integrity failure (chain break, hash mismatch, live re-binding
+ * rejection, classification mismatch — the unavailable class). It never
+ * collapses them into one bare "no facts".
+ */
+export type SealedFactsReadResult =
+  | { readonly kind: 'ok'; readonly facts: SealedParentSessionFactsV1 }
+  | { readonly kind: 'unavailable'; readonly reason?: string }
+  | { readonly kind: 'tail-budget-overflow'; readonly sealedCount: number; readonly maxSealedTailEvents: number }
+  | { readonly kind: 'empty-ledger' }
+
 /** Return no facts for missing, polluted, unsealed, or non-live-rebindable history. */
 export async function readSealedParentSessionFacts(input: {
   readonly agent: Agent
@@ -338,98 +354,144 @@ export async function readSealedParentSessionFacts(input: {
   readonly approvalRequestId: string
   readonly callId: string
   readonly toolName: string
+  /** Bounded leading-tail window for rows entering the hot packet (default matches the chain config). */
+  readonly maxSealedTailEvents?: number
   readonly signal?: AbortSignal
-}): Promise<SealedParentSessionFactsV1 | undefined> {
-  if (input.signal?.aborted || input.ledger === undefined) return undefined
+}): Promise<SealedFactsReadResult> {
+  const fail = (reason: string, detail?: unknown): SealedFactsReadResult => {
+    if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', reason, detail === undefined ? '' : JSON.stringify(detail))
+    return { kind: 'unavailable', reason }
+  }
+  const maxSealedTailEvents = input.maxSealedTailEvents ?? 512
+  if (input.signal?.aborted) return fail('aborted')
+  if (!Number.isSafeInteger(maxSealedTailEvents) || maxSealedTailEvents < 1) return fail('max-sealed-tail-events-invalid', { maxSealedTailEvents })
   const bound = sessionIdentity(input.agent)
-  if (bound === undefined || input.registry.get(bound.identity.sessionId) !== input.agent || typeof bound.session.snapshotEvents !== 'function') return undefined
-  const events = bound.session.snapshotEvents()
-  if (!Array.isArray(events) || events.some((event, index) => event.seq !== index || nonNegative(event.time) === undefined)) return undefined
+  if (bound === undefined || input.registry.get(bound.identity.sessionId) !== input.agent || typeof bound.session.eventAt !== 'function') return fail('identity')
   const lifecycleFingerprint = canonicalJson({ sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) })
+  if (input.ledger === undefined) return fail('ledger-missing')
   let rows: readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined
-  try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return undefined }
-  if (input.signal?.aborted || rows === undefined || rows.length === 0) return undefined
+  try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return fail('ledger-read') }
+  if (input.signal?.aborted) return fail('aborted')
+  if (rows === undefined) return fail('ledger-unavailable')
+  if (rows.length === 0) return { kind: 'empty-ledger' }
+  // Disk-side chain integrity only: genesis → tip hash / topology / canonical
+  // continuity. The seal chain is never a trust root, so we do NOT re-read the
+  // whole Session here. Live eventAt re-binding happens only for the rows that
+  // enter the bounded hot packet below (WP4-b2).
+  const parsed: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
   const epochs = new Map<number, { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }>()
   const commitmentsByHeader = new Map<number, string>()
-  const validatedRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
   let previousSealHash = genesisSealHash(lifecycleFingerprint)
   let previousSourceSeq = -1
   let previousSeal: SealV1 | undefined
+  let processed = 0
   for (const row of rows) {
+    if (input.signal?.aborted) return fail('aborted')
+    if (processed % 256 === 0) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (input.signal?.aborted) return fail('aborted')
+    }
     try {
       const seal = parseSealV1(row.seal)
       const activity = parseActivityV1(row.activity)
-      if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return undefined
-      // Match the bridge's epoch transition exactly; a rehashed disk row cannot
-      // invent an epoch topology independently of its preceding commitment.
+      if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return fail('chain-discontinuity')
       if (previousSeal === undefined) {
-        if (seal.catalog.epoch !== 0 || seal.epochBoundary.previousEpoch !== null || seal.epochBoundary.changed !== false) return undefined
+        if (seal.catalog.epoch !== 0 || seal.epochBoundary.previousEpoch !== null || seal.epochBoundary.changed !== false) return fail('epoch-boundary')
       } else {
         const changed = seal.catalog.commitment !== previousSeal.catalog.commitment
         if (seal.epochBoundary.previousEpoch !== previousSeal.catalog.epoch || seal.epochBoundary.changed !== changed
-          || seal.catalog.epoch !== (changed ? previousSeal.catalog.epoch + 1 : previousSeal.catalog.epoch)) return undefined
+          || seal.catalog.epoch !== (changed ? previousSeal.catalog.epoch + 1 : previousSeal.catalog.epoch)) return fail('epoch-transition')
       }
-      const request = events[seal.request.eventSeq]
-    const asked = events[seal.approvalAsked.eventSeq]
-    const result = events[seal.result.eventSeq]
-    const header = events[seal.catalog.headerEventSeq]
-    if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
-      || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
-      || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash
-      || activity.occurredAt !== result.time || activity.resultCategory !== seal.result.status) return undefined
+      if (activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq
+        || activity.sourceSealHash !== seal.sealHash || activity.resultCategory !== seal.result.status) return fail('activity-binding')
+      const priorHeaderCommitment = commitmentsByHeader.get(seal.catalog.headerEventSeq)
+      if (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment) return fail('header-commitment-split')
+      commitmentsByHeader.set(seal.catalog.headerEventSeq, seal.catalog.commitment)
+      const priorEpoch = epochs.get(seal.catalog.epoch)
+      const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
+      if (priorEpoch !== undefined && canonicalJson(priorEpoch) !== canonicalJson(epoch)) return fail('epoch-split')
+      epochs.set(epoch.epoch, Object.freeze(epoch))
+      parsed.push(Object.freeze({ seal, activity }))
+      previousSealHash = seal.sealHash
+      previousSourceSeq = seal.sourceSeq
+      previousSeal = seal
+      processed += 1
+    } catch {
+      // Malformed disk shapes must never escape as an exception.
+      return fail('parse')
+    }
+  }
+  // An over-budget tail is never silently truncated: the caller (WP4-b4) must
+  // distinguish a capacity overflow from a tampering signal.
+  if (parsed.length > maxSealedTailEvents) return { kind: 'tail-budget-overflow', sealedCount: parsed.length, maxSealedTailEvents }
+  // Live eventAt exact re-binding for every row entering the packet. Session
+  // events remain untrusted input too: a malformed (including null) payload
+  // must never escape as an exception.
+  const eventAt = bound.session.eventAt!
+  const packetRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
+  let boundHeaderSeq = -1
+  let scanThroughSeq = -1
+  for (const { seal, activity } of parsed) {
+    if (input.signal?.aborted) return fail('aborted')
+    try {
+      const request = eventAt(seal.request.eventSeq)
+      const asked = eventAt(seal.approvalAsked.eventSeq)
+      const result = eventAt(seal.result.eventSeq)
+      const header = eventAt(seal.catalog.headerEventSeq)
+      if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
+        || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
+        || activity.occurredAt !== result.time) return fail('live-rebind')
+      const requestData = request.data as Record<string, unknown>
+      const askedData = asked.data as Record<string, unknown>
+      const resultData = result.data as Record<string, unknown>
+      if (askedData.id !== seal.approvalAsked.requestId || askedData.callId !== seal.request.callId || askedData.toolName !== seal.request.toolName) return fail('live-rebind-asked')
       const fact = await input.executionFacts.get({
         session: { sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) },
         callId: seal.request.callId,
         requestEventSeq: seal.request.eventSeq,
       })
       const headerData = header.data as { readonly header?: { readonly tools?: unknown } } | null
-      const priorHeaderCommitment = commitmentsByHeader.get(seal.catalog.headerEventSeq)
       if (fact === undefined || fact.request.callId !== seal.request.callId || fact.request.eventSeq !== seal.request.eventSeq
         || fact.catalogCommitment.requestHeaderEventSeq !== seal.catalog.headerEventSeq
         || seal.catalog.commitment !== fact.catalogCommitment.fingerprint
         || validateDurableToolCatalogCommitmentV1(fact.catalogCommitment).kind !== 'ok'
         || canonicalJson(headerData?.header?.tools) !== canonicalJson(fact.catalogCommitment.wireSchemas)
-        || seal.catalog.headerEventSeq >= seal.request.eventSeq
-        || events.slice(seal.catalog.headerEventSeq + 1, seal.request.eventSeq + 1).some(event => event.type === 'request/header')
-        || (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment)) return undefined
-      // Derive the classification from the descriptor the capture side sealed with
-      // and require a byte-exact match. A forged row that recomputed its own
-      // canonical/chain but derived a different classification is still caught:
-      // the descriptor is anchored by the catalog commitment already validated above.
-      if (activity.classification !== activityClassificationFromDescriptorV1(fact.toolClassification.descriptor)) return undefined
-      commitmentsByHeader.set(seal.catalog.headerEventSeq, seal.catalog.commitment)
-    const requestData = request.data as Record<string, unknown>
-    const askedData = asked.data as Record<string, unknown>
-    const resultData = result.data as Record<string, unknown>
-    if (askedData.id !== seal.approvalAsked.requestId || askedData.callId !== seal.request.callId || askedData.toolName !== seal.request.toolName) return undefined
-    if (seal.request.eventType === 'tool/call') {
-      if (request.type !== 'tool/call' || requestData.callId !== seal.request.callId || requestData.name !== seal.request.toolName
-        || !Array.isArray(result.sourceEventSeqs) || result.sourceEventSeqs.length !== 1 || result.sourceEventSeqs[0] !== request.seq) return undefined
-      const message = resultData.message as Record<string, unknown> | undefined
-      const source = message?.source as Record<string, unknown> | undefined
-      const block = Array.isArray(message?.content) ? message?.content[0] as Record<string, unknown> | undefined : undefined
-      if (source?.kind !== 'tool' || source.callId !== seal.request.callId || block?.type !== 'tool-result' || block.toolCallId !== seal.request.callId) return undefined
-    } else if (request.type !== 'tool/code-dispatch-start' || requestData.subCallId !== seal.request.callId || requestData.name !== seal.request.toolName
-      || resultData.subCallId !== seal.request.callId || resultData.name !== seal.request.toolName
-      || requestData.rootCallId !== resultData.rootCallId || requestData.parentCallId !== resultData.parentCallId) return undefined
-    const prior = epochs.get(seal.catalog.epoch)
-    const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
-    if (prior !== undefined && canonicalJson(prior) !== canonicalJson(epoch)) return undefined
-    epochs.set(epoch.epoch, Object.freeze(epoch))
-      validatedRows.push(Object.freeze({ seal, activity }))
-      previousSealHash = seal.sealHash
-      previousSourceSeq = seal.sourceSeq
-      previousSeal = seal
+        || seal.catalog.headerEventSeq >= seal.request.eventSeq) return fail('commitment-binding')
+      // The bound header must still be in force at the request: a later header at
+      // or before it means this record shopped an obsolete catalog. The scan
+      // resumes from the previous cursor so one long epoch stays O(rows + span).
+      if (seal.catalog.headerEventSeq !== boundHeaderSeq) {
+        boundHeaderSeq = seal.catalog.headerEventSeq
+        scanThroughSeq = seal.catalog.headerEventSeq
+      }
+      for (let seq = scanThroughSeq + 1; seq <= seal.request.eventSeq; seq += 1) {
+        if (eventAt(seq)?.type === 'request/header') return fail('intervening-header')
+      }
+      scanThroughSeq = seal.request.eventSeq
+      if (seal.request.eventType === 'tool/call') {
+        if (request.type !== 'tool/call' || requestData.callId !== seal.request.callId || requestData.name !== seal.request.toolName
+          || !Array.isArray(result.sourceEventSeqs) || result.sourceEventSeqs.length !== 1 || result.sourceEventSeqs[0] !== request.seq) return fail('live-rebind-call')
+        const message = resultData.message as Record<string, unknown> | undefined
+        const source = message?.source as Record<string, unknown> | undefined
+        const block = Array.isArray(message?.content) ? message?.content[0] as Record<string, unknown> | undefined : undefined
+        if (source?.kind !== 'tool' || source.callId !== seal.request.callId || block?.type !== 'tool-result' || block.toolCallId !== seal.request.callId) return fail('live-rebind-result')
+      } else if (request.type !== 'tool/code-dispatch-start' || requestData.subCallId !== seal.request.callId || requestData.name !== seal.request.toolName
+        || resultData.subCallId !== seal.request.callId || resultData.name !== seal.request.toolName
+        || requestData.rootCallId !== resultData.rootCallId || requestData.parentCallId !== resultData.parentCallId) return fail('live-rebind-dispatch')
+      // Derive the classification from the descriptor the capture side sealed
+      // with and require a byte-exact match (the descriptor is anchored by the
+      // catalog commitment validated above): a recomputed-canonical row is still
+      // caught here.
+      if (activity.classification !== activityClassificationFromDescriptorV1(fact.toolClassification.descriptor)) return fail('classification')
+      packetRows.push(Object.freeze({ seal, activity }))
     } catch {
-      // Live Session events are untrusted at this boundary too. Never allow a
-      // malformed (including null) data payload to escape as an exception.
-      return undefined
+      return fail('live-events')
     }
   }
-  const current = validatedRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
-  // Zero current rows is the normal pending state (asked precedes any result seal);
-  // more than one means a conflict and must stay fail-closed, never degrade to
-  // an explainable 'missing current' (that would disguise tampering as absence).
-  if (current.length > 1) return undefined
-  return Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(validatedRows.map(row => row.seal)), activities: Object.freeze(validatedRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
+  const current = packetRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
+  // Zero current rows is the normal pending state (asked precedes any result
+  // seal); more than one is a conflict and must stay fail-closed, never degrade
+  // to an explainable 'missing current' (that would disguise tampering).
+  if (current.length > 1) return fail('current-conflict')
+  return { kind: 'ok', facts: Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(packetRows.map(row => row.seal)), activities: Object.freeze(packetRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a, b) => a.epoch - b.epoch)) }) }
 }
