@@ -348,6 +348,16 @@ export type {
   SealedDossierCurrentFactsV1,
 } from './application/sealed-dossier-compiler.js'
 export {
+  assembleRecentExcerpts,
+  DEFAULT_MAX_RECENT_EXCERPT_EVENTS,
+} from './application/recent-excerpts.js'
+export type {
+  AssembleRecentExcerptsInput,
+  RecentExcerptEventView,
+  RecentExcerptV1,
+  RecentExcerptsResult,
+} from './application/recent-excerpts.js'
+export {
   InMemoryDossierCompilationMetrics,
   InstrumentedDossierCompiler,
 } from './application/instrumented-dossier-compiler.js'
