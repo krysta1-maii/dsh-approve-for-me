@@ -438,6 +438,11 @@ export async function readSealedParentSessionFacts(input: {
       const asked = eventAt(seal.approvalAsked.eventSeq)
       const result = eventAt(seal.result.eventSeq)
       const header = eventAt(seal.catalog.headerEventSeq)
+      // header.type is re-checked here as the unique guard: a wrong-type event
+      // at the bound header seq whose data still carries matching header.tools
+      // would slip past the wireSchemas canonical comparison below, so the type
+      // check is the only catch for that forged shape (pinned by 'header event
+      // type'). It is not redundant with the wireSchemas comparison.
       if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
         || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
         || activity.occurredAt !== result.time) return fail('live-rebind')
