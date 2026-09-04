@@ -11,12 +11,11 @@ import type {
  * never grant access.
  */
 export class InMemoryExactDenialBreaker implements ExactDenialBreakerV1 {
-  private readonly byParent = new Map<string, Map<number, Map<number, Set<string>>>>()
+  private readonly byParent = new Map<string, Map<number, Set<string>>>()
 
   lookup(key: ExactDenialBreakerKeyV1): boolean {
     return this.byParent.get(key.parentLifecycleFingerprint)
       ?.get(key.turn)
-      ?.get(key.directUserFrontierSeq)
       ?.has(key.actionHash) ?? false
   }
 
@@ -26,15 +25,10 @@ export class InMemoryExactDenialBreaker implements ExactDenialBreakerV1 {
       turns = new Map()
       this.byParent.set(key.parentLifecycleFingerprint, turns)
     }
-    let frontier = turns.get(key.turn)
-    if (frontier === undefined) {
-      frontier = new Map()
-      turns.set(key.turn, frontier)
-    }
-    let hashes = frontier.get(key.directUserFrontierSeq)
+    let hashes = turns.get(key.turn)
     if (hashes === undefined) {
       hashes = new Set()
-      frontier.set(key.directUserFrontierSeq, hashes)
+      turns.set(key.turn, hashes)
     }
     hashes.add(key.actionHash)
   }

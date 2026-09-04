@@ -7,7 +7,6 @@
 export interface ExactDenialBreakerKeyV1 {
   readonly parentLifecycleFingerprint: string
   readonly turn: number
-  readonly directUserFrontierSeq: number
   readonly actionHash: string
 }
 
@@ -20,8 +19,16 @@ export interface ExactDenialBreakerV1 {
   clearParent(parentLifecycleFingerprint: string): void
 }
 
-/** Session-scoped allow replay cache; v1.1. */
-export interface AllowCacheKeyV1 extends ExactDenialBreakerKeyV1 {
+/**
+ * Session-scoped allow replay cache; v1.1. Unlike the exact-denial breaker, the
+ * allow cache keeps the direct-user frontier so a cached grant is only replayed
+ * for the same user intent boundary.
+ */
+export interface AllowCacheKeyV1 {
+  readonly parentLifecycleFingerprint: string
+  readonly turn: number
+  readonly directUserFrontierSeq: number
+  readonly actionHash: string
   readonly configurationFingerprint: string
   readonly generation: string
 }

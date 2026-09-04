@@ -17,7 +17,6 @@ function denyKey(overrides: Partial<Parameters<InMemoryExactDenialBreaker['looku
   return {
     parentLifecycleFingerprint: 'parent-a',
     turn: 1,
-    directUserFrontierSeq: 2,
     actionHash: hash('a'),
     ...overrides,
   }
@@ -25,7 +24,10 @@ function denyKey(overrides: Partial<Parameters<InMemoryExactDenialBreaker['looku
 
 function allowKey(overrides: Partial<Parameters<InMemoryAllowCache['lookup']>[0]> = {}) {
   return {
-    ...denyKey(),
+    parentLifecycleFingerprint: 'parent-a',
+    turn: 1,
+    directUserFrontierSeq: 2,
+    actionHash: hash('a'),
     configurationFingerprint: hash('b'),
     generation: 'generation-1',
     ...overrides,
@@ -61,9 +63,11 @@ describe('InMemoryExactDenialBreaker', () => {
     expect(breaker.lookup(denyKey())).toBe(true)
     expect(breaker.lookup(denyKey({ actionHash: hash('b') }))).toBe(false)
     expect(breaker.lookup(denyKey({ turn: 2 }))).toBe(false)
-    // A later direct-user message changes the frontier, so an old denial can
-    // never suppress a fresh review or become implicit authorization.
-    expect(breaker.lookup(denyKey({ directUserFrontierSeq: 3 }))).toBe(false)
+    // WP4-b4-1a 裁定 B2: the breaker key no longer contains the direct-user
+    // frontier. A new askedSeq in the same turn keeps the same key, so an old
+    // denial fast-rejects the retry; only a new turn/action/lifecycle produces a
+    // new key (turn and lifecycle scoping pinned here).
+    expect(breaker.lookup(denyKey())).toBe(true)
     expect(breaker.lookup(denyKey({ parentLifecycleFingerprint: 'parent-next-life' }))).toBe(false)
     breaker.clearParent('parent-a')
     expect(breaker.lookup(denyKey())).toBe(false)

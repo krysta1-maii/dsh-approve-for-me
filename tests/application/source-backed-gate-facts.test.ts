@@ -3,9 +3,12 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
 import {
   DossierGateFactProjector,
+  sealedCurrentCatalogEpochMatch,
+  sealedCurrentCatalogInForce,
   SourceBackedGateFactResolver,
   fingerprintGateConfigurationV1,
 } from '../../src/application/source-backed-gate-facts.js'
+import { InMemoryExactDenialBreaker } from '../../src/index.js'
 import { createSealedDossierCompiler } from '../../src/application/sealed-dossier-compiler.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
@@ -146,7 +149,7 @@ describe('DossierGateFactProjector (sealed)', () => {
     const got = projector.project({ request, pending: pending(), facts, sealedCurrent: carrier(), verifiedDossier: verified })
     expect(got).toMatchObject({
       rootRequester: true,
-      breakerKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, directUserFrontierSeq: 6, actionHash: request.actionHash },
+      breakerKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, actionHash: request.actionHash },
       policyVersion: 'policy-v2',
     })
     expect(got?.classification).toEqual({ kind: 'classified', classification: 'body-escalation' })
@@ -240,12 +243,110 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     subject.resolver.register({ ...pending(), agent: spyAgent, authority })
     subject.snapshotInput.mockResolvedValue(validAskInput(spyAgent))
     subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
-    const facts = { action: baseAction(), toolSchemaFingerprint: 'f', classification: { kind: 'classified', classification: 'body-escalation' }, breakerKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, directUserFrontierSeq: 6, actionHash: request.actionHash }, allowCacheKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, directUserFrontierSeq: 6, actionHash: request.actionHash, generation: 'g', configurationFingerprint: 'c' }, rootRequester: true, directChildOrigin: false, generation: 'g', configurationFingerprint: 'c', policyVersion: 'p' } as never
+    const facts = { action: baseAction(), toolSchemaFingerprint: 'f', classification: { kind: 'classified', classification: 'body-escalation' }, breakerKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, actionHash: request.actionHash }, allowCacheKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, directUserFrontierSeq: 6, actionHash: request.actionHash, generation: 'g', configurationFingerprint: 'c' }, rootRequester: true, directChildOrigin: false, generation: 'g', configurationFingerprint: 'c', policyVersion: 'p' } as never
     subject.project.mockReturnValue(facts)
     await expect(subject.resolver.resolve(request)).resolves.toBe(facts)
     expect(subject.read).toHaveBeenCalledTimes(1)
     expect(subject.compile).toHaveBeenCalledTimes(1)
     // The hot path never materializes the full session log: only eventAt reads.
     expect(snapshotEvents).not.toHaveBeenCalled()
+  })
+
+  it('routes a compileSealed budget overflow to the retryable-capability code (S-2)', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue(validAskInput())
+    subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
+    subject.compile.mockReturnValue({ kind: 'incomplete', reason: 'budget-overflow', metrics: {} } as never)
+    await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'retryable-capability' })
+  })
+
+  it('routes a generic incomplete dossier to undefined, never delegate (S-2)', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue(validAskInput())
+    subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
+    subject.compile.mockReturnValue({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' } as never)
+    await expect(subject.resolver.resolve(request)).resolves.toBeUndefined()
+  })
+
+  it('fails closed when the approval sidecar actionHash disagrees with the execution fact (S-3)', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    const input = validAskInput()
+    input.approvalSnapshot.execution.actionHash = hash('x')
+    subject.snapshotInput.mockResolvedValue(input)
+    subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
+    await expect(subject.resolver.resolve(request)).resolves.toBeUndefined()
+    expect(subject.compile).not.toHaveBeenCalled()
+  })
+
+  it('breaks the same lifecycle+turn+actionHash across a new askedSeq, and a new turn escapes it (B2)', () => {
+    const { facts, verified } = sealedDossier()
+    const projector = new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2')
+    const first = projector.project({ request, pending: pending(), facts, sealedCurrent: { ...carrier(), frontierSeq: 6 }, verifiedDossier: verified })!
+    const retrySameTurn = projector.project({ request, pending: pending(), facts, sealedCurrent: { ...carrier(), frontierSeq: 9 }, verifiedDossier: verified })!
+    expect(first.breakerKey).toEqual(retrySameTurn.breakerKey)
+    expect(first.allowCacheKey).not.toEqual(retrySameTurn.allowCacheKey)
+    const breaker = new InMemoryExactDenialBreaker()
+    breaker.recordGuardianDeny(first.breakerKey)
+    expect(breaker.lookup(retrySameTurn.breakerKey)).toBe(true)
+    const secondDossier = sealedDossier()
+    const nextTurn = projector.project({
+      request, pending: pending(), facts,
+      sealedCurrent: carrier(),
+      verifiedDossier: secondDossier.verified,
+    })
+    // force a different turn by projecting with a turn-2 dossier
+    const turn2Compile = compileSealed()
+    const turn2 = turn2Compile({ packet: packet(), current: currentFacts({ freeze: { ...currentFacts().freeze, currentTurn: 2 } }) })
+    if (turn2.kind !== 'ready') throw new Error('expected ready')
+    const nextTurnFacts = projector.project({ request, pending: pending(), facts, sealedCurrent: carrier(), verifiedDossier: turn2.verified })!
+    expect(breaker.lookup(nextTurnFacts.breakerKey)).toBe(false)
+  })
+})
+
+describe('sealedCurrentCatalogInForce (WP4-b4-1a 审查 B1/S-1)', () => {
+  const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+  const header = { type: 'request/header' as const, data: { header: { tools: schemas } } }
+  const base = {
+    recordedHeaderEventSeq: 0,
+    requestEventSeq: 5,
+    wireSchemas: schemas,
+  }
+
+  it('passes when the bound header is in force and no later header intervenes', () => {
+    expect(sealedCurrentCatalogInForce({ ...base, eventAt: seq => seq === 0 ? header : seq === 2 ? { type: 'tool/result', data: {} } : undefined })).toEqual({ kind: 'ok' })
+  })
+
+  it('fails closed on a rogue request/header inside (recordedHeaderEventSeq, requestEventSeq]', () => {
+    expect(sealedCurrentCatalogInForce({ ...base, eventAt: seq => seq === 0 ? header : seq === 3 ? { type: 'request/header', data: {} } : undefined })).toEqual({ kind: 'intervening-header', seq: 3 })
+  })
+
+  it('ignores a header event outside the interval (no intervening header before request)', () => {
+    expect(sealedCurrentCatalogInForce({ ...base, eventAt: seq => seq === 0 ? header : undefined })).toEqual({ kind: 'ok' })
+  })
+
+  it('fails closed on a wire-schema mismatch at the recorded header', () => {
+    expect(sealedCurrentCatalogInForce({ ...base, eventAt: seq => seq === 0 ? { type: 'request/header', data: { header: { tools: [] } } } : undefined })).toEqual({ kind: 'wire-schemas-mismatch' })
+  })
+
+  it('fails closed on a missing recorded header or an invalid range', () => {
+    expect(sealedCurrentCatalogInForce({ ...base, recordedHeaderEventSeq: 9, eventAt: () => undefined })).toEqual({ kind: 'invalid-range' })
+    expect(sealedCurrentCatalogInForce({ ...base, eventAt: () => undefined })).toEqual({ kind: 'header-missing' })
+  })
+})
+
+describe('sealedCurrentCatalogEpochMatch (WP4-b4-1a 审查 B1 rule-6)', () => {
+  it('passes when the packet epoch for the header agrees with the current commitment', () => {
+    expect(sealedCurrentCatalogEpochMatch({ recordedHeaderEventSeq: 3, catalogCommitmentFingerprint, packetEpochs: [{ epoch: 0, headerEventSeq: 3, commitment: catalogCommitmentFingerprint }] })).toEqual({ kind: 'ok' })
+  })
+
+  it('fails closed on an epoch-split mismatch for the same header', () => {
+    expect(sealedCurrentCatalogEpochMatch({ recordedHeaderEventSeq: 3, catalogCommitmentFingerprint, packetEpochs: [{ epoch: 0, headerEventSeq: 3, commitment: hash('x') }] })).toEqual({ kind: 'epoch-mismatch', headerEventSeq: 3, recorded: hash('x'), current: catalogCommitmentFingerprint })
+  })
+
+  it('passes when the header is the newest, not yet recorded in any sealed epoch', () => {
+    expect(sealedCurrentCatalogEpochMatch({ recordedHeaderEventSeq: 9, catalogCommitmentFingerprint, packetEpochs: [] })).toEqual({ kind: 'ok' })
   })
 })

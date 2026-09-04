@@ -40,7 +40,7 @@ function facts(overrides: Partial<GateActionFacts> = {}): GateActionFacts {
     action: action(),
     toolSchemaFingerprint: hash('bash'),
     classification: { kind: 'classified', classification: 'body-escalation' },
-    breakerKey: { parentLifecycleFingerprint: 'life-1', turn: 1, directUserFrontierSeq: 2, actionHash: hash('a') },
+    breakerKey: { parentLifecycleFingerprint: 'life-1', turn: 1, actionHash: hash('a') },
     allowCacheKey: {
       parentLifecycleFingerprint: 'life-1',
       turn: 1,

@@ -32,6 +32,7 @@ import { DshScopedEffectiveCatalogResolver } from './dsh/effective-tool-catalog.
 import { createDshAlpha2StockProjectorRegistry } from './dsh/stock-tools.js'
 import {
   DossierGateFactProjector,
+  sealedCurrentCatalogInForce,
   SourceBackedGateFactResolver,
 } from './application/source-backed-gate-facts.js'
 import type { SealedFactsReader } from './application/source-backed-gate-facts.js'
@@ -150,25 +151,6 @@ interface SealedSessionEventView {
   readonly data: unknown
 }
 
-/**
- * Live catalog re-validation for the current (as-yet-unsealed) action: the
- * capture-frozen commitment must still match the native header in force at the
- * ask, exactly as the full-history path enforced. This keeps the current action
- * trust chain no looser than the old path (WP4-b4-1 裁定 2).
- */
-function liveHeaderBinding(executionFact: ToolExecutionFactRecordV1, session: { eventAt?: (seq: number) => SealedSessionEventView | undefined }): boolean {
-  const commitment = executionFact.catalogCommitment
-  if (commitment.requestHeaderEventSeq >= executionFact.request.eventSeq) return false
-  const header = session.eventAt?.(commitment.requestHeaderEventSeq)
-  if (header === undefined || header.type !== 'request/header') return false
-  const data = header.data as { header?: { tools?: unknown } } | undefined
-  if (data === undefined || data.header === undefined) return false
-  try {
-    return canonicalJson(data.header.tools) === canonicalJson(commitment.wireSchemas)
-  } catch {
-    return false
-  }
-}
 
 /** Read the exact approval/asked event at its seq and project the ask-time ref/time. */
 function askRef(seq: number, session: { eventAt?: (seq: number) => SealedSessionEventView | undefined })
@@ -391,9 +373,16 @@ export function installApproveForMe(
         item.request.eventSeq === currentRequestEventSeq && item.request.callId === pending.callId && item.request.toolName === pending.toolName)
       if (executionFact === undefined) return undefined
       // Live catalog re-validation for the current (as-yet-unsealed) action:
-      // the capture-frozen commitment must still match the native header in
-      // force at the ask, exactly as the full-history path enforced.
-      if (!liveHeaderBinding(executionFact, session)) return undefined
+      // the capture-frozen commitment must still be in force at the ask (wire
+      // schemas match the bound header, and no later header supersedes it),
+      // exactly as the full-history catalogAnchored path enforced.
+      const inForce = sealedCurrentCatalogInForce({
+        recordedHeaderEventSeq: executionFact.catalogCommitment.requestHeaderEventSeq,
+        requestEventSeq: executionFact.request.eventSeq,
+        wireSchemas: executionFact.catalogCommitment.wireSchemas,
+        eventAt: seq => session.eventAt?.(seq) as { readonly type: string; readonly data: unknown } | undefined,
+      })
+      if (inForce.kind !== 'ok') return undefined
       const asked = askRef(approvalAskedSeq, session)
       if (asked === undefined || asked.ref === undefined || asked.frozenAt === undefined) return undefined
       const freeze = {

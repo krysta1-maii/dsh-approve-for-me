@@ -7,7 +7,7 @@ const action = createActionSnapshot({ toolName: 'bash', arguments: { command: 'p
 function registration(parentSessionId: string, actionHash = hash('a')) {
   return {
     parentSessionId, actionHash, action, toolSchemaFingerprint: 'bash-fp', classification: { kind: 'classified' as const, classification: 'body-escalation' as const },
-    breakerKey: { parentLifecycleFingerprint: parentSessionId, turn: 1, directUserFrontierSeq: 1, actionHash },
+    breakerKey: { parentLifecycleFingerprint: parentSessionId, turn: 1, actionHash },
     allowCacheKey: { parentLifecycleFingerprint: parentSessionId, turn: 1, directUserFrontierSeq: 1, actionHash, configurationFingerprint: hash('c'), generation: 'g1' },
     rootRequester: true, directChildOrigin: false, generation: 'g1', configurationFingerprint: hash('c'),
     authority: { live: {}, sessionId: parentSessionId },

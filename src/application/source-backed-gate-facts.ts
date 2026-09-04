@@ -222,7 +222,11 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       dangerFullAccessRisk: this.dangerFullAccessRisk,
     })
     const parentLifecycleFingerprint = input.facts.lifecycleFingerprint
-    const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq: input.sealedCurrent.frontierSeq, actionHash: input.pending.actionHash })
+    // WP4-b4-1a 裁定 B2: the exact-denial breaker keys only on lifecycle + turn +
+    // actionHash; the allow cache keeps the direct-user frontier (cache semantics
+    // unchanged), so a same-turn same-actionHash retry is fast-rejected and a new
+    // turn starts a fresh breaker key.
+    const breakerKey = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, actionHash: input.pending.actionHash })
     const configurationFingerprint = fingerprintGateConfigurationV1(
       this.reviewerConfigurationFingerprint,
       input.sealedCurrent.catalogCommitmentFingerprint,
@@ -234,8 +238,8 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
       toolSchemaFingerprint: input.sealedCurrent.toolSchemaFingerprint,
       classification,
       ...trustEnvelope === undefined ? {} : { trustEnvelope },
-      breakerKey: key,
-      allowCacheKey: Object.freeze({ ...key, generation: this.generation, configurationFingerprint }),
+      breakerKey,
+      allowCacheKey: Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq: input.sealedCurrent.frontierSeq, actionHash: input.pending.actionHash, generation: this.generation, configurationFingerprint }),
       rootRequester: input.sealedCurrent.requester.effectiveDelegationDepth === 0
         && input.sealedCurrent.requester.parentSessionId === undefined,
       directChildOrigin: false,
@@ -251,6 +255,72 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
 function classifySealed(value: unknown): ToolApprovalClassificationResult | undefined {
   if (typeof value !== 'string' || !(TOOL_APPROVAL_CLASSES as readonly string[]).includes(value)) return undefined
   return Object.freeze({ kind: 'classified' as const, classification: value as ToolApprovalClass })
+}
+
+/**
+ * WP4-b4-1a 审查 B1/S-1: bounded current-action catalog in-force check. The
+ * current (as-yet-unsealed) action is not in the sealed ledger, so the reader's
+ * cursor does not run the old catalogAnchored in-force rule for it. This pure,
+ * eventAt-driven check re-establishes that rule: the bound header must be in
+ * force at the request, and no later request/header event may appear in
+ * (recordedHeaderEventSeq, requestEventSeq]. It is deliberately a small bounded
+ * function so it can be unit-tested rather than buried in the plugin adapter.
+ */
+export interface CurrentCatalogInForceInput {
+  readonly recordedHeaderEventSeq: number
+  readonly requestEventSeq: number
+  readonly wireSchemas: readonly unknown[]
+  readonly eventAt: (seq: number) => { readonly type: string; readonly data: unknown } | undefined
+}
+
+export type CurrentCatalogInForceResult =
+  | { readonly kind: 'ok' }
+  | { readonly kind: 'invalid-range' }
+  | { readonly kind: 'header-missing' }
+  | { readonly kind: 'wire-schemas-mismatch' }
+  | { readonly kind: 'intervening-header'; readonly seq: number }
+
+export function sealedCurrentCatalogInForce(input: CurrentCatalogInForceInput): CurrentCatalogInForceResult {
+  const { recordedHeaderEventSeq, requestEventSeq, wireSchemas, eventAt } = input
+  if (!Number.isSafeInteger(recordedHeaderEventSeq) || !Number.isSafeInteger(requestEventSeq)
+    || recordedHeaderEventSeq < 0 || requestEventSeq < 0 || recordedHeaderEventSeq >= requestEventSeq) return { kind: 'invalid-range' }
+  const header = eventAt(recordedHeaderEventSeq)
+  if (header === undefined || header.type !== 'request/header') return { kind: 'header-missing' }
+  const data = header.data as { header?: { tools?: unknown } } | undefined
+  if (data === undefined || data.header === undefined) return { kind: 'header-missing' }
+  try {
+    if (canonicalJson(data.header.tools) !== canonicalJson(wireSchemas)) return { kind: 'wire-schemas-mismatch' }
+  } catch {
+    return { kind: 'wire-schemas-mismatch' }
+  }
+  for (let seq = recordedHeaderEventSeq + 1; seq <= requestEventSeq; seq += 1) {
+    if (eventAt(seq)?.type === 'request/header') return { kind: 'intervening-header', seq }
+  }
+  return { kind: 'ok' }
+}
+
+/**
+ * WP4-b4-1a 审查 B1 (rule 6 for the current row): one header event carries
+ * exactly one catalog-commitment fingerprint. The current action's frozen
+ * commitment must agree with the sealed packet's catalogEpochs entry that
+ * references the same header; a disagreement means a rewrote/washed record.
+ */
+export interface CurrentCatalogEpochMatchInput {
+  readonly recordedHeaderEventSeq: number
+  readonly catalogCommitmentFingerprint: string
+  readonly packetEpochs: readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[]
+}
+
+export type CurrentCatalogEpochMatchResult =
+  | { readonly kind: 'ok' }
+  | { readonly kind: 'epoch-mismatch'; readonly headerEventSeq: number; readonly recorded: string; readonly current: string }
+
+export function sealedCurrentCatalogEpochMatch(input: CurrentCatalogEpochMatchInput): CurrentCatalogEpochMatchResult {
+  const epoch = input.packetEpochs.find(item => item.headerEventSeq === input.recordedHeaderEventSeq)
+  if (epoch !== undefined && epoch.commitment !== input.catalogCommitmentFingerprint) {
+    return { kind: 'epoch-mismatch', headerEventSeq: input.recordedHeaderEventSeq, recorded: epoch.commitment, current: input.catalogCommitmentFingerprint }
+  }
+  return { kind: 'ok' }
 }
 
 /**
@@ -322,6 +392,15 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
       case 'ok':
         break
     }
+
+    // WP4-b4-1a 审查 B1 (rule 6): the current action's frozen commitment must agree
+    // with the sealed packet's catalogEpochs entry for the same header.
+    const epochMatch = sealedCurrentCatalogEpochMatch({
+      recordedHeaderEventSeq: input.executionFact.catalogCommitment.requestHeaderEventSeq,
+      catalogCommitmentFingerprint: input.executionFact.catalogCommitment.fingerprint,
+      packetEpochs: read.facts.catalogEpochs,
+    })
+    if (epochMatch.kind !== 'ok') return debug('epoch-split-current', epochMatch)
 
     const current = this.currentFacts(input)
     if (current === undefined) return debug('invalid-current-facts')
