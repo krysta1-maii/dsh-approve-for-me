@@ -6,6 +6,8 @@ export {
   snapshotJson,
 } from './domain/json.js'
 export type { JsonPrimitive, JsonValue } from './domain/json.js'
+export { chainTipHash, createActivityV1, createSealV1, genesisSealHash, parseActivityV1, parseSealV1, sealHash, sealedFactKey } from './domain/sealed-facts.js'
+export type { ActivityV1, SealV1, SealResultStatusV1 } from './domain/sealed-facts.js'
 export {
   DECISION_PAYLOAD_HASH_DOMAIN,
   DECISION_TOOL_SCHEMA_HASH_DOMAIN,
@@ -266,6 +268,8 @@ export type { DshAlpha2EffectiveCatalog, ScopedToolSchemas } from './dsh/effecti
 export { DshExecutionFactProjectionBridge } from './dsh/execution-projection-bridge.js'
 export { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 export { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
+export { DshStorageDomainSealedFacts } from './dsh/storage-domain-sealed-facts.js'
+export type { SealedFactWriteResult } from './dsh/storage-domain-sealed-facts.js'
 export {
   DshStorageDomainApprovalSnapshotRepository,
   DshStorageDomainExecutionFactRepository,
