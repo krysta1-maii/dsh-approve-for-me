@@ -1,4 +1,4 @@
-import { canonicalJson } from '../domain/json.js'
+import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
 import type {
   DossierCompilationResultV1,
@@ -176,8 +176,17 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
 
   return function compileSealed(input: SealedDossierCompileInputV1): DossierCompilationResultV1 {
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
-    const packet = input.packet
-    const current = input.current
+    // Freeze-align with DefaultDossierCompiler.compile: snapshot and deep-freeze the
+    // caller's objects so the branded dossier never aliases a mutable external
+    // reference. Non-JSON input fails closed rather than escaping.
+    let packet: SealedParentSessionFactsV1
+    let current: SealedDossierCurrentFactsV1
+    try {
+      packet = freezeJson(snapshotJson(input.packet)) as unknown as SealedParentSessionFactsV1
+      current = freezeJson(snapshotJson(input.current)) as unknown as SealedDossierCurrentFactsV1
+    } catch {
+      return { kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' }
+    }
     if (packet === null || typeof packet !== 'object' || packet.version !== 1
       || !Array.isArray(packet.seals) || !Array.isArray(packet.activities) || !Array.isArray(packet.catalogEpochs)
       || (packet.current !== undefined && (packet.current === null || typeof packet.current !== 'object'))) {
@@ -286,6 +295,55 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
   }
 }
 
+/** The bounded, ID-free projection of one sealed ledger row. */
+interface SealedLedgerEntryV1 {
+  readonly sourceSeq: number
+  readonly occurredAt: number
+  readonly classification: string
+  readonly targetSummary: string
+  readonly resultCategory: SealResultStatusV1
+}
+
+/**
+ * Project one sealed activity row to a bounded, ID-free summary, or undefined when
+ * any of the five projected fields is malformed (non-numeric seq/time, non-string
+ * classification/summary, or an out-of-set terminal category). Validating before
+ * projection keeps a malformed row from ever reaching the budget's canonicalJson
+ * (which would throw and escape compileSealed) and satisfies the closed-set,
+ * no-unknown-field contract for the sealed ledger.
+ */
+function projectActivity(activity: unknown): SealedLedgerEntryV1 | undefined {
+  if (activity === null || typeof activity !== 'object') return undefined
+  const a = activity as Record<string, unknown>
+  if (!nonNegativeSafeInteger(a.sourceSeq) || !nonNegativeSafeInteger(a.occurredAt)
+    || typeof a.classification !== 'string' || typeof a.targetSummary !== 'string'
+    || (a.resultCategory !== 'completed' && a.resultCategory !== 'tool-error' && a.resultCategory !== 'sandbox-denied')) return undefined
+  return Object.freeze({
+    sourceSeq: a.sourceSeq,
+    occurredAt: a.occurredAt,
+    classification: a.classification,
+    targetSummary: a.targetSummary,
+    resultCategory: a.resultCategory,
+  })
+}
+
+/** Project one sealed catalog epoch to the closed three-field shape, or undefined
+ * when it carries any unknown field or an out-of-set value. Unknown fields are
+ * rejected fail-closed rather than silently stripped so a schema violation cannot
+ * smuggle content into a branded dossier. */
+function projectEpochs(epochs: readonly unknown[]): readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[] | undefined {
+  const projected: { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[] = []
+  for (const epoch of epochs) {
+    if (epoch === null || typeof epoch !== 'object') return undefined
+    const e = epoch as Record<string, unknown>
+    const keys = Object.keys(e)
+    if (keys.length !== 3 || keys.some(key => key !== 'epoch' && key !== 'headerEventSeq' && key !== 'commitment')) return undefined
+    if (!nonNegativeSafeInteger(e.epoch) || !nonNegativeSafeInteger(e.headerEventSeq) || !nonEmptyString(e.commitment)) return undefined
+    projected.push(Object.freeze({ epoch: e.epoch as number, headerEventSeq: e.headerEventSeq as number, commitment: e.commitment as string }))
+  }
+  return Object.freeze(projected)
+}
+
 /**
  * Build the bounded, ID-free sealed trajectory section. The catalog epochs carried
  * by the packet express the header freeze under sealed-input semantics; the
@@ -293,31 +351,27 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
  * seal/activity row is projected to a content-free summary (sourceSeq, time,
  * classification, target summary, terminal outcome) and copies neither the seal's
  * resolvable identifiers (callId, request fields, canonical JSON) nor any tool
- * result content. Returns undefined when a row is structurally malformed so the
- * caller fails closed.
+ * result content. Returns undefined when a row or epoch is structurally malformed
+ * so the caller fails closed.
  */
 function buildInteraction(packet: SealedParentSessionFactsV1): JsonValue | undefined {
   const activityBySourceSeq = new Map<number, { readonly occurredAt: number; readonly classification: string; readonly targetSummary: string; readonly resultCategory: SealResultStatusV1 }>()
+  const ledger: SealedLedgerEntryV1[] = []
   for (const activity of packet.activities) {
-    if (activity === null || typeof activity !== 'object' || !nonNegativeSafeInteger((activity as { readonly sourceSeq?: unknown }).sourceSeq)) return undefined
-    const sourceSeq = (activity as { readonly sourceSeq: number }).sourceSeq
-    activityBySourceSeq.set(sourceSeq, activity as unknown as { readonly occurredAt: number; readonly classification: string; readonly targetSummary: string; readonly resultCategory: SealResultStatusV1 })
+    const projected = projectActivity(activity)
+    if (projected === undefined) return undefined
+    ledger.push(projected)
+    activityBySourceSeq.set(projected.sourceSeq, projected)
   }
 
-  const current = packet.current === undefined
-    ? undefined
-    : (() => {
-        const activity = packet.current.activity as unknown as { readonly sourceSeq: number; readonly occurredAt: number; readonly classification: string; readonly targetSummary: string; readonly resultCategory: SealResultStatusV1 }
-        return Object.freeze({
-          sourceSeq: activity.sourceSeq,
-          occurredAt: activity.occurredAt,
-          classification: activity.classification,
-          targetSummary: activity.targetSummary,
-          resultCategory: activity.resultCategory,
-        })
-      })()
+  let current: SealedLedgerEntryV1 | undefined
+  if (packet.current !== undefined) {
+    const projected = projectActivity(packet.current.activity)
+    if (projected === undefined) return undefined
+    current = projected
+  }
 
-  const tail: { readonly sourceSeq: number; readonly occurredAt: number; readonly classification: string; readonly targetSummary: string; readonly resultCategory: SealResultStatusV1 }[] = []
+  const tail: SealedLedgerEntryV1[] = []
   for (const seal of packet.seals) {
     if (seal === null || typeof seal !== 'object' || !nonNegativeSafeInteger((seal as { readonly sourceSeq?: unknown }).sourceSeq)) return undefined
     const sourceSeq = (seal as { readonly sourceSeq: number }).sourceSeq
@@ -329,21 +383,15 @@ function buildInteraction(packet: SealedParentSessionFactsV1): JsonValue | undef
       : Object.freeze({ sourceSeq, occurredAt: activity.occurredAt, classification: activity.classification, targetSummary: activity.targetSummary, resultCategory: status }))
   }
 
-  const ledger = packet.activities.map(activity => {
-    const sourceSeq = (activity as { readonly sourceSeq: number }).sourceSeq
-    const occurredAt = (activity as { readonly occurredAt: number }).occurredAt
-    const classification = (activity as { readonly classification: string }).classification
-    const targetSummary = (activity as { readonly targetSummary: string }).targetSummary
-    const resultCategory = (activity as { readonly resultCategory: SealResultStatusV1 }).resultCategory
-    return Object.freeze({ sourceSeq, occurredAt, classification, targetSummary, resultCategory })
-  })
+  const catalogEpochs = projectEpochs(packet.catalogEpochs)
+  if (catalogEpochs === undefined) return undefined
 
   return Object.freeze({
     sealed: Object.freeze({
       ...(current === undefined ? {} : { current }),
       tail: Object.freeze(tail),
       ledger: Object.freeze(ledger),
-      catalogEpochs: packet.catalogEpochs,
+      catalogEpochs,
     }),
   }) as unknown as JsonValue
 }
