@@ -417,8 +417,57 @@ describe('installApproveForMe composition root', () => {
 
     // Two distinct but matching approval/asked events for one request are
     // ambiguous and must fail closed, never resolve to one of the competing asks.
+    // This asserts the SYSTEM's final behavior: the bridge's resolveApprovalAskedSeq
+    // in-window duplicate guard also fails closed, so this plugin-level test is NOT
+    // the sole killer of a duplicate-tolerance mutation (the reader/bridge layer is).
     await expect(policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
     await plugin.dispose()
+  })
+
+  it('pins the sealed-tail window lower bound: inclusive at lower, strictly exclusive below (WP4-b4-2b S-2)', async () => {
+    const seqCount = 20_001
+    const lower = seqCount - 512
+    const askEvent = (seq: number) => ({ type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } })
+    const resolveWithAsk = async (match: (seq: number) => unknown): Promise<{ outcome: string; readSeqs: number[] }> => {
+      const h = harness()
+      const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+      const eventAt = vi.fn((seq: number) => match(seq))
+      const snapshotEvents = vi.fn(() => [])
+      const parent = {
+        id: 'parent-1',
+        session: {
+          id: 'parent-1',
+          header: { id: 'parent-1', version: 1, createdAt: 100 },
+          eventAt,
+          seq: seqCount,
+          snapshotEvents,
+        },
+      }
+      const policy = h.machinePolicy as {
+        decide(request: { agent: typeof parent; toolName: string; callId: string; requestId: string }): Promise<string>
+      }
+      await h.listeners.preExecute!({
+        agent: parent, callId: 'call-1', name: 'bash', arguments: { command: 'pwd' },
+      }, async () => ({ kind: 'ask' }))
+      snapshotEvents.mockClear()
+      const outcome = await policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+      await plugin.dispose()
+      return { outcome, readSeqs: eventAt.mock.calls.map(call => call[0] as number) }
+    }
+
+    // Exactly at the lower bound (inclusive): the guard scans seq lower, counts the
+    // ask, and resolves (only a downstream closed state remains). If the bound were
+    // exclusive the ask would be skipped and binding would fail closed at the guard.
+    const atLower = await resolveWithAsk(seq => seq === lower ? askEvent(seq) : undefined)
+    expect(atLower.outcome).toBe('unavailable')
+    expect(atLower.readSeqs).toContain(lower)
+
+    // One below the lower bound (strictly exclusive): the guard never scans it, so
+    // the ask is out of window and binding fails closed (integrity). If the bound
+    // were shifted down this seq would be read and the ask reopened.
+    const belowLower = await resolveWithAsk(seq => seq === lower - 1 ? askEvent(seq) : undefined)
+    expect(belowLower.outcome).toBe('unavailable')
+    expect(belowLower.readSeqs).not.toContain(lower - 1)
   })
 
   it('rejects catalog bindings without an exact registered semantic projector before provider registration', () => {
