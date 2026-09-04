@@ -156,8 +156,8 @@ export class DshExecutionFactProjectionBridge {
   private readonly cancelledResults = new Set<string>()
   /** Exact live source identity; call IDs may be reused in later alpha.1 steps. */
   private readonly requestEventByToken = new Map<ToolExecution['token'], number>()
-  /** Volatile approval/asked index: lifecycle prefix + requestId → exact asked event. */
-  private readonly approvalAskedIndex = new Map<string, { readonly seq: number; readonly callId: string; readonly toolName: string }>()
+  /** Volatile approval/asked index: lifecycle prefix + requestId → exact asked event, or null when the id is ambiguous (duplicate asked). */
+  private readonly approvalAskedIndex = new Map<string, { readonly seq: number; readonly callId: string; readonly toolName: string } | null>()
 
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
@@ -389,8 +389,20 @@ export class DshExecutionFactProjectionBridge {
     const toolName = string(data.toolName)
     const lifecycle = this.lifecycle(agent)
     if (requestId === undefined || callId === undefined || toolName === undefined || lifecycle === undefined) return Promise.resolve()
-    // Populate the volatile asked-index so a later resolve hits in O(1).
-    this.approvalAskedIndex.set(`${canonicalJson(lifecycle)}\0${requestId}`, { seq: event.seq, callId, toolName })
+    // Populate the volatile asked-index so a later resolve hits in O(1), but keep
+    // the plan's "ask is a unique preceding call" invariant. A duplicate
+    // approval/asked for the same request id at a different seq is ambiguous, so
+    // poison the key (null) and make any resolve for this id fail closed. A
+    // same-seq re-observation is idempotent and keeps the existing entry.
+    {
+      const indexKey = `${canonicalJson(lifecycle)}\0${requestId}`
+      const indexed = this.approvalAskedIndex.get(indexKey)
+      if (indexed !== undefined && indexed !== null && indexed.seq !== event.seq) {
+        this.approvalAskedIndex.set(indexKey, null)
+      } else if (indexed === undefined) {
+        this.approvalAskedIndex.set(indexKey, { seq: event.seq, callId, toolName })
+      }
+    }
     const key = `${canonicalJson(lifecycle)}\0${event.seq}`
     const existing = this.approvalWrites.get(key)
     if (existing !== undefined) return existing
@@ -398,6 +410,15 @@ export class DshExecutionFactProjectionBridge {
     let write: Promise<void>
     write = attempt.then(() => undefined).finally(() => {
       if (this.approvalWrites.get(key) === write) this.approvalWrites.delete(key)
+      // resultWrites-style cleanup: once the observed approval write for this exact
+      // requested seq settles, drop the resolved (non-poisoned) asked-index entry so
+      // the map stays bounded. Poisoned ambiguity markers are deliberately kept, so a
+      // duplicate-asked conflict stays fail-closed across settles.
+      {
+        const indexKey = `${canonicalJson(lifecycle)}\0${requestId}`
+        const entry = this.approvalAskedIndex.get(indexKey)
+        if (entry !== null && entry?.seq === event.seq) this.approvalAskedIndex.delete(indexKey)
+      }
     })
     this.approvalWrites.set(key, write)
     return write
@@ -678,6 +699,10 @@ export class DshExecutionFactProjectionBridge {
     if (askedSeq === undefined || signal?.aborted) return
     const event = session.eventAt?.(askedSeq)
     if (event === undefined || event.type !== 'approval/asked') return
+    // Defend against an inconsistent eventAt: the resolved seq must re-read as the
+    // exact ask for this request, not merely any approval/asked event.
+    const eventData = event.data as Record<string, unknown>
+    if (eventData.id !== requestId || eventData.callId !== callId || eventData.toolName !== toolName) return
     if (!await this.settleUnlessAborted(this.observeSessionEvent(agent, event), signal) || signal?.aborted) return
     return askedSeq
   }
@@ -699,7 +724,9 @@ export class DshExecutionFactProjectionBridge {
     const indexKey = `${canonicalJson(lifecycle)}\0${requestId}`
     const indexed = this.approvalAskedIndex.get(indexKey)
     if (indexed !== undefined) {
-      // A request id reused across a different call/tool is ambiguous: fail closed.
+      // A poisoned (duplicate asked) or call/tool-mismatched entry is ambiguous:
+      // fail closed rather than resolving to one of the competing asks.
+      if (indexed === null) return undefined
       if (indexed.callId === callId && indexed.toolName === toolName) return indexed.seq
       return undefined
     }
@@ -750,6 +777,10 @@ export class DshExecutionFactProjectionBridge {
     const codeStartsBySeq = new Map<number, EventLike>()
     const pendingCodeStarts = new Map<string, EventLike[]>()
     const window = this.maxSealedTailEvents
+    // Inclusive lower bound: an event at seq == throughSeq - window IS scanned, so
+    // a result landing exactly on the boundary is repaired. Pinned explicitly
+    // because the "bounded sealed tail" is a closed lower interval: an exclusive
+    // bound would silently drop a repair whose result sits exactly at the edge.
     const lower = Math.max(0, throughSeq - window)
     let processed = 0
     for (let seq = lower; seq < throughSeq; seq += 1) {
