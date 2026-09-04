@@ -39,6 +39,7 @@ import type { SealedFactsReader } from './application/source-backed-gate-facts.j
 import type { LiveAgentRegistry } from './ports/parent-session-facts.js'
 import { DshParentSessionFactSource, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
 import { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
+import { assembleRecentExcerpts } from './application/recent-excerpts.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
@@ -402,6 +403,27 @@ export function installApproveForMe(
         : undefined
       const effectiveDelegationDepth = delegationDepthOf(pending.agent)
       if (!Number.isSafeInteger(effectiveDelegationDepth) || effectiveDelegationDepth < 0) return undefined
+      // Assemble the bounded recent-transcript excerpt channel (WP4-b4-2a). It is
+      // an intent-understanding aid for the Reviewer, never an authorization fact:
+      // any assembly failure or empty result degrades to no excerpts (the current
+      // action's authority is unchanged) rather than blocking the approval flow.
+      let excerpts: readonly { readonly seq: number; readonly text: string }[] | undefined
+      let excerptTruncated: number | undefined
+      try {
+        const excerptResult = assembleRecentExcerpts({
+          askedSeq: approvalAskedSeq,
+          maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
+          eventAt: seq => session.eventAt?.(seq) as unknown as { readonly seq: number; readonly type: string; readonly time: number; readonly data: unknown } | undefined,
+        })
+        if (excerptResult.excerpts.length > 0 || excerptResult.truncated > 0) {
+          excerpts = excerptResult.excerpts
+          excerptTruncated = excerptResult.truncated
+        }
+      } catch {
+        // Degrade to no excerpts; never fail the approval hot path.
+        excerpts = undefined
+        excerptTruncated = undefined
+      }
       return {
         agent: pending.agent,
         approvalRequestId: pending.requestId,
@@ -412,6 +434,8 @@ export function installApproveForMe(
         approvalAsked: asked.ref,
         freeze,
         requester: { effectiveDelegationDepth, ...(parentSessionId === undefined ? {} : { parentSessionId }) },
+        ...(excerpts === undefined ? {} : { excerpts }),
+        ...(excerptTruncated === undefined ? {} : { excerptTruncated }),
         ...(signal === undefined ? {} : { signal }),
       }
     },
