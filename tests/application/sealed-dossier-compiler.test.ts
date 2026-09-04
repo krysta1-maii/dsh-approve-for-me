@@ -431,3 +431,77 @@ describe('createSealedDossierCompiler rework guards (WP4-b3 review)', () => {
     if (near.kind === 'ready') expect(near.metrics.bytes).toBeLessThan(boundary)
   })
 })
+
+describe('createSealedDossierCompiler excerpt channel (WP4-b4-2a)', () => {
+  it('projects the bounded excerpt channel into interaction.sealed with seq and text', () => {
+    const compile = compiler(256_000)
+    const current = currentFacts({
+      excerpts: [{ seq: 2, text: 'inspect the cwd' }, { seq: 4, text: 'then show the diff' }],
+      excerptTruncated: 1,
+    })
+    const result = compile(input({ current, packet: packet([], []) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const sealed = result.verified.dossier.interaction as unknown as { readonly sealed: {
+      readonly excerpts: readonly { readonly seq: number; readonly text: string }[]
+      readonly excerptTruncated: number
+    } }
+    expect(sealed.sealed.excerpts).toEqual([{ seq: 2, text: 'inspect the cwd' }, { seq: 4, text: 'then show the diff' }])
+    expect(sealed.sealed.excerptTruncated).toBe(1)
+  })
+
+  it('keeps the no-excerpt behavior unchanged when current carries no excerpts', () => {
+    const compile = compiler(256_000)
+    const result = compile(input({ packet: packet([], []) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const sealed = result.verified.dossier.interaction as unknown as { readonly sealed: { readonly excerpts?: unknown; readonly excerptTruncated?: unknown } }
+    expect(sealed.sealed.excerpts).toBeUndefined()
+    expect(sealed.sealed.excerptTruncated).toBeUndefined()
+  })
+
+  it('freezes the caller excerpt payload so a later mutation never reaches the dossier (S1)', () => {
+    const compile = compiler(256_000)
+    const excerpts = [{ seq: 2, text: 'safe intent' }]
+    const current = currentFacts({ excerpts })
+    const result = compile(input({ current, packet: packet([], []) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const before = JSON.stringify(result.verified.dossier)
+    excerpts.push({ seq: 9, text: 'mutated after compile' })
+    expect(JSON.stringify(result.verified.dossier)).toBe(before)
+  })
+
+  it('rejects an excerpt entry carrying an unknown field (closed set, leak guard)', () => {
+    const compile = compiler(256_000)
+    const current = currentFacts({ excerpts: [{ seq: 2, text: 'safe', resultBody: 'SMUGGLED-TOOL-OUTPUT-9' }] as unknown as readonly { readonly seq: number; readonly text: string }[] })
+    const got = compile(input({ current, packet: packet([], []) }))
+    expect(got).toEqual({ kind: 'incomplete', reason: 'invalid-current-action-facts' })
+    expect('verified' in got).toBe(false)
+  })
+
+  it('rejects malformed excerpt entries (non-integer seq, empty text, over-length text)', () => {
+    const compile = createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxRecentExcerptBytes: 10 })
+    const badSeq = currentFacts({ excerpts: [{ seq: 2.5, text: 'x' }] })
+    const emptyText = currentFacts({ excerpts: [{ seq: 2, text: '' }] })
+    const overLength = currentFacts({ excerpts: [{ seq: 2, text: 'this text is longer than ten bytes' }] })
+    expect(compile(input({ current: badSeq, packet: packet([], []) }))).toEqual({ kind: 'incomplete', reason: 'invalid-current-action-facts' })
+    expect(compile(input({ current: emptyText, packet: packet([], []) }))).toEqual({ kind: 'incomplete', reason: 'invalid-current-action-facts' })
+    expect(compile(input({ current: overLength, packet: packet([], []) }))).toEqual({ kind: 'incomplete', reason: 'invalid-current-action-facts' })
+  })
+
+  it('rejects a malformed excerptTruncated count', () => {
+    const compile = compiler(256_000)
+    const current = currentFacts({ excerpts: [{ seq: 2, text: 'safe' }], excerptTruncated: -1 })
+    expect(compile(input({ current, packet: packet([], []) }))).toEqual({ kind: 'incomplete', reason: 'invalid-current-action-facts' })
+  })
+
+  it('charges the excerpt channel against the hot-packet budget', () => {
+    const compile = compiler(2_000)
+    const bigExcerpts = Array.from({ length: 100 }, (_, index) => ({ seq: index, text: 'a'.repeat(20) }))
+    const result = compile(input({ current: currentFacts({ excerpts: bigExcerpts }), packet: packet([], []) }))
+    expect(result.kind).toBe('incomplete')
+    if (result.kind !== 'incomplete' || !('metrics' in result)) return
+    expect(result.reason).toBe('budget-overflow')
+  })
+})

@@ -43,6 +43,15 @@ export interface SealedDossierCurrentFactsV1 {
   readonly requestedSandboxMode?: 'workspace-write' | 'danger-full-access'
   /** Earlier sandbox denials in the open approval turn, bounded by the caller. */
   readonly earlierSandboxDenials?: readonly EarlierSandboxDenialV1[]
+  /**
+   * Bounded, seq-ordered recent human user-message excerpts around this ask.
+   * They are an intent-understanding aid for the Reviewer, never an
+   * authorization fact: a missing or empty set degrades to the packet without
+   * an excerpt channel, it never changes the current action's authority.
+   */
+  readonly excerpts?: readonly { readonly seq: number; readonly text: string }[]
+  /** Count of candidate user-message excerpts the assembler dropped for its byte budget. */
+  readonly excerptTruncated?: number
 }
 
 export interface SealedDossierCompileInputV1 {
@@ -57,6 +66,14 @@ export interface SealedDossierCompilerOptions {
    * positive safe integer no greater than the full-dossier 256000 limit.
    */
   readonly maxHotPacketBytes: number
+  /**
+   * Per-excerpt-entry UTF-8 byte upper bound, validated against each projected
+   * excerpt at compile time. Must be a positive safe integer. Defaults to 24000
+   * (the config `maxRecentExcerptBytes` default). An excerpt text at or over
+   * this ceiling is a structural input violation and fails closed, never
+   * silently truncated.
+   */
+  readonly maxRecentExcerptBytes?: number
 }
 
 export type CompileSealed = (input: SealedDossierCompileInputV1) => DossierCompilationResultV1
@@ -74,6 +91,10 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength
+}
+
 function validFreeze(freeze: DossierFreezeV1): boolean {
   const parent = freeze.parent
   return nonEmptyString(parent.sessionId)
@@ -86,7 +107,26 @@ function validFreeze(freeze: DossierFreezeV1): boolean {
     && nonNegativeSafeInteger(freeze.frozenAt)
 }
 
-function validCurrent(current: SealedDossierCurrentFactsV1): boolean {
+function validExcerpts(excerpts: unknown, excerptTruncated: unknown, maxRecentExcerptBytes: number): boolean {
+  if (excerptTruncated !== undefined && !nonNegativeSafeInteger(excerptTruncated)) return false
+  if (excerpts === undefined) return true
+  if (!Array.isArray(excerpts)) return false
+  for (const entry of excerpts) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false
+    const candidate = entry as Record<string, unknown>
+    const keys = Object.keys(candidate)
+    // Closed set: exactly seq + text. A smuggled field (tool-result body, an
+    // event/session ID, LLM text) is a schema violation and must fail closed,
+    // never be silently stripped into a branded dossier.
+    if (keys.length !== 2 || keys.some(key => key !== 'seq' && key !== 'text')) return false
+    if (!nonNegativeSafeInteger(candidate.seq)) return false
+    if (typeof candidate.text !== 'string' || candidate.text.length === 0) return false
+    if (utf8ByteLength(candidate.text) > maxRecentExcerptBytes) return false
+  }
+  return true
+}
+
+function validCurrent(current: SealedDossierCurrentFactsV1, maxRecentExcerptBytes: number): boolean {
   return nonEmptyString(current.classification)
     && nonEmptyString(current.classificationCatalogFingerprint)
     && nonEmptyString(current.approvalRequestId)
@@ -96,6 +136,7 @@ function validCurrent(current: SealedDossierCurrentFactsV1): boolean {
     && nonNegativeSafeInteger(current.approvalAsked.seq)
     && nonEmptyString(current.approvalAsked.type)
     && validFreeze(current.freeze)
+    && validExcerpts(current.excerpts, current.excerptTruncated, maxRecentExcerptBytes)
 }
 
 /**
@@ -173,6 +214,10 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
   if (!Number.isSafeInteger(budget) || budget < 1 || budget > MAX_HOT_PACKET_BYTES) {
     throw new TypeError(`maxHotPacketBytes must be a positive safe integer no greater than ${MAX_HOT_PACKET_BYTES}`)
   }
+  const excerptByteBudget = options.maxRecentExcerptBytes ?? 24_000
+  if (!Number.isSafeInteger(excerptByteBudget) || excerptByteBudget < 1) {
+    throw new TypeError('maxRecentExcerptBytes must be a positive safe integer')
+  }
 
   return function compileSealed(input: SealedDossierCompileInputV1): DossierCompilationResultV1 {
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
@@ -193,7 +238,7 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
       return { kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' }
     }
     if (!nonEmptyString(packet.lifecycleFingerprint)) return { kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' }
-    if (!validCurrent(current)) return { kind: 'incomplete', reason: 'invalid-current-action-facts' }
+    if (!validCurrent(current, excerptByteBudget)) return { kind: 'incomplete', reason: 'invalid-current-action-facts' }
 
     let actionHash: string
     try {
@@ -230,7 +275,7 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
       return overflowResult(packet, current, account)
     }
 
-    const interaction = buildInteraction(packet)
+    const interaction = buildInteraction(packet, current)
     // A structurally malformed sealed row is a data problem, not a capacity one:
     // it must fail closed as an invalid snapshot rather than masquerade as a
     // budget-overflow (which the gate would route to a delegate fallback).
@@ -354,7 +399,7 @@ function projectEpochs(epochs: readonly unknown[]): readonly { readonly epoch: n
  * result content. Returns undefined when a row or epoch is structurally malformed
  * so the caller fails closed.
  */
-function buildInteraction(packet: SealedParentSessionFactsV1): JsonValue | undefined {
+function buildInteraction(packet: SealedParentSessionFactsV1, currentFacts: SealedDossierCurrentFactsV1): JsonValue | undefined {
   const activityBySourceSeq = new Map<number, { readonly occurredAt: number; readonly classification: string; readonly targetSummary: string; readonly resultCategory: SealResultStatusV1 }>()
   const ledger: SealedLedgerEntryV1[] = []
   for (const activity of packet.activities) {
@@ -364,11 +409,11 @@ function buildInteraction(packet: SealedParentSessionFactsV1): JsonValue | undef
     activityBySourceSeq.set(projected.sourceSeq, projected)
   }
 
-  let current: SealedLedgerEntryV1 | undefined
+  let currentSeal: SealedLedgerEntryV1 | undefined
   if (packet.current !== undefined) {
     const projected = projectActivity(packet.current.activity)
     if (projected === undefined) return undefined
-    current = projected
+    currentSeal = projected
   }
 
   const tail: SealedLedgerEntryV1[] = []
@@ -388,10 +433,14 @@ function buildInteraction(packet: SealedParentSessionFactsV1): JsonValue | undef
 
   return Object.freeze({
     sealed: Object.freeze({
-      ...(current === undefined ? {} : { current }),
+      ...(currentSeal === undefined ? {} : { current: currentSeal }),
       tail: Object.freeze(tail),
       ledger: Object.freeze(ledger),
       catalogEpochs,
+      ...(currentFacts.excerpts === undefined ? {} : {
+        excerpts: currentFacts.excerpts,
+        excerptTruncated: currentFacts.excerptTruncated ?? 0,
+      }),
     }),
   }) as unknown as JsonValue
 }
