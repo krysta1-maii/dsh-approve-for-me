@@ -11,6 +11,7 @@ import { canonicalJson } from '../domain/json.js'
 import type { ToolApprovalClass } from '../approval-gate/catalog.js'
 import { hashAction } from '../domain/protocol.js'
 import { assessVerifiedActionV1 } from '../domain/risk-assessment.js'
+import type { DangerEscalationRiskV1 } from '../domain/risk-assessment.js'
 import type { TrustEnvelopeInputV1 } from '../approval-gate/trust-envelope.js'
 
 /**
@@ -119,6 +120,8 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
     private readonly generation: string,
     private readonly reviewerConfigurationFingerprint: string,
     private readonly policyVersion: string = 'policy-v1',
+    /** Baseline rubric bound to the resolved Reviewer policy. */
+    private readonly dangerFullAccessRisk: DangerEscalationRiskV1 = 'critical',
   ) {}
 
   project(input: Parameters<SourceBackedFactProjector['project']>[0]): GateActionFacts | undefined {
@@ -227,7 +230,9 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
         ? [latest]
         : [directUserFrontierSeq],
     )
-    const assessment = assessVerifiedActionV1(pending.action, frontiers, pending.earlierSandboxDenials)
+    const assessment = assessVerifiedActionV1(pending.action, frontiers, pending.earlierSandboxDenials, {
+      dangerFullAccessRisk: this.dangerFullAccessRisk,
+    })
     const parentLifecycleFingerprint = canonicalJson(input.facts.session)
     const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq, actionHash: input.pending.actionHash })
     const configurationFingerprint = fingerprintGateConfigurationV1(

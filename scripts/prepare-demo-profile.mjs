@@ -138,7 +138,7 @@ const patch = join(profileDir, 'cordis.patch.yml')
 const reasoningLine = reasoningEffort === undefined || reasoningEffort.length === 0
   ? ''
   : `      reasoningEffort: ${JSON.stringify(reasoningEffort)}\n`
-writeFileSync(patch, `# Generated disposable dsh-approve-for-me demo profile.\n# Provider/model ids are validated against ctx.llm.listProviders/listModels at boot.\n- id: dsh-approve-for-me\n  config:\n    mode: auto-then-user\n    timeoutMs: 30000\n    trustEnvelope:\n      version: 1\n      enabled: false\n    reviewer:\n      generation: demo-primary-v1\n      provider: ${JSON.stringify(provider)}\n      model: ${JSON.stringify(model)}\n${reasoningLine}      policyVersion: policy-v2\n      toolsetVersion: 1\n`)
+writeFileSync(patch, `# Generated disposable dsh-approve-for-me demo profile.\n# Provider/model ids are validated against ctx.llm.listProviders/listModels at boot.\n- id: dsh-approve-for-me\n  config:\n    mode: auto-then-user\n    timeoutMs: 30000\n    trustEnvelope:\n      version: 1\n      enabled: false\n    reviewer:\n      generation: demo-primary-v1\n      provider: ${JSON.stringify(provider)}\n      model: ${JSON.stringify(model)}\n${reasoningLine}      policyVersion: policy-v3\n      toolsetVersion: 1\n`)
 const dump = execFileSync(process.execPath, [cli, '--profile', profile, '--dump-config'], {
   cwd: output,
   env,

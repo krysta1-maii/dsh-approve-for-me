@@ -38,7 +38,7 @@ export const RISK_RULES_V1: readonly RiskRuleV1[] = Object.freeze([
   { category: 'credential-access', structuralTrigger: 'future credential-specific semantic projector', counterevidence: 'verified semantic absence', scope: 'target', authorizationRequirement: 'explicit credential scope', manualConfirmation: 'required', absoluteDenial: 'unverified credential target' },
   { category: 'destructive-change', structuralTrigger: 'filesystem destructive operation', counterevidence: 'verified non-mutating operation', scope: 'target', authorizationRequirement: 'explicit target and effect authorization', manualConfirmation: 'required until target coverage is verified', absoluteDenial: 'unknown target or irreversible effect' },
   { category: 'persistent-security-weakening', structuralTrigger: 'future security-configuration semantic projector', counterevidence: 'verified unchanged security configuration', scope: 'environment', authorizationRequirement: 'explicit security-boundary authorization', manualConfirmation: 'required', absoluteDenial: 'unverified persistent weakening' },
-  { category: 'permission-expansion', structuralTrigger: 'danger-full-access sandbox request', counterevidence: 'verified confined permission request', scope: 'environment', authorizationRequirement: 'explicit expanded-permission authorization', manualConfirmation: 'required', absoluteDenial: 'unbounded sandbox expansion' },
+  { category: 'permission-expansion', structuralTrigger: 'danger-full-access sandbox request', counterevidence: 'verified confined permission request', scope: 'environment', authorizationRequirement: 'explicit expanded-permission authorization', manualConfirmation: 'required only when target or side-effect coverage remains unresolved', absoluteDenial: 'expansion whose target or material side effects cannot be ascertained' },
   { category: 'network-exposure', structuralTrigger: 'network semantic family', counterevidence: 'verified absence of network target', scope: 'target', authorizationRequirement: 'explicit network target authorization', manualConfirmation: 'required until target coverage is verified', absoluteDenial: 'unknown network destination or redirect' },
   { category: 'supply-chain-or-unverified-execution', structuralTrigger: 'future provenance-specific semantic projector', counterevidence: 'verified pinned and trusted provenance', scope: 'action', authorizationRequirement: 'explicit unverified-execution authorization', manualConfirmation: 'required', absoluteDenial: 'unknown executable provenance' },
   { category: 'approval-evasion', structuralTrigger: 'future verified conflict with existing approval fact', counterevidence: 'verified non-conflict', scope: 'action', authorizationRequirement: 'none; conflict is not authorization', manualConfirmation: 'required', absoluteDenial: 'attempt to replay or bypass a rejection' },
@@ -199,6 +199,20 @@ function assessAuthorization(
 }
 
 /**
+ * Baseline risk label a rubric assigns to a danger-full-access sandbox
+ * request. The v1/v2 rubric treats it as 'critical' (never automatically
+ * reviewable); the policy-v3 rubric treats it as 'high' — a strong review
+ * signal whose allow/deny judgment belongs to the Reviewer reading the
+ * source-backed dossier, not to a hardcoded label.
+ */
+export type DangerEscalationRiskV1 = 'critical' | 'high'
+
+export interface AssessVerifiedActionOptionsV1 {
+  /** Label applied to a danger-full-access sandbox request. Defaults to 'critical'. */
+  readonly dangerFullAccessRisk?: DangerEscalationRiskV1
+}
+
+/**
  * Conservative assessment from one source-verified action and retained direct
  * user messages. Numeric-only inputs remain the legacy provenance-only form and
  * can never authorize; only one standalone, exact, JSON next-action command
@@ -208,6 +222,7 @@ export function assessVerifiedActionV1(
   action: ActionSnapshot,
   directUserEvidence: readonly AuthorizationInputV1[],
   earlierSandboxDenials: readonly EarlierSandboxDenialV1[] = [],
+  options?: AssessVerifiedActionOptionsV1,
 ): RiskAssessmentV1 {
   const categories = new Set<RiskCategoryV1>()
   const evidence: RiskEvidenceV1[] = []
@@ -228,7 +243,7 @@ export function assessVerifiedActionV1(
   const sandboxExpansion = action.requestedPermissions.find(permission => permission.kind === 'sandbox')
   if (sandboxExpansion !== undefined) {
     add('permission-expansion', 'environment', `${sandboxExpansion.scope} sandbox permission requested`)
-    risk = sandboxExpansion.scope === 'danger-full-access' ? 'critical' : risk === 'low' ? 'medium' : risk
+    risk = sandboxExpansion.scope === 'danger-full-access' ? options?.dangerFullAccessRisk ?? 'critical' : risk === 'low' ? 'medium' : risk
   }
   const matchedAuthorization = value === undefined
     ? Object.freeze({ level: 'unknown' as const, targetCovered: false, sideEffectsCovered: false, sourceRefs: Object.freeze([]), rationale: 'Malformed action semantics cannot be authorized.' })

@@ -55,11 +55,13 @@
 - `assessVerifiedActionV1` 只消费 verified action semantics、requested permissions、earlier sandbox denials 与保留的可见 direct-user 消息；
 - 它只把独立且精确的 `/approve-for-me <JSON>` 识别为 deterministic structured authorization；普通自然语言由 fresh Reviewer 结合完整 dossier 解释；
 - network/data-exfil、filesystem destructive、`danger-full-access` 提权、unknown semantics 有结构触发；无结构化授权的结果不进入 cache/replay fast path；
+- `danger-full-access` 的基线风险标签随 Reviewer 政策走：policy-v1/v2 为 `critical`（当时是 allow 禁令），policy-v3 为 `high`（只是评审信号）；permission-expansion 在任何政策下都不进入 fast path，每次升级都由新鲜 Guardian 裁决；
 - `validateDecisionAssessmentV1` 保留为诊断/评估工具，不参与 PreReview 的最终 disposition 映射；身份有效的 Reviewer decision 直接决定 allow／deny／human_review。
 
 ### R5 policy artifact / R6 review run / R7 breaker / R9 audit（完成）
 
-- `policy-v2` 已注册并用于带 R4 baseline 的 `ApprovalReviewPacketV2`；`policy-v1` 仅用于历史恢复；
+- `policy-v2` 与 `policy-v3` 已注册并用于带 R4 baseline 的 `ApprovalReviewPacketV2`；`policy-v1` 仅用于历史恢复；
+- v3 移除了"critical 风险永不放行"的硬编码：`danger-full-access` 升级是普通可评审请求，Reviewer 按直达用户证据覆盖裁决，且 danger 放行必须在 `assessment.sourceRefs` 引用所依据的用户消息；剩余绝对禁令只有 rejection-bypass 与证据缺失（证据事实，非判断）；demo profile 与质量冒烟默认使用 v3，v2 保留可回退；
 - pre-review 生成 host-owned `reviewRunId` 与单一绝对 deadline；一个 Run 最多两个业务 attempts，污染 rotate 是基础设施恢复（不占业务 attempt、不延 deadline）；
 - exact denial breaker 只由 Guardian deny 写入，key 绑定 parent lifecycle/turn/frontier/actionHash；human_review 不建立 deny 事实；
 - 生产 Gate 使用 Storage Domain 最小决策行（`afm_decision_records`），自动 allow 必须 `createConfirmed`；deny/human 的审计 best-effort。

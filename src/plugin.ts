@@ -58,6 +58,7 @@ import { DefaultPreReviewCoordinator } from './application/pre-review-coordinato
 import { InMemorySealedDispositionRegistry } from './application/sealed-decision.js'
 import { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
 import { createReviewerProvider } from './reviewer/provider.js'
+import { dangerFullAccessRiskForPolicy } from './reviewer/policy.js'
 import { hashAction, REVIEWER_PROVIDER } from './domain/protocol.js'
 import type { RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
@@ -277,6 +278,7 @@ export function installApproveForMe(
       normalized.preset.generation,
       normalized.preset.configurationFingerprint,
       normalized.preset.policyVersion,
+      dangerFullAccessRiskForPolicy(normalized.preset.policyVersion),
     ),
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined

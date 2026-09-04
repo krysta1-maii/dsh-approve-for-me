@@ -84,6 +84,8 @@ R4 是提供给 Reviewer 并约束 authorization-derived cache/replay fast path 
 
 首次 fresh review 中，Reviewer 拥有最终的 allow／deny／human_review 裁决权：清晰、无歧义的普通自然语言请求可以构成授权，`/approve-for-me` 是高置信结构化信号而不是自动 allow 的必需前置。Host 只校验 parent/action/generation/deadline 等客观绑定，不以 R4 标签重写身份有效的 Reviewer 决策。sandbox-denied 候选仍不直接进入预审 fast path；当前 turn 的同动作严格扩权重试由 Host 绑定候选事实，再交 Reviewer 判断必要性与风险。
 
+`policy-v3`（demo profile 与质量冒烟的默认）进一步移除了“critical 风险永不放行”的硬编码：一次 `danger-full-access` 升级是普通可评审请求，R4 基线将其标为 `high` 评审信号而非禁令，Reviewer 按直达用户证据覆盖裁决，且 danger 放行必须在 `assessment.sourceRefs` 引用所依据的用户消息。剩余绝对禁令只有 rejection-bypass 与证据缺失（证据事实而非判断）；permission-expansion 在任何政策下都不进入 fast path，每次升级都由新鲜 Guardian 评审。`policy-v2` 保留注册，配置 `reviewer.policyVersion` 即可回退。
+
 ## 历史预算、取消与事件循环公平性
 
 第一版 approval barrier 会在进程重启后的首次审批中重放全部历史 `tool/result`，而每条 native result 又全表读取 execution sidecar，形成 O(R×E) 放大；长 Session 会耗尽事件循环，使 Web Stop、审批持久化和 timer 都得不到调度。当前实现改为利用 `sourceEventSeqs` 和 approval 前最后一条 exact request 做 `repository.get()`，只等待本进程已经在写的结果，不再全历史重放。

@@ -68,6 +68,16 @@ describe('assessVerifiedActionV1', () => {
     expect(assessVerifiedActionV1(action, []).risk).toBe('critical')
   })
 
+  it('the policy-v3 rubric labels danger-full-access high, still never fast-path eligible', () => {
+    const action = createActionSnapshot({ toolName: 'delete', arguments: {}, projectorId: 'filesystem-v1', semantics: { family: 'filesystem-v1', value: { operation: 'delete' } }, requestedPermissions: [{ kind: 'sandbox', scope: 'danger-full-access' }] })
+    const assessment = assessVerifiedActionV1(action, [], [], { dangerFullAccessRisk: 'high' })
+    expect(assessment.risk).toBe('high')
+    expect(assessment.categories).toEqual(['destructive-change', 'permission-expansion'])
+    // Permission expansion still forces fresh Guardian correlation per ask:
+    // the rubric relabels the review signal, it never opens a fast path.
+    expect(permitsAutomaticFastPath(assessment)).toBe(false)
+  })
+
   it('authorizes only a standalone exact next-action command', () => {
     const argumentsValue = { file_path: 'src/index.ts', old_string: 'old', new_string: 'new' }
     const permissions: [] = []

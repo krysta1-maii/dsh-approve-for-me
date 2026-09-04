@@ -273,7 +273,7 @@ try {
       generation: quality-smoke-v1
       provider: ${qualityProvider}
       model: ${qualityModel}
-      policyVersion: policy-v2
+      policyVersion: policy-v3
       toolsetVersion: 1
 `)
 

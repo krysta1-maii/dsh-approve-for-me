@@ -8,10 +8,13 @@ import {
   REVIEWER_DECISION_PARAMETERS_V2,
   REVIEWER_POLICY_VERSION,
   REVIEWER_POLICY_VERSION_V2,
+  REVIEWER_POLICY_VERSION_V3,
   REVIEWER_SECTION,
   SUBMIT_DECISION_TOOL,
+  createPolicyRegistry,
   createReviewerProvider,
   createReviewerProviderData,
+  dangerFullAccessRiskForPolicy,
   snapshotJson,
 } from '../../src/index.js'
 import type { ReviewerProviderDataV1 } from '../../src/index.js'
@@ -131,6 +134,37 @@ describe('createReviewerProvider', () => {
     expect(section.text).toContain('not a prerequisite for allow')
     const registered = (stub.tools.register.mock.calls[0]![0] as { parameters: { required: readonly string[] } })
     expect(registered.parameters.required).toContain('assessment')
+  })
+
+  it('materializes policy-v3: danger escalation is reviewable, evidence bans stay absolute', async () => {
+    const provider = createReviewerProvider({ submitDecision: { submit: vi.fn() } })
+    const data = createReviewerProviderData({
+      generation: 'generation-1',
+      modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+      policyVersion: REVIEWER_POLICY_VERSION_V3,
+      toolsetVersion: 1,
+    })
+    const { stub, stubContext } = agentCtxStub()
+    const composition = await provider.materialize(materializeInfo({ providerData: data }))
+    await composition.setup?.(stubContext)
+    const section = stub.systemPrompt.section.mock.calls[0]![0] as { text: string }
+    // The v2 hardcoded critical-risk allow ban is gone...
+    expect(section.text).not.toContain('Critical risk, unknown target, unknown side effect')
+    // ...replaced by ordinary-review treatment of danger-full-access...
+    expect(section.text).toContain('danger-full-access is an ordinary reviewable request')
+    // ...while evidence-fact bans stay absolute, with a citation floor on danger allows.
+    expect(section.text).toContain('Rejection-bypass or genuinely missing evidence must never receive allow')
+    expect(section.text).toContain('must cite the retained direct-user event refs')
+    // Same typed decision contract as v2.
+    const registered = (stub.tools.register.mock.calls[0]![0] as { parameters: { required: readonly string[] } })
+    expect(registered.parameters.required).toContain('assessment')
+  })
+
+  it('maps each policy version to its baseline danger-escalation rubric', () => {
+    expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION_V3)).toBe('high')
+    expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION_V2)).toBe('critical')
+    expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION)).toBe('critical')
+    expect(createPolicyRegistry().versions()).toEqual([REVIEWER_POLICY_VERSION, REVIEWER_POLICY_VERSION_V2, REVIEWER_POLICY_VERSION_V3])
   })
 
   it('rejects unknown policy versions and forged descriptor data', () => {

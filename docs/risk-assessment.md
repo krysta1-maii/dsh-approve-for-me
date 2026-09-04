@@ -10,10 +10,12 @@ The current baseline has only auditable structural triggers:
 
 - network semantics record network exposure; a body or headers also record data-exfiltration risk;
 - filesystem destructive operations record destructive-change risk;
-- a `danger-full-access` sandbox request records permission expansion and critical risk;
+- a `danger-full-access` sandbox request records permission expansion; its risk label follows the Reviewer policy rubric — `critical` under policy-v1/v2 (where critical was an allow prohibition), `high` under policy-v3 (a strong review signal, never a hardcoded verdict);
 - unrecognized semantic families record unknown semantics.
 
 Categories without a proved structural source remain unasserted. This prevents a speculative label from masquerading as evidence.
+
+Under policy-v3 no baseline risk label is an allow prohibition: the rubric informs the Reviewer, and the Reviewer judges a danger-full-access escalation from the source-backed dossier like any other request — allow only when retained direct-user evidence clearly covers the exact action and its material side effects, citing that evidence in the decision. Unascertainable targets or side effects still resolve to human_review/deny. The only remaining never-allow conditions are evidence facts: rejection-bypass and genuinely missing evidence. Permission expansion also stays ineligible for every fast path, so each escalation ask receives a fresh Guardian review.
 
 ## Authorization and gate behavior
 

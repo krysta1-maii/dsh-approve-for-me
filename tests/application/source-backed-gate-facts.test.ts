@@ -252,6 +252,115 @@ describe('DossierGateFactProjector', () => {
     } as never)
     expect(withoutUserFrontier).toBeUndefined()
   })
+
+  it('the policy-v3 rubric reports a danger escalation as high, never as a fast-path candidate', () => {
+    const dangerJustification = 'Escalate once to modify the DSH profile outside the workspace.'
+    const projectorId = 'dsh-approve-for-me/shell-process-v1'
+    const dangerSemantics = { family: 'shell-process-v1', value: { operation: 'bash', command: 'pwd', cwd: '/workspace', runInBackground: false } }
+    const dangerAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'pwd', sandbox_permissions: 'danger-full-access', justification: dangerJustification },
+      projectorId,
+      semantics: dangerSemantics,
+      requestedPermissions: [{ kind: 'sandbox', scope: 'danger-full-access', details: { justification: dangerJustification } }],
+    })
+    const dangerActionHash = hashAction(dangerAction)
+    const directive = `/approve-for-me ${JSON.stringify({
+      version: 1,
+      scope: 'next-action',
+      allow: { toolName: 'bash', arguments: dangerAction.arguments, requestedPermissions: dangerAction.requestedPermissions },
+    })}`
+    const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+    const effective = createDshAlpha2EffectiveCatalog(schemas)
+    const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
+    const projector = new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v3', 'high')
+    const facts = projector.project({
+      request: { ...request, actionHash: dangerActionHash },
+      pending: { ...request, actionHash: dangerActionHash, agent, authority },
+      facts: {
+        session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
+        approvalBinding: { event: { seq: 2, type: 'approval/asked' }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' },
+        approvalSnapshots: [{
+          version: 1,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          approvalRequestId: 'ask-1', approvalAskedSeq: 2,
+          execution: { requestEventSeq: 1, callId: 'call-1', toolName: 'bash', actionHash: dangerActionHash, classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId },
+          environment: { version: 1, kind: 'native-header-only' },
+        }],
+        executionFacts: [{
+          version: 1, catalogCommitment: commitment,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+          toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0] },
+          projection: { projectorId, action: dangerAction, actionHash: dangerActionHash, observedAt: 1 },
+        }],
+        eventProjection: { classificationCatalog: effective.dossier },
+      },
+      verifiedDossier: {
+        dossier: {
+          freeze: { currentTurn: 3 },
+          environment: { requestHeader: { tools: schemas } },
+          interaction: { delegations: { entries: [] }, turns: [{ turn: 3, directUserMessages: [{ event: { seq: 7 }, content: [{ type: 'text', text: directive }], surfaceState: 'visible' }] }] },
+          currentTurnTools: { attempts: [{
+            request: { kind: 'model-tool-call', issuedIn: { seq: 0 }, blockIndex: 0, callId: 'call-1', toolName: 'bash', rawArguments: JSON.stringify(dangerAction.arguments), callEvent: { seq: 1 } },
+            outcome: { kind: 'pending' },
+          }] },
+          pendingApproval: { callId: 'call-1', toolName: 'bash', action: dangerAction, actionHash: dangerActionHash, projectorId, confinement: { kind: 'unconfined-composition' }, earlierSandboxDenials: [] },
+        },
+      },
+    } as never)
+    // The v3 rubric labels the escalation high with explicit authorization
+    // evidence intact; permission-expansion still forces sideEffectsCovered
+    // false, so cache/replay fast paths stay closed and a fresh Guardian
+    // review decides on the dossier.
+    expect(facts).toMatchObject({
+      policyVersion: 'policy-v3',
+      assessment: {
+        risk: 'high',
+        categories: ['permission-expansion'],
+        authorization: {
+          level: 'explicit', targetCovered: true, sideEffectsCovered: false,
+          sourceRefs: ['event:7'], sandboxDenialCandidateRefs: [],
+        },
+      },
+    })
+    const defaultProjector = new DossierGateFactProjector('generation-1', reviewerConfigurationFingerprint, 'policy-v2')
+    expect(defaultProjector.project({
+      request: { ...request, actionHash: dangerActionHash },
+      pending: { ...request, actionHash: dangerActionHash, agent, authority },
+      facts: {
+        session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1, effectiveDelegationDepth: 0 },
+        approvalBinding: { event: { seq: 2, type: 'approval/asked' }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' },
+        approvalSnapshots: [{
+          version: 1,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          approvalRequestId: 'ask-1', approvalAskedSeq: 2,
+          execution: { requestEventSeq: 1, callId: 'call-1', toolName: 'bash', actionHash: dangerActionHash, classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId },
+          environment: { version: 1, kind: 'native-header-only' },
+        }],
+        executionFacts: [{
+          version: 1, catalogCommitment: commitment,
+          session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 1 },
+          request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+          toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0] },
+          projection: { projectorId, action: dangerAction, actionHash: dangerActionHash, observedAt: 1 },
+        }],
+        eventProjection: { classificationCatalog: effective.dossier },
+      },
+      verifiedDossier: {
+        dossier: {
+          freeze: { currentTurn: 3 },
+          environment: { requestHeader: { tools: schemas } },
+          interaction: { delegations: { entries: [] }, turns: [{ turn: 3, directUserMessages: [{ event: { seq: 7 }, content: [{ type: 'text', text: directive }], surfaceState: 'visible' }] }] },
+          currentTurnTools: { attempts: [{
+            request: { kind: 'model-tool-call', issuedIn: { seq: 0 }, blockIndex: 0, callId: 'call-1', toolName: 'bash', rawArguments: JSON.stringify(dangerAction.arguments), callEvent: { seq: 1 } },
+            outcome: { kind: 'pending' },
+          }] },
+          pendingApproval: { callId: 'call-1', toolName: 'bash', action: dangerAction, actionHash: dangerActionHash, projectorId, confinement: { kind: 'unconfined-composition' }, earlierSandboxDenials: [] },
+        },
+      },
+    } as never)).toMatchObject({ assessment: { risk: 'critical' } })
+  })
 })
 
 describe('SourceBackedGateFactResolver', () => {

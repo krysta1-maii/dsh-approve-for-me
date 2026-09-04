@@ -141,7 +141,7 @@ export type {
 } from './domain/protocol.js'
 
 export { assessVerifiedActionV1, permitsAutomaticFastPath, RISK_RULES_V1, validateDecisionAssessmentV1 } from './domain/risk-assessment.js'
-export type { AuthorizationAssessmentV1, DirectUserAuthorizationEvidenceV1, RiskAssessmentV1, RiskCategoryV1, RiskEvidenceV1, RiskRuleV1, DecisionAssessmentValidityV1 } from './domain/risk-assessment.js'
+export type { AssessVerifiedActionOptionsV1, AuthorizationAssessmentV1, DangerEscalationRiskV1, DirectUserAuthorizationEvidenceV1, RiskAssessmentV1, RiskCategoryV1, RiskEvidenceV1, RiskRuleV1, DecisionAssessmentValidityV1 } from './domain/risk-assessment.js'
 
 // Application services (no DSH imports).
 export {
@@ -219,9 +219,12 @@ export {
   REVIEWER_DECISION_PARAMETERS_V2,
   REVIEWER_POLICY_VERSION,
   REVIEWER_POLICY_VERSION_V2,
+  REVIEWER_POLICY_VERSION_V3,
   createPolicyRegistry,
   createReviewerPolicyV1,
   createReviewerPolicyV2,
+  createReviewerPolicyV3,
+  dangerFullAccessRiskForPolicy,
 } from './reviewer/policy.js'
 export type { PolicyRegistry, ReviewerPolicy } from './reviewer/policy.js'
 export {
