@@ -340,6 +340,13 @@ export type {
   InMemoryCaseCaptureStats,
 } from './application/case-capture.js'
 export { DefaultDossierCompiler } from './application/dossier-compiler.js'
+export { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
+export type {
+  CompileSealed,
+  SealedDossierCompileInputV1,
+  SealedDossierCompilerOptions,
+  SealedDossierCurrentFactsV1,
+} from './application/sealed-dossier-compiler.js'
 export {
   InMemoryDossierCompilationMetrics,
   InstrumentedDossierCompiler,
