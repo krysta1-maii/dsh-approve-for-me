@@ -34,3 +34,14 @@
 - 事实源/卷宗/闸门/评审生命周期全链路 env 门控 debug 标签(`DSH_APPROVE_FOR_ME_DEBUG=1`),定位真实环境问题的决定性工具。
 - 多帧 zstd session 日志解码方法(探针外独立取证)。
 - 规格文档:`docs/pending-resume-smoke-spec.md`、`docs/guardian-quality-smoke-spec.md`。
+
+## live 实测补记(policy-v3,2026-09-04)
+
+policy-v3(commit `3568c94`,artifact lock `9ce7d90`,AFM tarball sha256 `491a9069…`)装入日常 web profile 后,人工实测 danger 升档授权内场景通过(等价 S3a):
+
+- 用户自然语言"在~下建立一个.tmp 文件夹";root 在 workspace-write 下被沙箱拒绝后,以 `danger-full-access` + justification 重试发起审批;
+- Guardian(`openai-codex/gpt-5.6-terra`)按 v3 政策裁 allow——未触发硬编码阻断、未下沉人工;副作用真实落盘(`/home/andyk/.tmp` 创建成功);
+- Web 信息流状态项原位更新为"已允许",理由为升级 justification,配对/折叠抗性正常;
+- 整轮(两次 bash 尝试 + 一次真实 Guardian 评审)约 51 秒,评审为主要耗时——后续优化候选:按风险分档路由更快的 Reviewer 模型。
+
+未覆盖:S3b(无授权 danger 必须 human/deny)与 `profile:quality-smoke` 的 S3 自动化场景仍待执行;v3 下 S1/S2 自动化回归未重跑。
