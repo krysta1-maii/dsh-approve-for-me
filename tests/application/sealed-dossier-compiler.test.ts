@@ -351,3 +351,83 @@ describe('createSealedDossierCompiler fail-closed input guards', () => {
     expect(compile(input({ packet: bad }))).toEqual({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' })
   })
 })
+
+describe('createSealedDossierCompiler rework guards (WP4-b3 review)', () => {
+  it('rejects a catalog epoch carrying an unknown field instead of smuggling it (B1)', () => {
+    const compile = compiler(256_000)
+    const dirtyEpochs = [{ epoch: 0, headerEventSeq: 3, commitment: hash('c'), note: 'SMUGGLED-RESULT-BODY-XYZ' }] as unknown as readonly { epoch: number; headerEventSeq: number; commitment: string }[]
+    const got = compile(input({ packet: packet([], [], { catalogEpochs: dirtyEpochs }) }))
+    expect(got).toEqual({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' })
+    // Failed closed: nothing is branded, so the smuggled field never reaches a dossier.
+    expect('verified' in got).toBe(false)
+  })
+
+  it('projects clean catalog epochs to the closed three-field shape (B1)', () => {
+    const compile = compiler(256_000)
+    const cleanEpochs = [{ epoch: 0, headerEventSeq: 3, commitment: hash('c') }]
+    const result = compile(input({ packet: packet([], [], { catalogEpochs: cleanEpochs }) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const sealed = result.verified.dossier.interaction as unknown as { readonly sealed: { readonly catalogEpochs: readonly unknown[] } }
+    expect(sealed.sealed.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 3, commitment: hash('c') }])
+  })
+
+  it('rejects a malformed activity row as controlled incomplete rather than throwing (B2)', () => {
+    const compile = compiler(256_000)
+    // Missing occurredAt must fail closed, not allow cloneJson to escape.
+    const missingTime = { sourceSeq: 0, classification: 'class-1', targetSummary: 'ran', resultCategory: 'completed' } as unknown as ActivityV1
+    const pktMissing = packet([seal(0, 'completed')], [missingTime])
+    expect(() => compile(input({ packet: pktMissing }))).not.toThrow()
+    expect(compile(input({ packet: pktMissing }))).toEqual({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' })
+    // Wrong classification type (object instead of string) must also fail closed.
+    const wrongType = { sourceSeq: 0, occurredAt: 1_000, classification: { bad: 'x' }, targetSummary: 'ran', resultCategory: 'completed' } as unknown as ActivityV1
+    const pktType = packet([], [wrongType])
+    expect(() => compile(input({ packet: pktType }))).not.toThrow()
+    expect(compile(input({ packet: pktType }))).toEqual({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' })
+  })
+
+  it('freezes the caller input so the branded dossier does not alias a mutable object (S1)', () => {
+    const compile = compiler(256_000)
+    const denials = [{ source: { event: { seq: 0, type: 'sandbox-denied' }, requestEventSeq: 1, callId: 'call-0' } }]
+    const current = currentFacts({ earlierSandboxDenials: denials })
+    const result = compile(input({ current, packet: packet([], []) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    expect(Object.isFrozen(result.verified.dossier)).toBe(true)
+    const before = JSON.stringify(result.verified.dossier)
+    // Mutating the caller's earlier-sandbox-denials array after compile must not
+    // affect the branded dossier: the entry freeze snapshots the input instead of
+    // aliasing a mutable external reference.
+    denials.push({ source: { event: { seq: 9, type: 'sandbox-denied' }, requestEventSeq: 10, callId: 'call-9' } })
+    expect(JSON.stringify(result.verified.dossier)).toBe(before)
+  })
+
+  it('pins the inclusive budget boundary: exactly-at-budget passes, one-below overflows (S4)', () => {
+    const pkt = packet([seal(0, 'completed'), seal(1, 'completed')], [activity(0, 'class-1', 'ran', 'completed'), activity(1, 'class-1', 'ran', 'completed')])
+    const generous = compiler(256_000)(input({ packet: pkt }))
+    expect(generous.kind).toBe('ready')
+    const trueSize = generous.kind === 'ready' ? generous.metrics.bytes : -1
+    expect(trueSize).toBeGreaterThan(0)
+    // The accumulated pre-build budget sits just above the true dossier size; search
+    // for it near the true size so the boundary is pinned without a huge sweep.
+    let boundary = -1
+    for (let b = trueSize; b < trueSize + 400; b++) {
+      if (compiler(b)(input({ packet: pkt })).kind === 'ready') { boundary = b; break }
+    }
+    expect(boundary).toBeGreaterThan(trueSize)
+    // charge uses > so exactly-at-budget passes.
+    expect(compiler(boundary)(input({ packet: pkt })).kind).toBe('ready')
+    // One byte below the accumulated total crosses the limit and fails closed.
+    const below = compiler(boundary - 1)(input({ packet: pkt }))
+    expect(below.kind).toBe('incomplete')
+    if (below.kind === 'incomplete' && 'metrics' in below) expect(below.reason).toBe('budget-overflow')
+    // The true dossier size stays inside the accumulated budget by a constant
+    // conservative margin (the per-member fragment wrapping overhead). Pinning the
+    // exact 7-byte margin freezes the inclusive GT boundary (charge passes when it
+    // lands exactly at budget); switching charge to GTE would shift the first-ready
+    // budget by one and break this assertion.
+    expect(boundary - trueSize).toBe(7)
+    const near = compiler(boundary)(input({ packet: pkt }))
+    if (near.kind === 'ready') expect(near.metrics.bytes).toBeLessThan(boundary)
+  })
+})
