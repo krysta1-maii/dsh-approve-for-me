@@ -40,13 +40,11 @@ import type { LiveAgentRegistry } from './ports/parent-session-facts.js'
 import { readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
 import { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
 import { assembleRecentExcerpts } from './application/recent-excerpts.js'
-import { DefaultDossierCompiler } from './application/dossier-compiler.js'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
-import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
+import { InMemoryDossierCompilationMetrics } from './application/instrumented-dossier-compiler.js'
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
 import type { ReviewerTelemetrySink, ReviewerTelemetrySnapshotV1 } from './ports/reviewer-telemetry.js'
-import { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
@@ -321,25 +319,13 @@ export function installApproveForMe(
     // compile-time validation agree even at a non-default maxRecentExcerptBytes.
     maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
   })
+  // The approval hot path compiles exclusively through createSealedDossierCompiler.
+  // The complete-footprint DefaultDossierCompiler is a manual/debug entry provided
+  // by the exported class itself (src/index.ts), so no runtime wiring is retained
+  // here. The public getDossierCompilationMetrics()/dossierMetricsSink surface
+  // stays for API stability and reports the empty legacy baseline (WP4-b §7: the
+  // manual full-compile harness builds the class from the export directly).
   const dossierMetrics = new InMemoryDossierCompilationMetrics()
-  // Full-history compile retained ONLY as an explicit human/debug wiring for the
-  // public getDossierCompilationMetrics() baseline and the optional
-  // dossierMetricsSink. The approval hot path never invokes it (WP4-b: the
-  // resolver uses createSealedDossierCompiler); it is deliberately not wired into
-  // any decision route and exists solely so an operator can call the complete
-  // footprint compiler for diagnostic comparison.
-  const legacyDossierCompiler = new InstrumentedDossierCompiler(
-    new DefaultDossierCompiler({
-      delegationProjector: new DefaultPrincipalDelegationProjector(),
-      maxDossierBytes: normalized.maxDossierBytes,
-    }),
-    {
-      observe(observation) {
-        dossierMetrics.observe(observation)
-        try { options.dossierMetricsSink?.observe(observation) } catch { /* optional telemetry never authorizes */ }
-      },
-    },
-  )
   const factStore = new SourceBackedGateFactResolver({
     sealedFacts,
     compileSealed,
