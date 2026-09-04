@@ -34,8 +34,12 @@ import {
   DossierGateFactProjector,
   SourceBackedGateFactResolver,
 } from './application/source-backed-gate-facts.js'
-import { DshParentSessionFactSource } from './dsh/parent-session-fact-source.js'
+import type { SealedFactsReader } from './application/source-backed-gate-facts.js'
+import type { LiveAgentRegistry } from './ports/parent-session-facts.js'
+import { DshParentSessionFactSource, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
+import { createSealedDossierCompiler } from './application/sealed-dossier-compiler.js'
 import { DefaultDossierCompiler } from './application/dossier-compiler.js'
+import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { InMemoryDossierCompilationMetrics, InstrumentedDossierCompiler } from './application/instrumented-dossier-compiler.js'
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
@@ -60,6 +64,8 @@ import { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
 import { createReviewerProvider } from './reviewer/provider.js'
 import { dangerFullAccessRiskForPolicy } from './reviewer/policy.js'
 import { hashAction, REVIEWER_PROVIDER } from './domain/protocol.js'
+import { canonicalJson } from './domain/json.js'
+import type { ToolExecutionFactRecordV1 } from './domain/dossier.js'
 import type { RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
 import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
@@ -135,6 +141,48 @@ function validateLiveApprovalBinding(agent: Agent, requestId: string, callId: st
   })())
   if (asked.length !== 1) throw new GateFailure('integrity', 'approval ask does not have one matching durable audit event')
   return sessionId
+}
+
+interface SealedSessionEventView {
+  readonly seq: number
+  readonly type: string
+  readonly time: number
+  readonly data: unknown
+}
+
+/**
+ * Live catalog re-validation for the current (as-yet-unsealed) action: the
+ * capture-frozen commitment must still match the native header in force at the
+ * ask, exactly as the full-history path enforced. This keeps the current action
+ * trust chain no looser than the old path (WP4-b4-1 裁定 2).
+ */
+function liveHeaderBinding(executionFact: ToolExecutionFactRecordV1, session: { eventAt?: (seq: number) => SealedSessionEventView | undefined }): boolean {
+  const commitment = executionFact.catalogCommitment
+  if (commitment.requestHeaderEventSeq >= executionFact.request.eventSeq) return false
+  const header = session.eventAt?.(commitment.requestHeaderEventSeq)
+  if (header === undefined || header.type !== 'request/header') return false
+  const data = header.data as { header?: { tools?: unknown } } | undefined
+  if (data === undefined || data.header === undefined) return false
+  try {
+    return canonicalJson(data.header.tools) === canonicalJson(commitment.wireSchemas)
+  } catch {
+    return false
+  }
+}
+
+/** Read the exact approval/asked event at its seq and project the ask-time ref/time. */
+function askRef(seq: number, session: { eventAt?: (seq: number) => SealedSessionEventView | undefined })
+  : { readonly ref: { readonly seq: number; readonly type: string; readonly turn?: number; readonly step?: number } | undefined; readonly frozenAt: number | undefined } | undefined {
+  const event = session.eventAt?.(seq)
+  if (event === undefined || event.type !== 'approval/asked') return undefined
+  const data = event.data as { turn?: unknown; step?: unknown } | undefined
+  const turn = data === undefined || !Number.isSafeInteger(data.turn) ? undefined : data.turn as number
+  const step = data === undefined || !Number.isSafeInteger(data.step) ? undefined : data.step as number
+  if (!Number.isSafeInteger(event.time) || event.time < 0) return undefined
+  return {
+    ref: Object.freeze({ seq, type: event.type as string, ...(turn === undefined ? {} : { turn }), ...(step === undefined ? {} : { step }) }),
+    frozenAt: event.time as number,
+  }
 }
 
 /**
@@ -276,9 +324,18 @@ export function installApproveForMe(
       },
     },
   )
+  const registry: LiveAgentRegistry = {
+    get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
+  }
+  const sealedFacts: SealedFactsReader = {
+    read: ({ agent, approvalRequestId, callId, toolName, maxSealedTailEvents, signal }) =>
+      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
+  }
+  const compileSealed = createSealedDossierCompiler({ maxHotPacketBytes: normalized.maxHotPacketBytes })
   const factStore = new SourceBackedGateFactResolver({
-    factSource,
-    compiler,
+    sealedFacts,
+    compileSealed,
+    maxSealedTailEvents: normalized.maxSealedTailEvents,
     projector: new DossierGateFactProjector(
       normalized.preset.generation,
       normalized.preset.configurationFingerprint,
@@ -288,7 +345,8 @@ export function installApproveForMe(
     async snapshotInput(pending, signal) {
       if (signal?.aborted) return undefined
       const session = pending.agent.session as unknown as {
-        header?: { version?: unknown; createdAt?: unknown; cwd?: unknown }
+        header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown }
+        eventAt?: (seq: number) => SealedSessionEventView | undefined
       }
       const approvalAskedSeq = await executionProjection.awaitApprovalSnapshot(
         pending.agent,
@@ -327,14 +385,45 @@ export function installApproveForMe(
       )
       if (signal?.aborted) return undefined
       if (repaired > 0) projectedExecutions = await executionFacts.list(lifecycle, signal)
+      if (signal?.aborted || currentSnapshots.length !== 1 || currentRequestEventSeq === undefined) return undefined
+      const approvalSnapshot = currentSnapshots[0]!
+      const executionFact = projectedExecutions.find(item =>
+        item.request.eventSeq === currentRequestEventSeq && item.request.callId === pending.callId && item.request.toolName === pending.toolName)
+      if (executionFact === undefined) return undefined
+      // Live catalog re-validation for the current (as-yet-unsealed) action:
+      // the capture-frozen commitment must still match the native header in
+      // force at the ask, exactly as the full-history path enforced.
+      if (!liveHeaderBinding(executionFact, session)) return undefined
+      const asked = askRef(approvalAskedSeq, session)
+      if (asked === undefined || asked.ref === undefined || asked.frozenAt === undefined) return undefined
+      const freeze = {
+        parent: {
+          sessionId: lifecycle.sessionId,
+          sessionFormatVersion: lifecycle.sessionFormatVersion,
+          createdAt: lifecycle.createdAt,
+          ...(cwd === undefined ? {} : { cwd }),
+        },
+        throughSeq: approvalAskedSeq,
+        currentTurn: asked.ref.turn ?? 0,
+        currentStep: asked.ref.step ?? 0,
+        frozenAt: asked.frozenAt,
+      }
+      const parentSessionId = typeof session.header?.parentSession === 'string' && session.header.parentSession.length > 0
+        ? session.header.parentSession
+        : undefined
+      const effectiveDelegationDepth = delegationDepthOf(pending.agent)
+      if (!Number.isSafeInteger(effectiveDelegationDepth) || effectiveDelegationDepth < 0) return undefined
       return {
         agent: pending.agent,
         approvalRequestId: pending.requestId,
         callId: pending.callId,
         toolName: pending.toolName,
-        executionFacts: projectedExecutions,
-        approvalSnapshots: projectedApprovals,
-        ...signal === undefined ? {} : { signal },
+        executionFact,
+        approvalSnapshot,
+        approvalAsked: asked.ref,
+        freeze,
+        requester: { effectiveDelegationDepth, ...(parentSessionId === undefined ? {} : { parentSessionId }) },
+        ...(signal === undefined ? {} : { signal }),
       }
     },
   })

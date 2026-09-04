@@ -2,22 +2,33 @@ import { createHash } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GateMachineRequestV1 } from '../approval-gate/machine-policy.js'
 import type { ParentAuthority } from '../ports/managed-reviewer.js'
-import type { ParentSessionFactSource } from '../ports/parent-session-facts.js'
-import type { GuardianDossierCompiler, InteractionSectionV1, ParentSessionFactSnapshotV1, PendingApprovalSectionV1, ToolTrajectorySectionV1 } from '../domain/dossier.js'
+import type {
+  EarlierSandboxDenialV1,
+  EventRefV1,
+  PendingApprovalSectionV1,
+  SourceVerifiedDossierV1,
+  ToolExecutionFactRecordV1,
+  ApprovalSnapshotRecordV1,
+  DossierFreezeV1,
+  ConfinementProjectionV1,
+} from '../domain/dossier.js'
+import type { ActionSnapshot } from '../domain/protocol.js'
 import { validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
 import type { GateActionFactResolver, GateActionFacts } from './gate-pipeline.js'
 import { GateFailure } from './gate-failure.js'
 import { canonicalJson } from '../domain/json.js'
-import type { ToolApprovalClass } from '../approval-gate/catalog.js'
+import type { ToolApprovalClass, ToolApprovalClassificationResult } from '../approval-gate/catalog.js'
 import { hashAction } from '../domain/protocol.js'
 import { assessVerifiedActionV1 } from '../domain/risk-assessment.js'
 import type { DangerEscalationRiskV1 } from '../domain/risk-assessment.js'
 import type { TrustEnvelopeInputV1 } from '../approval-gate/trust-envelope.js'
+import type { CompileSealed, SealedDossierCurrentFactsV1 } from './sealed-dossier-compiler.js'
+import type { SealedParentSessionFactsV1, SealedFactsReadResult } from '../dsh/parent-session-fact-source.js'
 
 /**
  * A pending approval handle is correlation metadata only. It intentionally
  * contains no precomputed classification, scope, cache key, or action facts:
- * those values must be reconstructed from the frozen Session snapshot.
+ * those values must be reconstructed from the frozen sealed facts.
  */
 export interface PendingSourceBackedAsk {
   readonly agent: Agent
@@ -28,21 +39,82 @@ export interface PendingSourceBackedAsk {
   readonly authority: ParentAuthority<Agent, string>
 }
 
+/**
+ * The exact principal identity facts the sealed projector needs to authorise (or
+ * fail closed) the requester. Derived once at the DSH boundary from the live
+ * Agent/Session; it never infers depth from a bare id.
+ */
+export interface SealedPrincipalRequesterV1 {
+  readonly effectiveDelegationDepth: number
+  readonly parentSessionId?: string
+}
+
+/**
+ * Capture/sidecar-bound facts for the one current ask. `snapshotInput` returns
+ * these after asked-positioning and live catalog re-validation; the resolver
+ * assembles the sealed current facts and carrier block from them.
+ */
+export interface SealedAskFactsInputV1 {
+  readonly agent: Agent
+  readonly approvalRequestId: string
+  readonly callId: string
+  readonly toolName: string
+  /** Capture-frozen execution fact for the exact current ask. */
+  readonly executionFact: ToolExecutionFactRecordV1
+  /** Approval snapshot sidecar binding the ask to that execution fact. */
+  readonly approvalSnapshot: ApprovalSnapshotRecordV1
+  /** Ask-time approval/asked event ref (seq/type/turn/step). */
+  readonly approvalAsked: EventRefV1
+  /** Ask-time freeze boundary over the sealed tail. */
+  readonly freeze: DossierFreezeV1
+  readonly requester: SealedPrincipalRequesterV1
+  readonly signal?: AbortSignal
+}
+
+/**
+ * The bounded carrier the sealed projector needs beyond what the reduced sealed
+ * dossier carries. These are resolved server-side (WP4-b4-1 裁定 1/2); each is
+ * the same-strength binding the old full-history path derived from the catalog
+ * descriptor and the live principal identity.
+ */
+export interface SealedCurrentCarrierV1 {
+  readonly toolSchemaFingerprint: string
+  readonly requester: SealedPrincipalRequesterV1
+  /** Provenance-only direct-user frontier (numeric seq -> authorization unknown). */
+  readonly frontierSeq: number
+  /** Composite effective-catalog commitment fingerprint (never the classification-catalog one). */
+  readonly catalogCommitmentFingerprint: string
+}
+
 export interface SourceBackedFactProjector {
   project(input: {
     readonly request: GateMachineRequestV1
     readonly pending: PendingSourceBackedAsk
-    readonly facts: ParentSessionFactSnapshotV1
-    readonly verifiedDossier: NonNullable<ReturnType<GuardianDossierCompiler['compile']> & { readonly kind: 'ready' }>['verified']
+    readonly facts: SealedParentSessionFactsV1
+    readonly sealedCurrent: SealedCurrentCarrierV1
+    readonly verifiedDossier: SourceVerifiedDossierV1
   }): GateActionFacts | undefined
 }
 
+/** Bounded reader boundary for one immutable sealed-facts read. */
+export interface SealedFactsReader {
+  read(input: {
+    readonly agent: Agent
+    readonly approvalRequestId: string
+    readonly callId: string
+    readonly toolName: string
+    readonly maxSealedTailEvents: number
+    readonly signal?: AbortSignal
+  }): Promise<SealedFactsReadResult>
+}
+
 export interface SourceBackedGateFactResolverDependencies {
-  readonly factSource: ParentSessionFactSource
-  readonly compiler: GuardianDossierCompiler
+  readonly sealedFacts: SealedFactsReader
+  readonly compileSealed: CompileSealed
   readonly projector: SourceBackedFactProjector
-  /** Obtains the exact projections for this same immutable approval ask. */
-  snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal): Promise<Parameters<ParentSessionFactSource['snapshot']>[0] | undefined>
+  readonly maxSealedTailEvents: number
+  /** Obtains the exact capture/sidecar facts + live re-validation for this same immutable approval ask. */
+  snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal): Promise<SealedAskFactsInputV1 | undefined>
 }
 
 const GATE_CONFIGURATION_HASH_DOMAIN = 'dsh-approve-for-me/gate-configuration/v1\0'
@@ -96,10 +168,14 @@ export function projectDossierTrustEnvelopeV1(pending: PendingApprovalSectionV1)
   })
 }
 
+const TOOL_APPROVAL_CLASSES: readonly ToolApprovalClass[] = ['ordinary', 'gate-ask', 'body-escalation']
+
 /**
- * Rebuilds every gate key from the branded packet instead of registration-time
- * capture metadata. A packet lacking a direct user frontier cannot be cached or
- * automatically authorized.
+ * Rebuilds every gate key from the branded sealed packet. The current action has
+ * no seal (S1: asked precedes any result seal), so its classification/binding
+ * trust chain is the capture-frozen execution fact + the live catalog
+ * re-validation done by the DSH adapter in `snapshotInput`; the sealed ledger
+ * supplies bounded historical context but never re-derives the current action.
  */
 export class DossierGateFactProjector implements SourceBackedFactProjector {
   constructor(
@@ -113,128 +189,55 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
   project(input: Parameters<SourceBackedFactProjector['project']>[0]): GateActionFacts | undefined {
     const dossier = input.verifiedDossier.dossier as unknown as {
       readonly freeze: { readonly currentTurn: number }
-      readonly environment: { readonly requestHeader?: unknown }
-      readonly interaction: InteractionSectionV1
-      readonly currentTurnTools: ToolTrajectorySectionV1
-      readonly pendingApproval: PendingApprovalSectionV1
+      readonly pendingApproval: {
+        readonly callId: string
+        readonly toolName: string
+        readonly action: ActionSnapshot
+        readonly actionHash: string
+        readonly projectorId: string
+        readonly classification: string
+        readonly classificationCatalogFingerprint: string
+        readonly approvalAsked: EventRefV1
+        readonly confinement: ConfinementProjectionV1
+        readonly requestedSandboxMode?: 'workspace-write' | 'danger-full-access'
+        readonly earlierSandboxDenials?: readonly EarlierSandboxDenialV1[]
+      }
     }
     const pending = dossier.pendingApproval
+    // The sealed pendingApproval leaves request (issuedIn/blockIndex) absent by
+    // design; only the action/binding identity is needed here.
     if (input.request.actionHash !== input.pending.actionHash
       || pending.callId !== input.pending.callId
       || pending.toolName !== input.pending.toolName
       || pending.actionHash !== input.pending.actionHash
       || hashAction(pending.action) !== input.pending.actionHash) return undefined
-    const approvalSnapshot = input.facts.approvalSnapshots.find(item =>
-      item.approvalRequestId === input.pending.requestId
-      && item.approvalAskedSeq === input.facts.approvalBinding.event.seq)
-    if (approvalSnapshot === undefined) return undefined
-    const execution = input.facts.executionFacts.find(item =>
-      item.request.eventSeq === approvalSnapshot.execution.requestEventSeq
-      && item.request.callId === pending.callId
-      && item.request.toolName === pending.toolName)
-    if (execution === undefined || validateDurableToolCatalogCommitmentV1(execution.catalogCommitment).kind !== 'ok') return undefined
-    const dossierCatalog = input.facts.eventProjection.classificationCatalog
-    if (canonicalJson(dossierCatalog) !== canonicalJson(execution.catalogCommitment.classificationCatalog)) return undefined
-    const dossierDescriptor = dossierCatalog.descriptors.find(item => item.toolName === pending.toolName)
-    const approvalDescriptor = execution.catalogCommitment.approvalCatalog.descriptors.find(item => item.toolName === pending.toolName)
-    if (dossierDescriptor === undefined || approvalDescriptor === undefined
-      || approvalDescriptor.toolSchemaFingerprint !== dossierDescriptor.toolSchemaFingerprint) return undefined
-    const approvalClass: ToolApprovalClass | undefined = approvalDescriptor.classification
-    if (approvalClass === undefined) return undefined
-    const classification = Object.freeze({ kind: 'classified' as const, classification: approvalClass })
-    const descriptor = { toolSchemaFingerprint: dossierDescriptor.toolSchemaFingerprint }
-    const currentInteraction = dossier.interaction.turns.find(turn => turn.turn === dossier.freeze.currentTurn)
-    const currentMessages = currentInteraction?.directUserMessages.map(message => Object.freeze({
-      seq: message.event.seq,
-      content: message.content,
-      surfaceState: message.surfaceState,
-    })) ?? []
-    const latest = currentMessages.reduce<(typeof currentMessages)[number] | undefined>(
-      (candidate, message) => candidate === undefined || message.seq > candidate.seq ? message : candidate,
-      undefined,
-    )
-    const requestSeq = (attempt: ToolTrajectorySectionV1['attempts'][number]): number | undefined =>
-      attempt.request.kind === 'code-dispatch' ? attempt.request.dispatchStart.seq : attempt.request.callEvent?.seq
-    // A next-action grant is consumed by any intervening attempted tool call,
-    // including delegation/orchestration calls kept in their separate ledger.
-    // Outcome and child creation are irrelevant: the attempt itself consumes it.
-    const priorAttempts = [
-      ...dossier.currentTurnTools.attempts,
-      ...dossier.interaction.delegations.entries.map(entry => entry.attempt),
-    ]
-    if (latest === undefined) return undefined
-    const directUserFrontierSeq = latest.seq
-    const interveningAttempts = priorAttempts.filter(attempt => {
-      const seq = requestSeq(attempt)
-      const isPendingAction = attempt.request.callId === pending.callId
-        && seq === execution.request.eventSeq
-      return !isPendingAction && seq !== undefined && seq > directUserFrontierSeq
-    })
-    const isSameActionSandboxDenialRetry = (attempt: ToolTrajectorySectionV1['attempts'][number]): boolean => {
-      const seq = requestSeq(attempt)
-      if (seq === undefined || attempt.outcome.kind !== 'sandbox-denied') return false
-      const denialMatches = pending.earlierSandboxDenials.filter(denial =>
-        denial.source.requestEventSeq === seq && denial.source.callId === attempt.request.callId)
-      if (denialMatches.length !== 1) return false
-      const denial = denialMatches[0]!
-      const executionMatches = input.facts.executionFacts.filter(item =>
-        item.request.eventSeq === seq
-        && item.request.callId === attempt.request.callId
-        && item.request.toolName === attempt.request.toolName)
-      if (executionMatches.length !== 1) return false
-      const earlier = executionMatches[0]!
-      const outcome = earlier.result?.outcome
-      if (earlier.result?.eventSeq !== denial.source.event.seq
-        || earlier.result.eventType !== denial.source.event.type
-        || outcome?.kind !== 'sandbox-denied'
-        || outcome.mode !== attempt.outcome.mode) return false
-      const earlierAction = earlier.projection.action
-      if (earlierAction.toolName !== pending.action.toolName
-        || earlier.projection.projectorId !== pending.projectorId
-        || canonicalJson(earlierAction.semantics) !== canonicalJson(pending.action.semantics)) return false
-      const earlierSandbox = earlierAction.requestedPermissions.filter(permission => permission.kind === 'sandbox')
-      const pendingSandbox = pending.action.requestedPermissions.filter(permission => permission.kind === 'sandbox')
-      const earlierOther = earlierAction.requestedPermissions.filter(permission => permission.kind !== 'sandbox')
-      const pendingOther = pending.action.requestedPermissions.filter(permission => permission.kind !== 'sandbox')
-      if (earlierSandbox.length !== 0 || pendingSandbox.length !== 1
-        || canonicalJson(earlierOther) !== canonicalJson(pendingOther)) return false
-      const rank: Readonly<Record<string, number>> = { 'read-only': 0, 'workspace-write': 1, 'danger-full-access': 2 }
-      const from = rank[attempt.outcome.mode]
-      const to = rank[pendingSandbox[0]!.scope]
-      return from !== undefined && to !== undefined && to > from
-    }
-    const onlyCurrentSandboxDenialsIntervened = interveningAttempts.length > 0
-      && interveningAttempts.every(isSameActionSandboxDenialRetry)
-    // A sandbox-denied first attempt is the source-verified candidate the
-    // Guardian must correlate to this escalation; it does not consume an exact
-    // next-action directive by itself. Other intervening attempts do consume
-    // that directive, but consumption is not invalid facts: retain numeric
-    // provenance only so the request can reach Guardian/human review while no
-    // automatic authorization or fast path survives.
-    const frontiers: Parameters<typeof assessVerifiedActionV1>[1] = Object.freeze(
-      interveningAttempts.length === 0 || onlyCurrentSandboxDenialsIntervened
-        ? [latest]
-        : [directUserFrontierSeq],
-    )
-    const assessment = assessVerifiedActionV1(pending.action, frontiers, pending.earlierSandboxDenials, {
+
+    const classification = classifySealed(pending.classification)
+    if (classification === undefined) return undefined
+
+    // Provenance-only frontier: a numeric seq yields authorization.level
+    // 'unknown' (no fast path, always Review). WP4-b4-1 裁定 1 accepts this.
+    const frontiers: Parameters<typeof assessVerifiedActionV1>[1] = [input.sealedCurrent.frontierSeq]
+    const assessment = assessVerifiedActionV1(pending.action, frontiers, pending.earlierSandboxDenials ?? [], {
       dangerFullAccessRisk: this.dangerFullAccessRisk,
     })
-    const parentLifecycleFingerprint = canonicalJson(input.facts.session)
-    const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq, actionHash: input.pending.actionHash })
+    const parentLifecycleFingerprint = input.facts.lifecycleFingerprint
+    const key = Object.freeze({ parentLifecycleFingerprint, turn: dossier.freeze.currentTurn, directUserFrontierSeq: input.sealedCurrent.frontierSeq, actionHash: input.pending.actionHash })
     const configurationFingerprint = fingerprintGateConfigurationV1(
       this.reviewerConfigurationFingerprint,
-      execution.catalogCommitment.fingerprint,
+      input.sealedCurrent.catalogCommitmentFingerprint,
     )
     if (configurationFingerprint === undefined) return undefined
-    const trustEnvelope = projectDossierTrustEnvelopeV1(pending)
+    const trustEnvelope = projectDossierTrustEnvelopeV1(pending as unknown as PendingApprovalSectionV1)
     return Object.freeze({
       action: pending.action,
-      toolSchemaFingerprint: descriptor.toolSchemaFingerprint,
+      toolSchemaFingerprint: input.sealedCurrent.toolSchemaFingerprint,
       classification,
       ...trustEnvelope === undefined ? {} : { trustEnvelope },
       breakerKey: key,
       allowCacheKey: Object.freeze({ ...key, generation: this.generation, configurationFingerprint }),
-      rootRequester: input.facts.session.effectiveDelegationDepth === 0 && input.facts.session.parentSessionId === undefined,
+      rootRequester: input.sealedCurrent.requester.effectiveDelegationDepth === 0
+        && input.sealedCurrent.requester.parentSessionId === undefined,
       directChildOrigin: false,
       generation: this.generation,
       configurationFingerprint,
@@ -245,11 +248,16 @@ export class DossierGateFactProjector implements SourceBackedFactProjector {
   }
 }
 
+function classifySealed(value: unknown): ToolApprovalClassificationResult | undefined {
+  if (typeof value !== 'string' || !(TOOL_APPROVAL_CLASSES as readonly string[]).includes(value)) return undefined
+  return Object.freeze({ kind: 'classified' as const, classification: value as ToolApprovalClass })
+}
+
 /**
  * Production gate resolver boundary. Registration only makes a one-ask lookup
  * possible; authorization facts are accepted solely after their source packet
- * compiles to a branded dossier. This class deliberately has no fallback to
- * capture memory or config-only facts.
+ * compiles to a branded sealed dossier. This class deliberately has no fallback
+ * to capture memory, config-only facts, or the full-history compile path.
  */
 export class SourceBackedGateFactResolver implements GateActionFactResolver {
   private readonly pending = new Map<string, PendingSourceBackedAsk>()
@@ -289,23 +297,103 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
 
     const input = await this.deps.snapshotInput(pending, request.signal)
     if (input === undefined || request.signal?.aborted) return debug('missing-snapshot-input')
-    // Do not permit a producer to substitute a related Agent/request here.
     if (input.agent !== pending.agent || input.approvalRequestId !== pending.requestId
       || input.callId !== pending.callId || input.toolName !== pending.toolName) return debug('snapshot-input-mismatch')
-    const facts = this.deps.factSource.snapshot(input)
-    if (facts === undefined || request.signal?.aborted) return debug('missing-facts')
-    const compiled = this.deps.compiler.compile(request.signal === undefined
-      ? { facts }
-      : { facts, signal: request.signal })
-    if (compiled.kind === 'incomplete' && compiled.reason === 'budget-overflow') {
-      // A bounded capability gap is the one typed case that may reach the
-      // official human waterfall in auto-then-user mode; every other
-      // incomplete dossier shape is an integrity condition and stays closed.
-      throw new GateFailure('retryable-capability', 'approval dossier exceeds the configured size budget')
+
+    const read = await this.deps.sealedFacts.read({
+      agent: pending.agent,
+      approvalRequestId: pending.requestId,
+      callId: pending.callId,
+      toolName: pending.toolName,
+      maxSealedTailEvents: this.deps.maxSealedTailEvents,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    })
+    if (request.signal?.aborted) return debug('aborted')
+    // WP4-b4 §4.4 minimal routing: integrity/pollution stays unavailable (never
+    // delegates); a bounded capacity gap or an explainable unsealed current
+    // action delegates in auto-then-user mode with an explicit machine code.
+    switch (read.kind) {
+      case 'unavailable':
+        return debug('sealed-unavailable', read.reason)
+      case 'tail-budget-overflow':
+        throw new GateFailure('tail-budget-overflow', `approval sealed tail exceeds maxSealedTailEvents (${read.sealedCount}/${read.maxSealedTailEvents})`)
+      case 'empty-ledger':
+        throw new GateFailure('sealed-current-missing', 'no sealed facts exist for this lifecycle; the current action is unsealed pending')
+      case 'ok':
+        break
     }
-    if (compiled.kind !== 'ready' || request.signal?.aborted) return debug('dossier-not-ready', compiled)
-    return this.deps.projector.project({ request, pending, facts, verifiedDossier: compiled.verified })
+
+    const current = this.currentFacts(input)
+    if (current === undefined) return debug('invalid-current-facts')
+    const carrier = this.carrier(input)
+    if (carrier === undefined) return debug('invalid-carrier')
+
+    const compiled = this.deps.compileSealed({
+      packet: read.facts,
+      current,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    })
+    if (compiled.kind === 'incomplete') {
+      // A bounded byte-capacity gap is the one typed case that may reach the
+      // official human waterfall; every other incomplete dossier shape is an
+      // integrity condition and stays closed.
+      if (compiled.reason === 'budget-overflow') {
+        throw new GateFailure('retryable-capability', 'approval hot packet exceeds the configured size budget')
+      }
+      return debug('dossier-not-ready', compiled)
+    }
+    if (request.signal?.aborted) return debug('aborted')
+    return this.deps.projector.project({ request, pending, facts: read.facts, sealedCurrent: carrier, verifiedDossier: compiled.verified })
       ?? debug('projection-failed')
+  }
+
+  /** Assemble the sealed current facts from the capture-frozen execution fact + approval sidecar. */
+  private currentFacts(input: SealedAskFactsInputV1): SealedDossierCurrentFactsV1 | undefined {
+    const executionFact = input.executionFact
+    const approvalSnapshot = input.approvalSnapshot
+    if (approvalSnapshot.execution.requestEventSeq !== executionFact.request.eventSeq
+      || approvalSnapshot.execution.callId !== executionFact.request.callId
+      || approvalSnapshot.execution.toolName !== executionFact.request.toolName
+      || approvalSnapshot.execution.actionHash !== executionFact.projection.actionHash
+      || approvalSnapshot.execution.projectorId !== executionFact.projection.projectorId
+      || approvalSnapshot.approvalAskedSeq !== input.approvalAsked.seq) return undefined
+    if (validateDurableToolCatalogCommitmentV1(executionFact.catalogCommitment).kind !== 'ok') return undefined
+    const descriptor = executionFact.catalogCommitment.approvalCatalog.descriptors.find(item => item.toolName === input.toolName)
+    if (descriptor === undefined) return undefined
+    const classification = descriptor.classification
+    const sandbox = executionFact.projection.action.requestedPermissions.find(permission => permission.kind === 'sandbox')
+    const requestedSandboxMode = sandbox?.scope === 'workspace-write' || sandbox?.scope === 'danger-full-access'
+      ? sandbox.scope
+      : undefined
+    return Object.freeze({
+      action: executionFact.projection.action,
+      classification,
+      classificationCatalogFingerprint: executionFact.toolClassification.classificationCatalogFingerprint,
+      approvalRequestId: input.approvalRequestId,
+      callId: input.callId,
+      toolName: input.toolName,
+      requestEventSeq: approvalSnapshot.execution.requestEventSeq,
+      approvalAsked: input.approvalAsked,
+      freeze: input.freeze,
+      ...requestedSandboxMode === undefined ? {} : { requestedSandboxMode },
+      // earlierSandboxDenials: Phase-1 default empty (WP4-b4-1 裁定 3). Each
+      // approval is judged independently; a fresh Guardian still correlates.
+    })
+  }
+
+  /** Resolve the same-strength carrier bindings for the sealed projector. */
+  private carrier(input: SealedAskFactsInputV1): SealedCurrentCarrierV1 | undefined {
+    const toolSchemaFingerprint = input.executionFact.toolClassification.descriptor.toolSchemaFingerprint
+    if (typeof toolSchemaFingerprint !== 'string' || toolSchemaFingerprint.length === 0) return undefined
+    const catalogCommitmentFingerprint = input.executionFact.catalogCommitment.fingerprint
+    if (typeof catalogCommitmentFingerprint !== 'string' || catalogCommitmentFingerprint.length === 0) return undefined
+    if (!Number.isSafeInteger(input.freeze.throughSeq) || input.freeze.throughSeq < 0) return undefined
+    return Object.freeze({
+      toolSchemaFingerprint,
+      requester: input.requester,
+      frontierSeq: input.freeze.throughSeq,
+      catalogCommitmentFingerprint,
+    })
   }
 
   private key(parentSessionId: string, requestId: string, callId: string, actionHash: string): string {
