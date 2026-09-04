@@ -388,6 +388,68 @@ function okFacts(result: SealedFactsReadResult): SealedParentSessionFactsV1 {
   return result.facts
 }
 
+// Builds a disk-valid single/multi-epoch seal chain with a controlled live event
+// array, so a rogue request/header can be dropped into a scan window that no
+// seal references (the reviewer's differential probe for the intervening-header
+// guard). Epoch/commitment are derived from headerEventSeq so the chain stays
+// genesis->tip valid while the live events may diverge from the chain topology.
+function buildSpoofChain(seals: Array<{ sourceSeq: number; askedSeq: number; resultSeq: number; headerEventSeq: number; callId: string; requestId: string }>, rogueHeaders: readonly number[] = []) {
+  const events: any[] = []
+  const commitmentByHeader = new Map<number, ReturnType<typeof createDshAlpha2CatalogCommitment>>()
+  const commitmentFor = (headerEventSeq: number) => {
+    let commitment = commitmentByHeader.get(headerEventSeq)
+    if (commitment === undefined) {
+      commitment = createDshAlpha2CatalogCommitment(effective, 'native', headerEventSeq, schemas)
+      commitmentByHeader.set(headerEventSeq, commitment)
+    }
+    return commitment
+  }
+  events[0] = { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } }
+  const rows: SealedRow[] = []
+  let previousSealHash = genesisSealHash(canonicalJson(lifecycle))
+  let previousEpoch: number | undefined = undefined
+  let previousCommitment: string | undefined = undefined
+  let epoch = 0
+  for (const seal of seals) {
+    const commitment = commitmentFor(seal.headerEventSeq)
+    const changed = previousCommitment !== undefined && commitment.fingerprint !== previousCommitment
+    if (changed) epoch += 1
+    const sealRow = createSealV1({
+      lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: seal.sourceSeq,
+      request: { eventSeq: seal.sourceSeq, eventType: 'tool/call', callId: seal.callId, toolName: 'bash' },
+      approvalAsked: { eventSeq: seal.askedSeq, requestId: seal.requestId },
+      actionHash: sealedHash('a'), projectorId: 'default-v1',
+      catalog: { epoch, headerEventSeq: seal.headerEventSeq, commitment: commitment.fingerprint },
+      wireSchemaFingerprint: sealedHash('d'),
+      result: { eventSeq: seal.resultSeq, status: 'completed' },
+      epochBoundary: { previousEpoch: previousEpoch === undefined ? null : previousEpoch, changed: previousEpoch === undefined ? false : changed },
+      previousSealHash,
+    })
+    const activity = createActivityV1({ lifecycleFingerprint: canonicalJson(lifecycle), sourceSeq: seal.sourceSeq, occurredAt: 100 + seal.resultSeq, classification: 'approval-class:body-escalation', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: sealRow.sealHash })
+    rows.push({ seal: sealRow, activity })
+    events[seal.sourceSeq] = { seq: seal.sourceSeq, time: 100 + seal.sourceSeq, type: 'tool/call', data: { callId: seal.callId, name: 'bash' } }
+    events[seal.askedSeq] = { seq: seal.askedSeq, time: 100 + seal.askedSeq, type: 'approval/asked', data: { id: seal.requestId, callId: seal.callId, toolName: 'bash' } }
+    events[seal.resultSeq] = { seq: seal.resultSeq, time: 100 + seal.resultSeq, type: 'tool/result', sourceEventSeqs: [seal.sourceSeq], data: { message: { source: { kind: 'tool', callId: seal.callId }, content: [{ type: 'tool-result', toolCallId: seal.callId }] } } }
+    previousSealHash = sealRow.sealHash
+    previousEpoch = epoch
+    previousCommitment = commitment.fingerprint
+  }
+  for (const headerSeq of commitmentByHeader.keys()) {
+    if (headerSeq !== 0 && events[headerSeq] === undefined) events[headerSeq] = { seq: headerSeq, time: 100 + headerSeq, type: 'request/header', data: { header: { tools: schemas } } }
+  }
+  for (const seq of rogueHeaders) events[seq] = { seq, time: 100 + seq, type: 'request/header', data: { header: { tools: schemas } } }
+  const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, get seq() { return events.length - 1 }, eventAt: (seq: number) => events[seq] } }
+  const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
+    const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
+    if (row === undefined) return undefined
+    const seal = row.seal
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitmentFor(seal.catalog.headerEventSeq) } as ToolExecutionFactRecordV1
+  } }
+  const last = rows[rows.length - 1]!.seal
+  const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: last.approvalAsked.requestId, callId: last.request.callId, toolName: last.request.toolName }
+  return { events, rows, base }
+}
+
 describe('readSealedParentSessionFacts', () => {
   it('returns a complete, live-rebound multi-seal fact chain', async () => {
     const fixture = sealedReaderFixture()
@@ -636,7 +698,7 @@ describe('readSealedParentSessionFacts', () => {
     expect(result).toMatchObject({ kind: 'unavailable' })
   })
 
-  it('does not live-rebind rows beyond the tail budget (disk chain only)', async () => {
+  it('pins the budget check before live re-binding (beyond-window rows stay disk-only)', async () => {
     const fixture = buildSealedChain(513)
     // Poison the live events behind an early (beyond-window) row: the reader
     // must fail on the budget before any live re-binding, so this is overflow,
@@ -672,6 +734,25 @@ describe('readSealedParentSessionFacts', () => {
     const fixture = sealedReaderFixture()
     const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 0, ledger: ledger(fixture.rows) })
     expect(result).toMatchObject({ kind: 'unavailable', reason: 'max-sealed-tail-events-invalid' })
+  })
+
+  it('fails closed on a same-epoch rogue request/header inside the bound header window', async () => {
+    const fixture = buildSpoofChain([
+      { sourceSeq: 1, askedSeq: 2, resultSeq: 3, headerEventSeq: 0, callId: 'call-a', requestId: 'ask-a' },
+      { sourceSeq: 5, askedSeq: 6, resultSeq: 7, headerEventSeq: 0, callId: 'call-b', requestId: 'ask-b' },
+    ], [4])
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', reason: 'intervening-header' })
+  })
+
+  it('fails closed on a rogue request/header inside the post-reset window after an epoch boundary', async () => {
+    const fixture = buildSpoofChain([
+      { sourceSeq: 1, askedSeq: 2, resultSeq: 3, headerEventSeq: 0, callId: 'call-a', requestId: 'ask-a' },
+      { sourceSeq: 5, askedSeq: 6, resultSeq: 7, headerEventSeq: 4, callId: 'call-b', requestId: 'ask-b' },
+      { sourceSeq: 9, askedSeq: 10, resultSeq: 11, headerEventSeq: 4, callId: 'call-c', requestId: 'ask-c' },
+    ], [8])
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', reason: 'intervening-header' })
   })
 
   it('resolves via exact live eventAt reads, never the full session snapshot', async () => {
