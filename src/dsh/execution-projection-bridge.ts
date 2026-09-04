@@ -28,6 +28,8 @@ interface SessionLike {
   readonly id: unknown
   readonly header: { readonly id: unknown; readonly version: unknown; readonly createdAt: unknown; readonly cwd?: unknown }
   readonly snapshotEvents?: () => readonly EventLike[]
+  readonly seq?: number
+  readonly eventAt?: (seq: number) => EventLike | undefined
 }
 
 function string(value: unknown): string | undefined {
@@ -154,6 +156,8 @@ export class DshExecutionFactProjectionBridge {
   private readonly cancelledResults = new Set<string>()
   /** Exact live source identity; call IDs may be reused in later alpha.1 steps. */
   private readonly requestEventByToken = new Map<ToolExecution['token'], number>()
+  /** Volatile approval/asked index: lifecycle prefix + requestId → exact asked event. */
+  private readonly approvalAskedIndex = new Map<string, { readonly seq: number; readonly callId: string; readonly toolName: string }>()
 
   constructor(
     private readonly projector: ActionProjector<ToolExecution>,
@@ -163,6 +167,8 @@ export class DshExecutionFactProjectionBridge {
     /** Reuse the exact volatile projection when capture and fact bridging share one. */
     private readonly captures?: ActionCapture<Agent, string>,
     private readonly ledger?: SealedFactsLedger,
+    /** Bounded leading-tail window for approval hot-path fact resolution. */
+    private readonly maxSealedTailEvents = 512,
   ) {}
 
   async preExecute(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {
@@ -383,6 +389,8 @@ export class DshExecutionFactProjectionBridge {
     const toolName = string(data.toolName)
     const lifecycle = this.lifecycle(agent)
     if (requestId === undefined || callId === undefined || toolName === undefined || lifecycle === undefined) return Promise.resolve()
+    // Populate the volatile asked-index so a later resolve hits in O(1).
+    this.approvalAskedIndex.set(`${canonicalJson(lifecycle)}\0${requestId}`, { seq: event.seq, callId, toolName })
     const key = `${canonicalJson(lifecycle)}\0${event.seq}`
     const existing = this.approvalWrites.get(key)
     if (existing !== undefined) return existing
@@ -415,11 +423,9 @@ export class DshExecutionFactProjectionBridge {
     const resultKey = this.resultKey(lifecycle, callId, requestEventSeq)
     const volatileTerminal = this.terminalOutcomes.get(resultKey)
     const session = agent.session as unknown as SessionLike
-    if (typeof session.snapshotEvents !== 'function') return false
-    const events = session.snapshotEvents()
-    if (!Array.isArray(events)) return false
+    if (typeof session.eventAt !== 'function') return false
     const candidate = await this.repository.get({ session: lifecycle, callId, requestEventSeq })
-    const call = events.find(candidate => candidate.seq === requestEventSeq)
+    const call = session.eventAt(requestEventSeq)
     const callData = call?.data as Record<string, unknown> | undefined
     if (candidate?.request.kind !== 'model-tool-call' || candidate.request.callId !== callId
       || candidate.request.eventSeq !== requestEventSeq || candidate.request.eventSeq >= event.seq
@@ -660,16 +666,6 @@ export class DshExecutionFactProjectionBridge {
     signal?: AbortSignal,
   ): Promise<number | undefined> {
     if (signal?.aborted) return
-    const session = agent.session as unknown as SessionLike
-    if (typeof session.snapshotEvents !== 'function') return
-    const events = session.snapshotEvents()
-    if (!Array.isArray(events)) return
-    const matches = events.filter(candidate => candidate.type === 'approval/asked'
-      && (candidate.data as Record<string, unknown>)?.id === requestId
-      && (candidate.data as Record<string, unknown>)?.callId === callId
-      && (candidate.data as Record<string, unknown>)?.toolName === toolName)
-    const event = matches.length === 1 ? matches[0] : undefined
-    if (event === undefined || signal?.aborted) return
     const lifecycle = this.lifecycle(agent)
     if (lifecycle === undefined) return
     const prefix = `${canonicalJson(lifecycle)}\0`
@@ -677,8 +673,53 @@ export class DshExecutionFactProjectionBridge {
       .filter(([key]) => key.startsWith(prefix))
       .map(([, write]) => write)
     if (!await this.settleUnlessAborted(Promise.all(pendingResults), signal) || signal?.aborted) return
+    const session = agent.session as unknown as SessionLike
+    const askedSeq = this.resolveApprovalAskedSeq(session, lifecycle, requestId, callId, toolName)
+    if (askedSeq === undefined || signal?.aborted) return
+    const event = session.eventAt?.(askedSeq)
+    if (event === undefined || event.type !== 'approval/asked') return
     if (!await this.settleUnlessAborted(this.observeSessionEvent(agent, event), signal) || signal?.aborted) return
-    return event.seq
+    return askedSeq
+  }
+
+  /**
+   * Locates the unique approval/asked event for this request using only exact
+   * eventAt reads: a volatile index hit is O(1), and a cold-start miss performs a
+   * bounded tail-anchored back-scan (window = maxSealedTailEvents). It never
+   * materializes the full session log, and returns undefined (fail closed) on
+   * zero or ambiguous matches.
+   */
+  private resolveApprovalAskedSeq(
+    session: SessionLike,
+    lifecycle: { sessionId: string; sessionFormatVersion: number; createdAt: number; cwd?: string },
+    requestId: string,
+    callId: string,
+    toolName: string,
+  ): number | undefined {
+    const indexKey = `${canonicalJson(lifecycle)}\0${requestId}`
+    const indexed = this.approvalAskedIndex.get(indexKey)
+    if (indexed !== undefined) {
+      // A request id reused across a different call/tool is ambiguous: fail closed.
+      if (indexed.callId === callId && indexed.toolName === toolName) return indexed.seq
+      return undefined
+    }
+    if (typeof session.eventAt !== 'function' || typeof session.seq !== 'number') return undefined
+    const tail = session.seq
+    if (!Number.isSafeInteger(tail) || tail < 0) return undefined
+    const lower = Math.max(0, tail - this.maxSealedTailEvents)
+    let match: number | undefined
+    for (let seq = tail - 1; seq >= lower; seq -= 1) {
+      const event = session.eventAt(seq)
+      if (event === undefined) continue
+      if (event.type !== 'approval/asked') continue
+      const data = event.data as Record<string, unknown>
+      if (data.id !== requestId || data.callId !== callId || data.toolName !== toolName) continue
+      // Duplicate asked events for one request are ambiguous: fail closed.
+      if (match !== undefined) return undefined
+      match = seq
+    }
+    if (match !== undefined) this.approvalAskedIndex.set(indexKey, { seq: match, callId, toolName })
+    return match
   }
 
   /**
@@ -695,9 +736,7 @@ export class DshExecutionFactProjectionBridge {
   ): Promise<number> {
     if (signal?.aborted || !Number.isSafeInteger(throughSeq) || throughSeq < 0) return 0
     const session = agent.session as unknown as SessionLike
-    if (typeof session.snapshotEvents !== 'function') return 0
-    const events = session.snapshotEvents()
-    if (!Array.isArray(events)) return 0
+    if (typeof session.eventAt !== 'function') return 0
     const missingBySeq = new Map<number, ToolExecutionFactRecordV1>()
     for (const record of records) {
       if (record.result === undefined && record.request.eventSeq < throughSeq
@@ -710,14 +749,21 @@ export class DshExecutionFactProjectionBridge {
     let repaired = 0
     const codeStartsBySeq = new Map<number, EventLike>()
     const pendingCodeStarts = new Map<string, EventLike[]>()
-    for (let index = 0; index < events.length; index += 1) {
+    const window = this.maxSealedTailEvents
+    const lower = Math.max(0, throughSeq - window)
+    let processed = 0
+    for (let seq = lower; seq < throughSeq; seq += 1) {
       if (signal?.aborted || missingBySeq.size === 0) break
-      if (index > 0 && index % 256 === 0) {
-        await new Promise<void>(resolve => setImmediate(resolve))
-        if (signal?.aborted) break
-      }
-      const event = events[index]!
+      const event = session.eventAt(seq)
+      if (event === undefined) break
       if (event.seq >= throughSeq) break
+      processed += 1
+      // Yield to the macrotask queue so an already-signaled Stop can abort the
+      // bounded cold repair before any historical write lands.
+      if (processed % 256 === 0) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (signal?.aborted || missingBySeq.size === 0) break
+      }
       if (event.type === 'tool/result') {
         const sourceSeq = event.sourceEventSeqs?.length === 1 ? event.sourceEventSeqs[0] : undefined
         const missing = sourceSeq === undefined ? undefined : missingBySeq.get(sourceSeq)
@@ -804,14 +850,17 @@ export class DshExecutionFactProjectionBridge {
   ): Promise<boolean> {
     if (this.approvals === undefined) return false
     const session = agent.session as unknown as SessionLike
-    if (typeof session.snapshotEvents !== 'function') return false
-    const events = session.snapshotEvents()
-    if (!Array.isArray(events)) return false
+    if (typeof session.eventAt !== 'function') return false
     // Approval is requested synchronously from inside the current execution, so
-    // its source is the latest exact canonical request before approval/asked.
+    // its source is the latest exact canonical request before approval/asked. A
+    // bounded tail-anchored back-scan (window = maxSealedTailEvents) never
+    // materializes the full session log.
     let source: EventLike | undefined
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]!
+    const window = this.maxSealedTailEvents
+    const lower = Math.max(0, approvalAskedSeq - window)
+    for (let seq = approvalAskedSeq - 1; seq >= lower; seq -= 1) {
+      const event = session.eventAt(seq)
+      if (event === undefined) continue
       if (event.seq >= approvalAskedSeq || event.data === null || typeof event.data !== 'object' || Array.isArray(event.data)) continue
       const data = event.data as Record<string, unknown>
       if ((event.type === 'tool/call' && data.callId === callId && data.name === toolName)
