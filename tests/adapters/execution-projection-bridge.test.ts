@@ -51,6 +51,8 @@ function agent(events: readonly unknown[], cwd?: string): Agent {
       id: 'session-1',
       header: { id: 'session-1', version: 1, createdAt: 10, ...(cwd === undefined ? {} : { cwd }) },
       snapshotEvents: () => events,
+      get seq () { return events.length },
+      eventAt: (seq: number) => events[seq],
     },
   } as unknown as Agent
 }
@@ -645,5 +647,110 @@ describe('DshExecutionFactProjectionBridge', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const owner = agent(events), bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, new InMemoryApprovalSnapshotRepository(), undefined, ledger), exec = execution(owner)
     await bridge.project(exec); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await bridge.observeSessionEvent(owner, events[1]!); expect(append).not.toHaveBeenCalled(); expect(error).not.toHaveBeenCalled(); error.mockRestore()
+  })
+
+  it('resolves awaitApprovalSnapshot, repairHistoricalResults and attachResult with zero full snapshotEvents calls', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events: Array<{ seq: number; time: number; type: string; data: Record<string, unknown>; sourceEventSeqs?: readonly number[] }> = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
+    ]
+    const session = {
+      id: 'session-1',
+      header: { id: 'session-1', version: 1, createdAt: 10 },
+      snapshotEvents: () => events,
+      get seq () { return events.length },
+      eventAt: (seq: number) => events[seq],
+    }
+    const owner = { id: 'session-1', session } as unknown as Agent
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    // The capture path is a legacy full scan; it is not part of the approval hot path.
+    await bridge.project(execution(owner))
+    const spy = vi.fn(() => events)
+    session.snapshotEvents = spy
+
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBe(1)
+    expect(spy).not.toHaveBeenCalled()
+
+    const records = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    expect(await bridge.repairHistoricalResults(owner, records, 3)).toBe(1)
+    expect(spy).not.toHaveBeenCalled()
+
+    await bridge.observeSessionEvent(owner, events[2]!)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the volatile asked index contradicts the requested tool identity', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    await bridge.project(execution(owner))
+    await bridge.observeSessionEvent(owner, events[1]!)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-other', 'bash')).toBeUndefined()
+  })
+
+  it('fails closed on duplicate approval/asked events for one request id', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      { seq: 2, time: 22, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
+
+  it('fails closed when the approval ask is older than the sealed tail window', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events: Array<{ seq: number; time: number; type: string; data: Record<string, unknown> }> = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      ...Array.from({ length: 5 }, (_value, index) => ({ seq: index + 1, time: index + 21, type: 'tool/result', data: {} })),
+      { seq: 6, time: 26, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+      ...Array.from({ length: 5 }, (_value, index) => ({ seq: index + 7, time: index + 27, type: 'tool/result', data: {} })),
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, undefined, 2)
+    expect(await bridge.awaitApprovalSnapshot(owner, 'a1', 'call-1', 'bash')).toBeUndefined()
+  })
+
+  it('does not cold-repair a row whose result is older than the sealed tail window', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const events = [
+      { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
+      { seq: 1, time: 21, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
+      { seq: 2, time: 22, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-2', name: 'bash' } },
+    ]
+    const owner = agent(events)
+    const live = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
+    await live.project(execution(owner))
+    const snapshot = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
+    const recovered = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, undefined, undefined, undefined, 1)
+    expect(await recovered.repairHistoricalResults(owner, snapshot, 3)).toBe(0)
+    await expect(repository.get({ session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, callId: 'call-1', requestEventSeq: 0 })).resolves.not.toHaveProperty('result')
+  })
+
+  it('does not write an approval snapshot when its source request is older than the sealed tail window', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const approvals = new InMemoryApprovalSnapshotRepository()
+    const events: Array<{ seq: number; time: number; type: string; data: Record<string, unknown> }> = [
+      { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+      ...Array.from({ length: 10 }, (_value, index) => ({ seq: index + 1, time: index + 21, type: 'tool/result', data: {} })),
+      { seq: 11, time: 31, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } },
+    ]
+    const owner = agent(events)
+    const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository, approvals, undefined, undefined, 2)
+    await bridge.project(execution(owner))
+    await bridge.observeSessionEvent(owner, events[11]!)
+    await expect(approvals.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
   })
 })
