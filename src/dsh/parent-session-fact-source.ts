@@ -363,7 +363,8 @@ export async function readSealedParentSessionFacts(input: {
     const header = events[seal.catalog.headerEventSeq]
     if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
       || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
-      || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash) return undefined
+      || activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq || activity.sourceSealHash !== seal.sealHash
+      || activity.occurredAt !== result.time || activity.resultCategory !== seal.result.status) return undefined
     const requestData = request.data as Record<string, unknown>
     const askedData = asked.data as Record<string, unknown>
     const resultData = result.data as Record<string, unknown>

@@ -325,6 +325,8 @@ function sealedReaderFixture() {
   return { events, rows: [first, second, third] as SealedRow[], base }
 }
 function ledger(rows: readonly SealedRow[] | undefined) { return { async append() { return 'unavailable' as const }, async read() { return rows } } }
+function reseal(seal: SealV1, changes: object): SealV1 { const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = seal; return createSealV1({ ...input, ...changes }) }
+function reactivate(seal: SealV1, activity: ActivityV1, changes: object = {}): ActivityV1 { const { version: _version, canonical: _canonical, ...input } = activity; return createActivityV1({ ...input, ...changes, sourceSealHash: seal.sealHash }) }
 
 describe('readSealedParentSessionFacts', () => {
   it('returns a complete, live-rebound multi-seal fact chain', async () => {
@@ -350,8 +352,24 @@ describe('readSealedParentSessionFacts', () => {
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(undefined) })).resolves.toBeUndefined()
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger([]) })).resolves.toBeUndefined()
   })
-  it('fails closed on a disconnected seal chain', async () => {
-    const fixture = sealedReaderFixture(); fixture.rows[1] = { ...fixture.rows[1]!, seal: { ...fixture.rows[1]!.seal, previousSealHash: sealedHash('f') } as SealV1 }
+  it('fails closed on a self-consistent disconnected seal chain', async () => {
+    const fixture = sealedReaderFixture(), old = fixture.rows[1]!
+    const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
+    fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+  it('fails closed on self-consistent non-monotonic source sequence', async () => {
+    const fixture = sealedReaderFixture(), old = fixture.rows[1]!
+    const seal = reseal(old.seal, { sourceSeq: 1, request: { ...old.seal.request, eventSeq: 1 }, previousSealHash: fixture.rows[0]!.seal.sealHash })
+    fixture.rows[1] = { seal, activity: reactivate(seal, old.activity, { sourceSeq: 1 }) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+  it.each([
+    ['activity source seal hash', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[2]!; const { version: _version, canonical: _canonical, ...input } = old.activity; f.rows[2] = { ...old, activity: createActivityV1({ ...input, sourceSealHash: sealedHash('f') }) } }],
+    ['activity occurredAt', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[2]!; f.rows[2] = { ...old, activity: reactivate(old.seal, old.activity, { occurredAt: 999 }) } }],
+    ['activity result category', (f: ReturnType<typeof sealedReaderFixture>) => { const old = f.rows[2]!; f.rows[2] = { ...old, activity: reactivate(old.seal, old.activity, { resultCategory: 'tool-error' }) } }],
+  ] as const)('fails closed when self-consistent activity rebinding rejects %s', async (_name, mutate) => {
+    const fixture = sealedReaderFixture(); mutate(fixture)
     await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
   })
   it.each([
