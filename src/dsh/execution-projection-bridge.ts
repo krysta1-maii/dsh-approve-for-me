@@ -151,6 +151,7 @@ export class DshExecutionFactProjectionBridge {
   private readonly approvalWrites = new Map<string, Promise<void>>()
   private readonly resultWrites = new Map<string, Promise<void>>()
   private readonly terminalOutcomes = new Map<string, TerminalEvidence>()
+  private readonly cancelledResults = new Set<string>()
   /** Exact live source identity; call IDs may be reused in later alpha.1 steps. */
   private readonly requestEventByToken = new Map<ToolExecution['token'], number>()
 
@@ -337,6 +338,7 @@ export class DshExecutionFactProjectionBridge {
     if (lifecycle === undefined) return undefined
     const requestEventSeq = this.requestEventByToken.get(exec.token)
     this.requestEventByToken.delete(exec.token)
+    if (requestEventSeq !== undefined && exec.signal?.aborted === true) this.cancelledResults.add(this.resultKey(lifecycle, callId, requestEventSeq))
     if (requestEventSeq === undefined || typeof session.snapshotEvents !== 'function') return undefined
     const events = session.snapshotEvents()
     if (!Array.isArray(events)) return undefined
@@ -573,6 +575,7 @@ export class DshExecutionFactProjectionBridge {
     try {
       const lifecycle = this.lifecycle(agent)
       if (lifecycle === undefined) return
+      if (this.cancelledResults.has(this.resultKey(lifecycle, callId, requestEventSeq))) return
       const record = await this.repository.get({ session: lifecycle, callId, requestEventSeq })
       if (record === undefined || record.result === undefined || record.result.eventSeq !== event.seq
         || record.request.callId !== callId || record.request.eventSeq !== requestEventSeq) return
