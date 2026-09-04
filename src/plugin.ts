@@ -461,8 +461,8 @@ export function installApproveForMe(
     getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal
-      // Authorization and observers are revoked synchronously; concurrent
-      // callers then join one complete ordered drain.
+      // Fence observers and policy first, abort active work, then drain every
+      // writer before unregistering the provider and closing durable domains.
       stopMachinePolicy()
       stopSessionEvent()
       stopResult()
@@ -470,17 +470,14 @@ export function installApproveForMe(
       stopPreExecute()
       disposal = (async () => {
         const errors: unknown[] = []
-        for (const close of [
-          () => lifecycle.dispose(),
-          () => lanes.drain(),
-          () => durableFacts.drain(),
-          () => ledger.drain(),
-          () => records.drain(),
-        ]) {
+        for (const close of [() => lifecycle.dispose(), () => lanes.drain(), () => ledger.drain()]) {
           try { await close() } catch (error) { errors.push(error) }
         }
         try { channel.dispose() } catch (error) { errors.push(error) }
         try { await acquiredRegistration.dispose() } catch (error) { errors.push(error) }
+        for (const close of [() => durableFacts.drain(), () => records.drain()]) {
+          try { await close() } catch (error) { errors.push(error) }
+        }
         if (errors.length > 0) throw new AggregateError(errors, 'dsh-approve-for-me disposal failed')
       })()
       return disposal
