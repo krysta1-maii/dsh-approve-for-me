@@ -1,6 +1,6 @@
 # DSH 0.1.2-rc.1 artifact 集成与验收
 
-> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、373 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级；已完成的 E2E 证据记录于 [验收记录](acceptance-0.1.2.md)。
+> 当前实现基线：目标宿主 `dsh-v0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，rc.1 检查点为 44 个测试文件、378 项测试。本文区分“源码/组件自动验证”“真实 disposable Profile artifact smoke”和“仍需人工或真实 LLM/跨进程 E2E”的不同证据等级；已完成的 E2E 证据记录于 [验收记录](acceptance-0.1.2.md)。
 >
 > 宿主组合与失败语义以 [宿主契约](host-contract.md) 为准，卷宗事实以 [卷宗规范](guardian-dossier.md) 为准。本文记录当前装配方法和发布验收边界，不定义新接口。
 
@@ -59,7 +59,7 @@ npm run bootstrap:dependencies
 # 本插件：noEmit 类型检查、Vitest、发布构建
 npm run check
 
-# rc.1 实现检查点：44 files / 373 tests
+# rc.1 实现检查点：44 files / 378 tests
 
 # 解析安装闭包、fork marker/API 与目标版本
 # 需要 sibling deepseek-harness，且该 checkout 的 HEAD 精确等于锁定 commit/tag

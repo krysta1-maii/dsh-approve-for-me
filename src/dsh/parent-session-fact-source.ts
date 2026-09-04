@@ -243,18 +243,43 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     if (correlatedExecutions.length !== 1) return fail('correlated-executions', { found: correlatedExecutions.length, total: executions.length })
     const execution = correlatedExecutions[0]!
     const commitment = execution.catalogCommitment
-    const rootRequestEventSeq = execution.request.kind === 'model-tool-call'
-      ? execution.request.eventSeq
-      : execution.request.rootRequestEventSeq
-    const headerEvent = events[commitment.requestHeaderEventSeq]
-    const header = headerEvent?.type === 'request/header'
-      ? (headerEvent.data as Record<string, unknown>).header as Record<string, unknown> | undefined
-      : undefined
-    if (validateDurableToolCatalogCommitmentV1(commitment).kind !== 'ok'
-      || header === undefined || commitment.requestHeaderEventSeq >= rootRequestEventSeq
-      || rootRequestEventSeq > execution.request.eventSeq
-      || canonicalJson((header.tools ?? []) as JsonValue) !== canonicalJson(commitment.wireSchemas as unknown as JsonValue)
-      || executions.some(item => item.catalogCommitment.fingerprint !== commitment.fingerprint)) return fail('catalog-commitment')
+    // Every execution anchors its own commitment to the exact request/header
+    // in force at its root call. A legitimate mid-session catalog change starts
+    // a new epoch anchored to the newer header; it never poisons earlier
+    // executions still anchored to the older one. Cross-epoch uniformity is
+    // replaced by per-epoch anchoring plus one-fingerprint-per-header.
+    const headerSeqs = new Set(events.filter(event => event.type === 'request/header').map(event => event.seq))
+    const orderedHeaderSeqs = [...headerSeqs].sort((left, right) => left - right)
+    const epochFingerprints = new Map<number, string>()
+    let catalogFailure: string | undefined
+    const catalogAnchored = (item: typeof execution): boolean => {
+      const refuse = (rule: string): boolean => { catalogFailure = rule; return false }
+      const itemCommitment = item.catalogCommitment
+      if (validateDurableToolCatalogCommitmentV1(itemCommitment).kind !== 'ok') return refuse('commitment-invalid')
+      const itemRootRequestEventSeq = item.request.kind === 'model-tool-call'
+        ? item.request.eventSeq
+        : item.request.rootRequestEventSeq
+      if (itemCommitment.requestHeaderEventSeq >= itemRootRequestEventSeq
+        || itemRootRequestEventSeq > item.request.eventSeq) return refuse('header-seq-order')
+      if (!headerSeqs.has(itemCommitment.requestHeaderEventSeq)) return refuse('header-missing')
+      // The bound header must still be in force at the root call: a later
+      // header at or before it means this record shopped an obsolete catalog.
+      const nextHeaderSeq = orderedHeaderSeqs.find(seq => seq > itemCommitment.requestHeaderEventSeq)
+      if (nextHeaderSeq !== undefined && nextHeaderSeq <= itemRootRequestEventSeq) return refuse('header-superseded')
+      const headerEvent = events[itemCommitment.requestHeaderEventSeq]
+      const header = headerEvent?.type === 'request/header'
+        ? (headerEvent.data as Record<string, unknown>).header as Record<string, unknown> | undefined
+        : undefined
+      if (header === undefined
+        || canonicalJson((header.tools ?? []) as JsonValue) !== canonicalJson(itemCommitment.wireSchemas as unknown as JsonValue)) return refuse('wire-schemas-mismatch')
+      // One header epoch carries exactly one commitment fingerprint; a second
+      // fingerprint under the same header means a record was rewritten.
+      const epochFingerprint = epochFingerprints.get(itemCommitment.requestHeaderEventSeq)
+      if (epochFingerprint !== undefined && epochFingerprint !== itemCommitment.fingerprint) return refuse('epoch-split')
+      epochFingerprints.set(itemCommitment.requestHeaderEventSeq, itemCommitment.fingerprint)
+      return true
+    }
+    if (executions.some(item => !catalogAnchored(item))) return fail('catalog-commitment', { rule: catalogFailure })
     if (!isApprovalEnvironmentEvidenceV1(approval.environment)
       || approval.execution.requestEventSeq !== matchingCall.seq || approval.execution.requestEventSeq !== execution.request.eventSeq
       || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId

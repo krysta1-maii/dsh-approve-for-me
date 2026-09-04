@@ -57,6 +57,7 @@ export type {
   ApprovalEnvironmentEvidenceV1,
   ApprovalReviewPacketCodecV1,
   ApprovalSnapshotRecordV1,
+  CatalogEpochSummaryV1,
   CodeDispatchRequestRefV1,
   DirectUserMessageV1,
   InteractionSectionV1,

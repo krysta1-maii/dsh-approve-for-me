@@ -109,6 +109,124 @@ const deps: GuardianDossierCompilerDependencies = {
   },
 }
 
+// A legitimate mid-session catalog evolution: epoch A exposes only bash, then
+// a dynamic mount adds read and the request/header at seq 11 starts epoch B.
+const readToolSchema = {
+  name: 'read',
+  description: 'Read a file.',
+  parameters: { type: 'object', properties: { path: { type: 'string' } } },
+}
+const readToolSchemaFingerprint = effectiveToolBindingFromSchemaV1(readToolSchema)!.toolSchemaFingerprint
+
+function catalogWithRead() {
+  const unsealed = {
+    version: 1 as const,
+    eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
+    argumentSemanticsId: 'default-v1',
+    fingerprint: '',
+    descriptors: [
+      { classification: 'ordinary' as const, toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
+      { classification: 'ordinary' as const, toolName: 'read', toolSchemaFingerprint: readToolSchemaFingerprint, classificationId: 'class-2' },
+    ],
+  }
+  return { ...unsealed, fingerprint: fingerprintDelegationToolCatalogV1(unsealed)! }
+}
+
+function commitmentWithRead() {
+  const unsealedApproval = {
+    version: 1 as const,
+    argumentSemanticsId: 'default-v1',
+    fingerprint: '',
+    descriptors: [
+      { toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classification: 'ordinary' as const, actionSemanticsFamily: 'generic-raw', actionProjectorId: 'dsh-approve-for-me/generic-raw-v1' },
+      { toolName: 'read', toolSchemaFingerprint: readToolSchemaFingerprint, classification: 'ordinary' as const, actionSemanticsFamily: 'generic-raw', actionProjectorId: 'dsh-approve-for-me/generic-raw-v1' },
+    ],
+  }
+  const approval = { ...unsealedApproval, fingerprint: fingerprintApprovalToolCatalogV1(unsealedApproval)! }
+  return createDshAlpha2CatalogCommitment(
+    { schemas: [...headerTools, readToolSchema], approval, dossier: catalogWithRead() },
+    'native', 11, [...headerTools, readToolSchema],
+  )
+}
+
+function multiEpochFacts(options: { historicalClassificationCatalogFingerprint?: string } = {}): ParentSessionFactSnapshotV1 {
+  const epochCatalogA = catalog()
+  const epochCatalogB = catalogWithRead()
+  const priorAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })
+  const pendingAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } })
+  return {
+    version: 1,
+    session,
+    eventProjection: { policyId: 'dsh-session-facts-v1', classificationCatalog: epochCatalogB },
+    approvalBinding: {
+      event: { seq: 22, type: 'approval/asked', turn: 1, step: 0 },
+      approvalRequestId: 'ask-1',
+      callId: 'call-1',
+      toolName: 'bash',
+    },
+    throughSeq: 22,
+    events: [
+      { seq: 0, time: 1, type: 'turn/start', retention: 'included' as const, data: { turn: 0 } },
+      { seq: 1, time: 2, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-0', source: { kind: 'user' }, content: [{ type: 'text', text: 'inspect first' }] } },
+      { seq: 2, time: 3, type: 'step/start', retention: 'included' as const, data: { turn: 0, step: 0 } },
+      { seq: 3, time: 4, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: headerTools }, reason: 'initial' as const } },
+      { seq: 4, time: 5, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+      { seq: 5, time: 6, type: 'assistant/chunk', retention: 'included' as const, data: { turn: 0, step: 0, chunk: { type: 'tool-call-delta' } } },
+      { seq: 6, time: 7, type: 'assistant/message', retention: 'included' as const, data: { turn: 0, step: 0, message: { id: 'assistant-tool-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-0', name: 'bash', arguments: '{"command":"ls"}' }] } } },
+      { seq: 7, time: 8, type: 'tool/call', retention: 'included' as const, data: { turn: 0, step: 0, callId: 'call-0', name: 'bash', arguments: '{"command":"ls"}' } },
+      { seq: 8, time: 9, type: 'tool/result', retention: 'excluded-content' as const, exclusion: 'tool-result-content' as const, sourceEventSeqs: [7] },
+      { seq: 9, time: 10, type: 'step/end', retention: 'included' as const, data: { turn: 0, step: 0 } },
+      { seq: 10, time: 11, type: 'step/start', retention: 'included' as const, data: { turn: 0, step: 1 } },
+      { seq: 11, time: 12, type: 'request/header', retention: 'included' as const, data: { header: { config: { model: 'model-1' }, tools: [...headerTools, readToolSchema] }, reason: 'change' as const } },
+      { seq: 12, time: 13, type: 'request/context', retention: 'included' as const, data: { provider: 'deepseek', model: 'deepseek-chat', contextWindow: 64_000 } },
+      { seq: 13, time: 14, type: 'assistant/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { turn: 0, step: 1, message: { id: 'assistant-0', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: 'inspection done' }] } } },
+      { seq: 14, time: 15, type: 'step/end', retention: 'included' as const, data: { turn: 0, step: 1 } },
+      { seq: 15, time: 16, type: 'turn/end', retention: 'included' as const, data: { turn: 0, reason: 'completed' as const } },
+      { seq: 16, time: 17, type: 'turn/start', retention: 'included' as const, data: { turn: 1 } },
+      { seq: 17, time: 18, type: 'user/message', retention: 'included' as const, surfaceState: 'visible' as const, data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'show cwd' }] } },
+      { seq: 18, time: 19, type: 'step/start', retention: 'included' as const, data: { turn: 1, step: 0 } },
+      { seq: 19, time: 20, type: 'assistant/chunk', retention: 'included' as const, data: { turn: 1, step: 0, chunk: { type: 'tool-call-delta' } } },
+      { seq: 20, time: 21, type: 'assistant/message', retention: 'included' as const, data: { turn: 1, step: 0, message: { id: 'assistant-1', role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+      { seq: 21, time: 22, type: 'tool/call', retention: 'included' as const, data: { turn: 1, step: 0, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}' } },
+      { seq: 22, time: 23, type: 'approval/asked', retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+    ],
+    delegationReceipts: [],
+    executionFacts: [
+      {
+        version: 1,
+        catalogCommitment: commitment(),
+        session,
+        request: { kind: 'model-tool-call', eventSeq: 7, eventType: 'tool/call', callId: 'call-0', toolName: 'bash' },
+        toolClassification: {
+          classificationCatalogFingerprint: options.historicalClassificationCatalogFingerprint ?? epochCatalogA.fingerprint,
+          descriptor: epochCatalogA.descriptors[0]!,
+        },
+        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: priorAction, actionHash: hashAction(priorAction), observedAt: 8 },
+        result: { eventSeq: 8, eventType: 'tool/result', outcome: { kind: 'completed' } },
+      },
+      {
+        version: 1,
+        catalogCommitment: commitmentWithRead(),
+        session,
+        request: { kind: 'model-tool-call', eventSeq: 21, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+        toolClassification: {
+          classificationCatalogFingerprint: epochCatalogB.fingerprint,
+          descriptor: epochCatalogB.descriptors[0]!,
+        },
+        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: pendingAction, actionHash: hashAction(pendingAction), observedAt: 22 },
+      },
+    ],
+    approvalSnapshots: [{
+      version: 1,
+      session,
+      approvalRequestId: 'ask-1',
+      approvalAskedSeq: 22,
+      execution: { requestEventSeq: 21, callId: 'call-1', toolName: 'bash', actionHash: hashAction(pendingAction), classificationCatalogFingerprint: epochCatalogB.fingerprint, projectorId: 'dsh-approve-for-me/generic-raw-v1' },
+      environment: { version: 1, kind: 'native-header-only' },
+    }],
+  }
+}
+
 describe('DefaultDossierCompiler', () => {
   it('never brands a non-contiguous evidence prefix as ready', () => {
     const compiler = new DefaultDossierCompiler(deps)
@@ -1263,6 +1381,33 @@ describe('DefaultDossierCompiler', () => {
     expect(compiler.compile({
       facts: facts({ executionFacts: [] }),
     }).kind).toBe('incomplete')
+  })
+
+  it('compiles a multi-epoch trajectory across a legitimate catalog change', () => {
+    const result = new DefaultDossierCompiler(deps).compile({ facts: multiEpochFacts() })
+    expect(result.kind === 'incomplete' ? result.reason : 'ready').toBe('ready')
+    expect(result).toMatchObject({
+      kind: 'ready',
+      verified: { dossier: { interaction: {
+        historicalTools: [{ turn: 0, attempts: [{ request: { callId: 'call-0' }, outcome: { kind: 'completed' } }] }],
+        delegations: {
+          classificationCatalog: { fingerprint: catalogWithRead().fingerprint },
+          catalogEpochs: [
+            { requestHeaderEventSeq: 3, commitmentFingerprint: commitment().fingerprint, classificationCatalogFingerprint: catalog().fingerprint },
+            { requestHeaderEventSeq: 11, commitmentFingerprint: commitmentWithRead().fingerprint, classificationCatalogFingerprint: catalogWithRead().fingerprint },
+          ],
+        },
+      } } },
+    })
+  })
+
+  it('refuses a historical execution reclassified under the current catalog', () => {
+    // The epoch-A execution claims the epoch-B classification catalog: a
+    // reinterpretation attack against its own durable commitment.
+    const result = new DefaultDossierCompiler(deps).compile({
+      facts: multiEpochFacts({ historicalClassificationCatalogFingerprint: catalogWithRead().fingerprint }),
+    })
+    expect(result).toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
   })
 
 })

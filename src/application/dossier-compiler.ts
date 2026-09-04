@@ -606,7 +606,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         || (callTurn as number) > turn || ((callTurn as number) === turn && (callStep as number) > step)) {
         return { kind: 'incomplete', reason: 'missing-current-turn' }
       }
-      const descriptors = facts.eventProjection.classificationCatalog.descriptors.filter(item => item.toolName === toolName)
+      // A historical call keeps the classification of its own catalog epoch;
+      // it is never reinterpreted through the catalog of the pending call.
+      const descriptors = candidate.catalogCommitment.classificationCatalog.descriptors.filter(item => item.toolName === toolName)
       if (descriptors.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       const descriptor = descriptors[0]!
       const requestMatches = requestKind === 'model-tool-call'
@@ -617,12 +619,11 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           && canonicalJson(candidate.request.arguments) === canonicalJson(data.arguments)
       if (candidate.version !== 1 || !requestMatches
         || validateDurableToolCatalogCommitmentV1(candidate.catalogCommitment).kind !== 'ok'
-        || candidate.catalogCommitment.fingerprint !== execution.catalogCommitment.fingerprint
         || !sameLifecycle(candidate.session, facts.session) || candidate.projection.action.toolName !== toolName
         || candidate.projection.projectorId !== candidate.projection.action.projectorId
         || candidate.projection.actionHash !== hashAction(candidate.projection.action)
         || candidate.projection.observedAt !== event.time
-        || candidate.toolClassification.classificationCatalogFingerprint !== facts.eventProjection.classificationCatalog.fingerprint
+        || candidate.toolClassification.classificationCatalogFingerprint !== candidate.catalogCommitment.classificationCatalog.fingerprint
         || canonicalJson(candidate.toolClassification.descriptor) !== canonicalJson(descriptor)
         || !actionArgumentsMatchCall(candidate.projection.action.arguments, data?.arguments)) {
         return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
@@ -649,7 +650,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         const key = canonicalJson(receipt as unknown as JsonValue)
         if (descriptor.classification !== 'delegation' || !receiptKeys.includes(key) || usedReceiptKeys.has(key)
           || !sameLifecycle(receipt.session, facts.session) || receipt.requestEventSeq !== event.seq
-          || receipt.callId !== callId || receipt.classificationCatalogFingerprint !== facts.eventProjection.classificationCatalog.fingerprint
+          || receipt.callId !== callId || receipt.classificationCatalogFingerprint !== candidate.catalogCommitment.classificationCatalog.fingerprint
           || receipt.projectorId !== descriptor.projectorId || receipt.resultEvent.seq !== candidate.result?.eventSeq
           || receipt.resultEvent.type !== candidate.result?.eventType) {
           return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
@@ -786,10 +787,16 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       || validateDelegationToolCatalog(facts.eventProjection.classificationCatalog, effectiveTools).kind !== 'ok') {
       return { kind: 'incomplete', reason: 'invalid-effective-tool-binding' }
     }
+    // Every historical header must be covered by at least one catalog epoch
+    // carried on a validated execution fact; a legitimate mid-session catalog
+    // change adds an epoch instead of invalidating the catalogs before it.
+    const epochCatalogs = [...new Map(facts.executionFacts.map(item =>
+      [item.catalogCommitment.classificationCatalog.fingerprint, item.catalogCommitment.classificationCatalog] as const,
+    )).values()]
     if (requestHeaders?.some(header => {
       const historicalTools = effectiveToolBindingsFromRequestHeaderV1(header)
       return historicalTools === undefined
-        || validateDelegationToolCatalog(facts.eventProjection.classificationCatalog, historicalTools).kind !== 'ok'
+        || !epochCatalogs.some(epochCatalog => validateDelegationToolCatalog(epochCatalog, historicalTools).kind === 'ok')
     })) {
       return { kind: 'incomplete', reason: 'invalid-historical-effective-tool-binding' }
     }
@@ -849,6 +856,16 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           model: 'principal-extension-v1', principalSessionId: facts.session.sessionId,
           descendantsGrantAuthority: false, childOutputPolicy: 'exclude-direct-origin-v1',
           classificationCatalog: facts.eventProjection.classificationCatalog, entries: Object.freeze(delegationEntries),
+          // One entry per legitimate catalog epoch present in the verified
+          // trajectory, so reviewers can see exactly where the tool catalog
+          // evolved and which classification governed each historical attempt.
+          catalogEpochs: Object.freeze([...new Map(projected.map(item =>
+            [item.candidate.catalogCommitment.fingerprint, Object.freeze({
+              requestHeaderEventSeq: item.candidate.catalogCommitment.requestHeaderEventSeq,
+              commitmentFingerprint: item.candidate.catalogCommitment.fingerprint,
+              classificationCatalogFingerprint: item.candidate.catalogCommitment.classificationCatalog.fingerprint,
+            })] as const,
+          )).values()].sort((left, right) => left.requestHeaderEventSeq - right.requestHeaderEventSeq)),
         }),
       }),
       currentTurnTools: Object.freeze({

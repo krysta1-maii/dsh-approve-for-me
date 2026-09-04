@@ -804,6 +804,19 @@ export interface InteractionTurnV1 {
   readonly end?: TurnEndSummaryV1
 }
 
+/**
+ * One legitimate catalog epoch witnessed by the verified trajectory. Each
+ * mid-session tool-catalog evolution (for example a dynamic plugin mount)
+ * contributes exactly one epoch keyed by the request/header event in force;
+ * historical attempts keep the classification of their own epoch and are
+ * never reinterpreted under a later catalog.
+ */
+export interface CatalogEpochSummaryV1 {
+  readonly requestHeaderEventSeq: number
+  readonly commitmentFingerprint: string
+  readonly classificationCatalogFingerprint: string
+}
+
 export interface PrincipalDelegationLedgerV1 {
   readonly model: 'principal-extension-v1'
   readonly principalSessionId: string
@@ -811,6 +824,8 @@ export interface PrincipalDelegationLedgerV1 {
   readonly childOutputPolicy: 'exclude-direct-origin-v1'
   readonly classificationCatalog: DelegationToolClassificationCatalogV1
   readonly entries: readonly PrincipalDelegationEntryV1[]
+  /** Every catalog epoch in the trajectory, ascending by header event seq. */
+  readonly catalogEpochs?: readonly CatalogEpochSummaryV1[]
 }
 
 export interface HistoricalToolTrajectoryV1 {

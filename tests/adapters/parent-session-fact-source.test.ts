@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DshParentSessionFactSource, createActionSnapshot } from '../../src/index.js'
+import { DshParentSessionFactSource, createActionSnapshot, fingerprintDelegationToolCatalogV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
@@ -50,6 +50,60 @@ function agent(overrides: object = {}) {
 
 function input(overrides: object = {}) {
   return { agent: agent() as never, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', classificationCatalog: catalog, executionFacts: [execution], approvalSnapshots: [approval], ...overrides }
+}
+
+// A legitimate mid-session catalog evolution: epoch A exposes only bash, then a
+// dynamic mount adds read and the request/header at seq 5 starts epoch B.
+const epochSchemasB = [...schemas, { name: 'read', description: 'read schema', parameters: { type: 'object', properties: { path: { type: 'string' } } } }]
+const effectiveEpochB = createDshAlpha2EffectiveCatalog(epochSchemasB)
+const epochCatalogB: DelegationToolClassificationCatalogV1 = effectiveEpochB.dossier
+const epochCommitmentA = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
+const epochCommitmentB = createDshAlpha2CatalogCommitment(effectiveEpochB, 'native', 5, epochSchemasB)
+const epochEvents = [
+  { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } },
+  { seq: 1, time: 101, type: 'user/message', surfaceOp: 'append', data: { id: 'user-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'inspect' }] } },
+  { seq: 2, time: 102, type: 'assistant/message', data: { turn: 1, step: 0, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-old', name: 'bash', arguments: '{"command":"ls"}' }] } } },
+  { seq: 3, time: 103, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-old', name: 'bash', arguments: '{"command":"ls"}' } },
+  { seq: 4, time: 104, type: 'tool/result', sourceEventSeqs: [3], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-old' }, content: [{ type: 'tool-result', toolCallId: 'call-old', content: [{ type: 'text', text: 'out' }] }] } } },
+  { seq: 5, time: 105, type: 'request/header', data: { header: { tools: epochSchemasB } } },
+  { seq: 6, time: 106, type: 'assistant/message', data: { turn: 2, step: 0, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-new', name: 'bash', arguments: '{"command":"pwd"}' }] } } },
+  { seq: 7, time: 107, type: 'tool/call', data: { turn: 2, step: 0, callId: 'call-new', name: 'bash', arguments: '{"command":"pwd"}' } },
+  { seq: 8, time: 108, type: 'approval/asked', data: { id: 'ask-2', callId: 'call-new', toolName: 'bash', turn: 2, step: 0 } },
+]
+const epochOldExecution: ToolExecutionFactRecordV1 = {
+  version: 1,
+  catalogCommitment: epochCommitmentA,
+  session: lifecycle,
+  request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-old', toolName: 'bash' },
+  toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
+  projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } }), actionHash: hash('b'), observedAt: 103 },
+  result: { eventSeq: 4, eventType: 'tool/result', outcome: { kind: 'completed' } },
+}
+const epochNewExecution: ToolExecutionFactRecordV1 = {
+  version: 1,
+  catalogCommitment: epochCommitmentB,
+  session: lifecycle,
+  request: { kind: 'model-tool-call', eventSeq: 7, eventType: 'tool/call', callId: 'call-new', toolName: 'bash' },
+  toolClassification: { classificationCatalogFingerprint: epochCatalogB.fingerprint, descriptor: epochCatalogB.descriptors.find(item => item.toolName === 'bash')! },
+  projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: hash('c'), observedAt: 107 },
+}
+const epochApproval: ApprovalSnapshotRecordV1 = {
+  version: 1, session: lifecycle, approvalRequestId: 'ask-2', approvalAskedSeq: 8,
+  execution: { requestEventSeq: 7, callId: 'call-new', toolName: 'bash', actionHash: hash('c'), classificationCatalogFingerprint: epochCatalogB.fingerprint, projectorId: 'default-v1' },
+  environment: { version: 1, kind: 'native-header-only' },
+}
+
+function epochInput(overrides: object = {}) {
+  return {
+    agent: { ...agent(), session: { ...agent().session, snapshotEvents: () => epochEvents } } as never,
+    approvalRequestId: 'ask-2',
+    callId: 'call-new',
+    toolName: 'bash',
+    classificationCatalog: epochCatalogB,
+    executionFacts: [epochOldExecution, epochNewExecution],
+    approvalSnapshots: [epochApproval],
+    ...overrides,
+  }
 }
 
 describe('DshParentSessionFactSource', () => {
@@ -163,6 +217,72 @@ describe('DshParentSessionFactSource', () => {
     ;(emptyCwd.session.header as unknown as { cwd?: unknown }).cwd = ''
     expect(new DshParentSessionFactSource({ get: () => emptyCwd as never }).snapshot(input({ agent: emptyCwd as never }))).toBeUndefined()
     expect(new DshParentSessionFactSource({ get: () => undefined }).snapshot(input({ agent: requester as never }))).toBeUndefined()
+  })
+
+  it('accepts a legitimate mid-session catalog epoch change', () => {
+    const request = epochInput()
+    const facts = new DshParentSessionFactSource({ get: () => request.agent as never }).snapshot(request)
+    expect(facts?.session.sessionId).toBe('parent-1')
+    expect(facts?.approvalBinding.event.seq).toBe(8)
+    expect(facts?.executionFacts).toHaveLength(2)
+    expect(facts?.eventProjection.classificationCatalog).toEqual(epochCatalogB)
+  })
+
+  it('refuses an execution that shops an obsolete catalog header', () => {
+    // The pending call binds the retired epoch-A header even though epoch B
+    // was already in force before its root call event.
+    const staleExecution: ToolExecutionFactRecordV1 = {
+      ...epochNewExecution,
+      catalogCommitment: epochCommitmentA,
+      toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
+    }
+    const staleApproval: ApprovalSnapshotRecordV1 = {
+      ...epochApproval,
+      execution: { ...epochApproval.execution, classificationCatalogFingerprint: catalog.fingerprint },
+    }
+    const request = epochInput({ executionFacts: [epochOldExecution, staleExecution], approvalSnapshots: [staleApproval] })
+    expect(new DshParentSessionFactSource({ get: () => request.agent as never })
+      .snapshot(request))
+      .toBeUndefined()
+  })
+
+  it('refuses split commitments within one header epoch', () => {
+    // Same header seq, but one record's classification catalog was rewritten
+    // (same schema fingerprints, different classificationId) and re-committed.
+    const shiftedUnsealed = {
+      version: 1 as const,
+      eventProjectionPolicyId: 'dsh-session-facts-v1' as const,
+      argumentSemanticsId: catalog.argumentSemanticsId,
+      fingerprint: '',
+      descriptors: catalog.descriptors.map(item => ({ ...item, classificationId: 'class-shifted' })),
+    }
+    const shiftedCatalog = { ...shiftedUnsealed, fingerprint: fingerprintDelegationToolCatalogV1(shiftedUnsealed)! }
+    const shiftedCommitment = createDshAlpha2CatalogCommitment(
+      { schemas, approval: effective.approval, dossier: shiftedCatalog },
+      'native', 0, schemas,
+    )
+    const singleHeaderEvents = epochEvents.filter((_, index) => index !== 5)
+      .map((event, seq) => ({ ...event, seq }))
+    const splitExecution: ToolExecutionFactRecordV1 = {
+      ...epochNewExecution,
+      catalogCommitment: shiftedCommitment,
+      toolClassification: { classificationCatalogFingerprint: shiftedCatalog.fingerprint, descriptor: shiftedCatalog.descriptors[0]! },
+      request: { kind: 'model-tool-call', eventSeq: 6, eventType: 'tool/call', callId: 'call-new', toolName: 'bash' },
+    }
+    const splitApproval: ApprovalSnapshotRecordV1 = {
+      ...epochApproval,
+      approvalAskedSeq: 7,
+      execution: { ...epochApproval.execution, requestEventSeq: 6, classificationCatalogFingerprint: shiftedCatalog.fingerprint },
+    }
+    const requester = { ...agent(), session: { ...agent().session, snapshotEvents: () => singleHeaderEvents } }
+    const request = epochInput({
+      agent: requester as never,
+      executionFacts: [epochOldExecution, splitExecution],
+      approvalSnapshots: [splitApproval],
+    })
+    expect(new DshParentSessionFactSource({ get: () => request.agent as never })
+      .snapshot(request))
+      .toBeUndefined()
   })
 
 })
