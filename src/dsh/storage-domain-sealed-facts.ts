@@ -14,7 +14,7 @@ function makeTip(lifecycleFingerprint: string, keys: readonly string[], sealHash
 export class DshStorageDomainSealedFacts {
  private readonly tails = new Map<string, Promise<void>>(); private admissionOpen = true
  private readonly ready: Promise<StorageDomainHandle | undefined>
- constructor(facility: StorageDomainFacility | undefined, onUnavailable: () => void = () => {}) { this.ready = facility === undefined ? Promise.resolve(undefined) : facility.open(spec).catch(() => { onUnavailable(); return undefined }) }
+ constructor(facility: StorageDomainFacility | undefined, onUnavailable: () => void = () => {}) { this.ready = facility === undefined ? (onUnavailable(), Promise.resolve(undefined)) : facility.open(spec).catch(() => { onUnavailable(); return undefined }) }
  async append(seal: SealV1, activity: ActivityV1): Promise<SealedFactWriteResult> {
   try { seal = parseSealV1(seal); activity = parseActivityV1(activity) } catch { return 'conflict' }
   if (seal.lifecycleFingerprint !== activity.lifecycleFingerprint || seal.sourceSeq !== activity.sourceSeq || seal.sealHash !== activity.sourceSealHash) return 'conflict'

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DshParentSessionFactSource, createActionSnapshot, fingerprintDelegationToolCatalogV1, readSealedParentSessionFacts } from '../../src/index.js'
+import { DshParentSessionFactSource, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import type { ActivityV1, SealV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
   ApprovalSnapshotRecordV1,
@@ -293,4 +294,84 @@ describe('DshParentSessionFactSource', () => {
     expect(await readSealedParentSessionFacts({ ...base, ledger: { async append() { return 'unavailable' as const }, async read() { return undefined } } })).toBeUndefined()
   })
 
+})
+
+const sealedHash = (char: string) => 'sha256:' + char.repeat(64)
+type SealedRow = { readonly seal: SealV1; readonly activity: ActivityV1 }
+function sealedReaderFixture() {
+  const events: any[] = [
+    { seq: 0, time: 100, type: 'request/header', data: { header: { tools: schemas } } },
+    { seq: 1, time: 101, type: 'tool/call', data: { callId: 'call-old', name: 'bash' } },
+    { seq: 2, time: 102, type: 'approval/asked', data: { id: 'ask-old', callId: 'call-old', toolName: 'bash' } },
+    { seq: 3, time: 103, type: 'tool/result', sourceEventSeqs: [1], data: { message: { source: { kind: 'tool', callId: 'call-old' }, content: [{ type: 'tool-result', toolCallId: 'call-old' }] } } },
+    { seq: 4, time: 104, type: 'request/header', data: { header: { tools: schemas } } },
+    { seq: 5, time: 105, type: 'tool/call', data: { callId: 'call-mid', name: 'bash' } },
+    { seq: 6, time: 106, type: 'approval/asked', data: { id: 'ask-mid', callId: 'call-mid', toolName: 'bash' } },
+    { seq: 7, time: 107, type: 'tool/result', sourceEventSeqs: [5], data: { message: { source: { kind: 'tool', callId: 'call-mid' }, content: [{ type: 'tool-result', toolCallId: 'call-mid' }] } } },
+    { seq: 8, time: 108, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },
+    { seq: 9, time: 109, type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } },
+    { seq: 10, time: 110, type: 'tool/result', sourceEventSeqs: [8], data: { message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1' }] } } },
+  ]
+  const requester = { id: 'parent-1', options: {}, session: { id: 'parent-1', header: { version: 0, id: 'parent-1', createdAt: 100 }, snapshotEvents: () => events } }
+  const fingerprint = canonicalJson(lifecycle)
+  const make = (sourceSeq: number, askedSeq: number, resultSeq: number, callId: string, requestId: string, previousSealHash: string, epoch: number, headerEventSeq: number): SealedRow => {
+    const seal = createSealV1({ lifecycleFingerprint: fingerprint, sourceSeq, request: { eventSeq: sourceSeq, eventType: 'tool/call', callId, toolName: 'bash' }, approvalAsked: { eventSeq: askedSeq, requestId }, actionHash: sealedHash('a'), projectorId: 'default-v1', catalog: { epoch, headerEventSeq, commitment: sealedHash(epoch === 0 ? 'b' : 'c') }, wireSchemaFingerprint: sealedHash('d'), result: { eventSeq: resultSeq, status: 'completed' }, epochBoundary: { previousEpoch: epoch === 0 ? null : epoch - 1, changed: epoch !== 0 }, previousSealHash })
+    return { seal, activity: createActivityV1({ lifecycleFingerprint: fingerprint, sourceSeq, occurredAt: events[resultSeq]!.time, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
+  }
+  const first = make(1, 2, 3, 'call-old', 'ask-old', genesisSealHash(fingerprint), 0, 0)
+  const second = make(5, 6, 7, 'call-mid', 'ask-mid', first.seal.sealHash, 1, 4)
+  const third = make(8, 9, 10, 'call-1', 'ask-1', second.seal.sealHash, 1, 4)
+  const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
+  return { events, rows: [first, second, third] as SealedRow[], base }
+}
+function ledger(rows: readonly SealedRow[] | undefined) { return { async append() { return 'unavailable' as const }, async read() { return rows } } }
+
+describe('readSealedParentSessionFacts', () => {
+  it('returns a complete, live-rebound multi-seal fact chain', async () => {
+    const fixture = sealedReaderFixture()
+    const facts = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(facts).toMatchObject({ version: 1, lifecycleFingerprint: canonicalJson(lifecycle), current: { seal: { sourceSeq: 8 }, activity: { occurredAt: 110 } } })
+    expect(facts?.seals).toHaveLength(3); expect(facts?.activities).toHaveLength(3)
+    expect(facts?.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 0, commitment: sealedHash('b') }, { epoch: 1, headerEventSeq: 4, commitment: sealedHash('c') }])
+  })
+  it('rebinds a complete code-dispatch sealed row', async () => {
+    const fixture = sealedReaderFixture()
+    fixture.events[8] = { ...fixture.events[8], type: 'tool/code-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'parent-1', subCallId: 'call-1', name: 'bash' } }
+    fixture.events[10] = { ...fixture.events[10], type: 'tool/code-dispatch', data: { rootCallId: 'root-1', parentCallId: 'parent-1', subCallId: 'call-1', name: 'bash' } }
+    const old = fixture.rows[2]!.seal
+    const { version: _version, sealHash: _sealHash, canonical: _canonical, ...input } = old
+    const seal = createSealV1({ ...input, request: { ...old.request, eventType: 'tool/code-dispatch-start' } })
+    fixture.rows[2] = { seal, activity: createActivityV1({ lifecycleFingerprint: old.lifecycleFingerprint, sourceSeq: old.sourceSeq, occurredAt: 110, classification: 'ordinary', targetSummary: 'tool:bash', resultCategory: 'completed', sourceSealHash: seal.sealHash }) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ current: { seal: { request: { eventType: 'tool/code-dispatch-start' } } } })
+  })
+  it('distinguishes missing, polluted, and empty ledger reads by failing closed', async () => {
+    const fixture = sealedReaderFixture()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: undefined })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(undefined) })).resolves.toBeUndefined()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger([]) })).resolves.toBeUndefined()
+  })
+  it('fails closed on a disconnected seal chain', async () => {
+    const fixture = sealedReaderFixture(); fixture.rows[1] = { ...fixture.rows[1]!, seal: { ...fixture.rows[1]!.seal, previousSealHash: sealedHash('f') } as SealV1 }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+  it.each([
+    ['request callId', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[8].data.callId = 'other' }],
+    ['request toolName', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[8].data.name = 'other' }],
+    ['asked requestId', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[9].data.id = 'other' }],
+    ['result source seq', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[10].sourceEventSeqs[0] = 5 }],
+    ['result status shape', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[10].data.message.source.kind = 'other' }],
+    ['header event type', (f: ReturnType<typeof sealedReaderFixture>) => { f.events[4].type = 'other/header' }],
+    ['header epoch commitment', (f: ReturnType<typeof sealedReaderFixture>) => { (f.rows[2]!.seal.catalog as any).commitment = sealedHash('e') }],
+    ['activity occurredAt', (f: ReturnType<typeof sealedReaderFixture>) => { f.rows[2] = { ...f.rows[2]!, activity: { ...f.rows[2]!.activity, occurredAt: 999 } as ActivityV1 } }],
+    ['activity classification', (f: ReturnType<typeof sealedReaderFixture>) => { f.rows[2] = { ...f.rows[2]!, activity: { ...f.rows[2]!.activity, classification: 'other' } as ActivityV1 } }],
+  ] as const)('fails closed when live rebinding rejects %s', async (_name, mutate) => {
+    const fixture = sealedReaderFixture(); mutate(fixture)
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })).resolves.toBeUndefined()
+  })
+  it('fails closed when cancelled before or after ledger read', async () => {
+    const fixture = sealedReaderFixture(); const before = new AbortController(); before.abort()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), signal: before.signal })).resolves.toBeUndefined()
+    const after = new AbortController()
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: { async append() { return 'unavailable' as const }, async read() { after.abort(); return fixture.rows } }, signal: after.signal })).resolves.toBeUndefined()
+  })
 })

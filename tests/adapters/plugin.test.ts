@@ -12,6 +12,11 @@ import {
   createShellProcessActionProjector,
   createDshAlpha2StockToolCatalog,
   ToolFamilyActionProjectorRegistry,
+  ApprovalRunLifecycle,
+  DshStorageDomainFactRepositories,
+  DshStorageDomainGateDecisionRecordStore,
+  DshStorageDomainSealedFacts,
+  SerialLanes,
   installApproveForMe,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
@@ -626,5 +631,16 @@ describe('installApproveForMe composition root', () => {
     expect(second.registered?.name).toBe(REVIEWER_PROVIDER)
     await reloaded.dispose()
     expect(second.disposeRegistration).toHaveBeenCalledOnce()
+  })
+  it('orders observer fencing, abort, drains, provider release, and durable close', async () => {
+    const h = harness(), order: string[] = []
+    const ctx = h.ctx as any
+    const on = ctx.on.bind(ctx); ctx.on = (event: string, listener: (...args: unknown[]) => unknown) => { on(event, listener); return () => { order.push('fence:' + event) } }
+    const policy = ctx.approval.registerMachinePolicy.bind(ctx.approval); ctx.approval.registerMachinePolicy = (value: unknown) => { const dispose = policy(value); return () => { order.push('fence:policy'); dispose() } }
+    const register = ctx.managedAgents.registerProvider.bind(ctx.managedAgents); ctx.managedAgents.registerProvider = (provider: ManagedAgentProvider) => { const registration = register(provider); return { ...registration, dispose: async () => { order.push('provider'); await registration.dispose() } } }
+    const spy = (prototype: any, key: string, label: string) => { const original = prototype[key]; return vi.spyOn(prototype, key).mockImplementation(function (this: any, ...args: unknown[]) { order.push(label); return original.apply(this, args) }) }
+    const spies = [spy(ApprovalRunLifecycle.prototype, 'dispose', 'abort'), spy(SerialLanes.prototype, 'drain', 'lanes'), spy(DshStorageDomainSealedFacts.prototype, 'drain', 'ledger'), spy(DshStorageDomainFactRepositories.prototype, 'drain', 'facts-close'), spy(DshStorageDomainGateDecisionRecordStore.prototype, 'drain', 'records-close')]
+    try { await installApproveForMe(h.ctx as unknown as Context, config).dispose() } finally { spies.forEach(item => item.mockRestore()) }
+    expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'lanes', 'ledger', 'provider', 'facts-close', 'records-close'])
   })
 })

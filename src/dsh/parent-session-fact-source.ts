@@ -2,6 +2,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
+import { genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
 import type { SealedFactsLedger } from './execution-projection-bridge.js'
 import type {
@@ -346,8 +347,16 @@ export async function readSealedParentSessionFacts(input: {
   try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return undefined }
   if (input.signal?.aborted || rows === undefined || rows.length === 0) return undefined
   const epochs = new Map<number, { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }>()
+  const validatedRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
+  let previousSealHash = genesisSealHash(lifecycleFingerprint)
+  let previousSourceSeq = -1
   for (const row of rows) {
-    const { seal, activity } = row
+    let seal: SealV1
+    let activity: ActivityV1
+    try { seal = parseSealV1(row.seal); activity = parseActivityV1(row.activity) } catch { return undefined }
+    if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return undefined
+    previousSealHash = seal.sealHash
+    previousSourceSeq = seal.sourceSeq
     const request = events[seal.request.eventSeq]
     const asked = events[seal.approvalAsked.eventSeq]
     const result = events[seal.result.eventSeq]
@@ -373,8 +382,9 @@ export async function readSealedParentSessionFacts(input: {
     const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
     if (prior !== undefined && canonicalJson(prior) !== canonicalJson(epoch)) return undefined
     epochs.set(epoch.epoch, Object.freeze(epoch))
+    validatedRows.push(Object.freeze({ seal, activity }))
   }
-  const current = rows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
+  const current = validatedRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
   if (current.length !== 1) return undefined
-  return Object.freeze({ version: 1, lifecycleFingerprint, current: current[0]!, seals: Object.freeze(rows.map(row => row.seal)), activities: Object.freeze(rows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
+  return Object.freeze({ version: 1, lifecycleFingerprint, current: current[0]!, seals: Object.freeze(validatedRows.map(row => row.seal)), activities: Object.freeze(validatedRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a,b) => a.epoch - b.epoch)) })
 }
