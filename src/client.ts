@@ -20,7 +20,8 @@ import {
 } from './client/approval-settings-card.js'
 import { en, zh } from './client/locales.js'
 import { setApprovalReasonCodeSidecarReader } from './client/approval-conversation.js'
-import { createServerBackedReasonCodeReader } from './client/reason-code.js'
+import { createServerBackedReasonCodeReader, setApprovalReasonCodeServerReader } from './client/reason-code.js'
+import { getReasonCodeRemoteBridge, resetReasonCodeRemoteBridge } from './client/reason-code-remote.js'
 
 const NS = 'approve-for-me'
 const STYLE_ID = 'dsh-approve-for-me/ApprovalFlowItem'
@@ -92,12 +93,20 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
   }, SettingsCard))
 
-  // WP5-c: wire the read-only server reason-code query into the browser sidecar
-  // seam. The reader is presentational: a miss (server bridge absent, storage
-  // unavailable, or an unknown/unclearable value) degrades to the generic safe
-  // line and never touches the Gate authorization result.
+  // WP5-c + WP8-a: wire the read-only server reason-code query into the browser
+  // sidecar seam. The remote bridge fetches the WP8-a GET route with in-flight
+  // dedupe and a bounded settled cache; the reader is presentational: a miss
+  // (server bridge absent, storage unavailable, or an unknown/unclearable value)
+  // degrades to the generic safe line and never touches the Gate authorization
+  // result.
   ctx.effect(() => {
+    const bridge = getReasonCodeRemoteBridge()
+    setApprovalReasonCodeServerReader(bridge)
     setApprovalReasonCodeSidecarReader(createServerBackedReasonCodeReader())
-    return () => setApprovalReasonCodeSidecarReader(undefined)
+    return () => {
+      setApprovalReasonCodeSidecarReader(undefined)
+      setApprovalReasonCodeServerReader(undefined)
+      resetReasonCodeRemoteBridge()
+    }
   }, 'approve-for-me: reason-code sidecar reader')
 }

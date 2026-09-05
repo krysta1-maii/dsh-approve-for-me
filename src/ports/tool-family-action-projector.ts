@@ -60,6 +60,18 @@ export class ToolFamilyActionProjectorRegistry<Execution extends { readonly name
     return projector?.family === family && projector.projectorId === projectorId
   }
 
+  /**
+   * WP8-c: true only when the tool's registered projector claims this exact
+   * implementation identity. The seal backfill re-resolves the projector for
+   * every sidecar record before promoting it, so a forged projectorId on an
+   * old row can never be backfilled into the ledger.
+   */
+  matchesProjector(toolName: string, projectorId: string): boolean {
+    if (typeof toolName !== 'string' || toolName.length === 0
+      || typeof projectorId !== 'string' || projectorId.length === 0) return false
+    return this.byToolName.get(toolName)?.projectorId === projectorId
+  }
+
   project(execution: Execution): ActionSnapshotInput {
     const toolName = execution.name
     const projector = this.byToolName.get(toolName)

@@ -20,7 +20,7 @@ import {
   setApprovalReasonCodeSidecarReader,
   type ApprovalFlowData,
 } from '../../src/client/approval-conversation.js'
-import { ApprovalFlowItem } from '../../src/client/approval-flow-item.js'
+import { ApprovalFlowItemView } from '../../src/client/approval-flow-item.js'
 
 type ReactElementish = {
   readonly type: unknown
@@ -66,7 +66,7 @@ function contextOf(
 }
 
 function renderItem(data: Partial<ApprovalFlowData>) {
-  return ApprovalFlowItem.type({
+  return ApprovalFlowItemView({
     node: {
       data: {
         requestId: 'ask-1',
@@ -241,7 +241,7 @@ describe('WP5-c server read channel -> renderer (real decided unavailable row)',
       const node = approvalConversationDefinition.buildViewNode!(contextOf([asked, decided], undefined))
       expect(node?.data).toMatchObject({ outcome: 'unavailable', reasonCode: 'sealed-current-missing', decidedSeq: 41 })
 
-      const item = ApprovalFlowItem.type({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
+      const item = ApprovalFlowItemView({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
       const reason = collectByClass(item, 'dsh-afm-flow__reason')
       expect(reason).toHaveLength(1)
       expect(reason[0]!.props['title']).toBe('reason.sealed-current-missing')
@@ -275,7 +275,7 @@ describe('WP5-c server read channel -> renderer (real decided unavailable row)',
       const node = approvalConversationDefinition.buildViewNode!(contextOf([asked, decided], undefined))
       expect((node?.data as ApprovalFlowData).reasonCode).toBeUndefined()
 
-      const item = ApprovalFlowItem.type({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
+      const item = ApprovalFlowItemView({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
       const reason = collectByClass(item, 'dsh-afm-flow__reason')
       expect(reason[0]!.props['data-reason-miss']).toBe('true')
       expect(reason[0]!.props['title']).toBe(REASON_MISS_COPY_KEY)

@@ -1,6 +1,7 @@
 /** AFM Reviewer model card for Settings → Plugins → Plugin configuration. */
 import {
   createElement as h,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -14,6 +15,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ApproveForMeSettings } from '../config.js'
 import type { ApproveForMeLocaleKey } from './locales.js'
+import { fetchLedgerHealth, type LedgerHealthViewModel } from './ledger-health-remote.js'
 
 export interface ApprovalModelRoute {
   readonly provider: string
@@ -122,6 +124,36 @@ export function hasReviewerRouteOverride(user: unknown): boolean {
   return Object.hasOwn(user.reviewer, 'provider') || Object.hasOwn(user.reviewer, 'model')
 }
 
+/** One rendered health row: a locale label key plus the formatted scalar. */
+export interface LedgerHealthRowModel {
+  readonly labelKey: ApproveForMeLocaleKey
+  readonly value: string
+}
+
+/**
+ * WP8-b: prepare the ledger-health rows for rendering. Pure and closed-set:
+ * only segments present on the decoded model produce rows, in a stable order,
+ * and the extractor watermark renders as an em dash until the first checkpoint
+ * commits (null). The caller maps labelKey through the locale dictionary.
+ */
+export function ledgerHealthRows(health: LedgerHealthViewModel): LedgerHealthRowModel[] {
+  const rows: LedgerHealthRowModel[] = []
+  if (health.seal !== undefined) {
+    rows.push(
+      { labelKey: 'health.sealChains', value: String(health.seal.chains) },
+      { labelKey: 'health.sealFacts', value: String(health.seal.sealedFacts) },
+    )
+  }
+  if (health.authorization !== undefined) {
+    rows.push(
+      { labelKey: 'health.authEntries', value: String(health.authorization.entries) },
+      { labelKey: 'health.authCheckpoints', value: String(health.authorization.checkpoints) },
+      { labelKey: 'health.authWatermark', value: health.authorization.maxThroughSeq === null ? '—' : String(health.authorization.maxThroughSeq) },
+    )
+  }
+  return rows
+}
+
 function useSettingsSnapshot(
   scope: SettingsScope<ApprovalModelSettings>,
 ): SettingsScopeSnapshot<ApprovalModelSettings> {
@@ -176,6 +208,12 @@ export function ApprovalSettingsCard(props: ApprovalSettingsCardProps) {
   const [conflicted, setConflicted] = useState(false)
   const [catalog, setCatalog] = useState<ModelCatalog | undefined>()
   const [catalogStatus, setCatalogStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  // WP8-b: read-only ledger-health section state. Presentational only: a fetch
+  // failure or a body outside the closed set settles to 'unavailable' and the
+  // muted line below; it never touches the settings draft or authorization.
+  const [health, setHealth] = useState<LedgerHealthViewModel | undefined>(undefined)
+  const [healthStatus, setHealthStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+  const healthGeneration = useRef(0)
   const catalogGeneration = useRef(0)
   const saveGeneration = useRef(0)
   const alive = useRef(true)
@@ -203,14 +241,26 @@ export function ApprovalSettingsCard(props: ApprovalSettingsCardProps) {
     })
   }
 
+  const loadHealth = useCallback(() => {
+    const generation = ++healthGeneration.current
+    setHealthStatus('loading')
+    void fetchLedgerHealth().then(model => {
+      if (!alive.current || generation !== healthGeneration.current) return
+      setHealth(model)
+      setHealthStatus(model === undefined ? 'unavailable' : 'ready')
+    })
+  }, [])
+
   useEffect(() => {
     alive.current = true
+    loadHealth()
     return () => {
       alive.current = false
+      healthGeneration.current += 1
       catalogGeneration.current += 1
       saveGeneration.current += 1
     }
-  }, [])
+  }, [loadHealth])
 
   useEffect(() => props.subscribeCatalog(connectionReset => {
     catalogGeneration.current += 1
@@ -371,6 +421,20 @@ export function ApprovalSettingsCard(props: ApprovalSettingsCardProps) {
       partial ? h('p', { className: 'afm-settings-card__notice', role: 'status' }, props.t('settings.partial')) : null,
       conflicted ? h('p', { className: 'afm-settings-card__warning', role: 'status' }, props.t('settings.conflict')) : null,
     ),
+    h('div', { className: 'afm-settings-card__field' },
+      h('div', { className: 'afm-settings-card__field-head' },
+        h('span', { className: 'afm-settings-card__label' }, props.t('health.title')),
+        h('button', { type: 'button', className: 'afm-settings-card__refresh', disabled: saving, onClick: loadHealth }, props.t('health.refresh')),
+      ),
+      healthStatus === 'loading'
+        ? h('p', { className: 'afm-settings-card__notice', role: 'status' }, props.t('health.loading'))
+        : healthStatus === 'unavailable' || health === undefined
+          ? h('p', { className: 'afm-settings-card__notice', role: 'status' }, props.t('health.unavailable'))
+          : h('dl', { className: 'afm-settings-card__health' }, ledgerHealthRows(health).flatMap((row, index) => [
+            h('dt', { key: `label-${index}` }, props.t(row.labelKey)),
+            h('dd', { key: `value-${index}` }, row.value),
+          ])),
+    ),
     h('div', { className: 'afm-settings-card__footer' },
       failed ? h('p', { className: 'afm-settings-card__failed', role: 'alert' }, props.t('settings.saveFailed')) : null,
       h('button', { type: 'button', className: 'afm-settings-card__discard', disabled: !dirty || saving, onClick: discard }, props.t('settings.discard')),
@@ -400,6 +464,11 @@ export const APPROVAL_SETTINGS_STYLES = `
 .afm-settings-card__field-actions{display:inline-flex;align-items:center;gap:8px}
 .afm-settings-card__reset{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:transparent;border:0;padding:0;font-size:12px;line-height:1.5}
 .afm-settings-card__reset:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
+.afm-settings-card__refresh{font:inherit;color:var(--dsw-alias-brand-primary);cursor:pointer;background:transparent;border:0;padding:0;font-size:12px;line-height:1.5}
+.afm-settings-card__refresh:disabled{cursor:default;color:var(--dsw-alias-label-tertiary)}
+.afm-settings-card__health{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;margin:0;font-size:12px;line-height:1.5}
+.afm-settings-card__health dt{margin:0;color:var(--dsw-alias-label-tertiary)}
+.afm-settings-card__health dd{margin:0;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family-code,monospace);text-align:right}
 .afm-settings-card__select{width:100%;height:36px;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 34px 0 12px;font:inherit;font-size:13px;line-height:1.5}
 .afm-settings-card__select:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}
 .afm-settings-card__select:disabled,.afm-settings-card__reset:disabled{cursor:default;color:var(--dsw-alias-label-tertiary)}

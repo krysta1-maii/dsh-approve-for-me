@@ -1,8 +1,9 @@
-import { createElement, memo } from 'react'
+import { createElement, memo, useEffect, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { ApprovalFlowData } from './approval-conversation.js'
-import { resolveReasonCodePresentation } from './reason-code.js'
+import { resolveReasonCodePresentation, type ReasonCode } from './reason-code.js'
+import { getReasonCodeRemoteBridge } from './reason-code-remote.js'
 import type {} from './locales.js'
 
 export type ApprovalFlowStatus = ApprovalOutcome | 'pending'
@@ -194,6 +195,15 @@ function statusOf(data: ApprovalFlowData): ApprovalFlowStatus {
   return data.outcome ?? 'pending'
 }
 
+/**
+ * WP8-a: the sidecar fetch is only warranted for a decided 'unavailable' row
+ * whose node does not already carry a reason code. Every other status or an
+ * existing code keeps the row exactly as before (pure gate, unit-tested).
+ */
+export function shouldRequestReasonCode(status: ApprovalFlowStatus, reasonCode: unknown): boolean {
+  return status === 'unavailable' && reasonCode === undefined
+}
+
 function decisionGlyph(status: ApprovalFlowStatus) {
   if (status === 'allowed-once') {
     return createElement('path', { d: 'm6.4 9 1.65 1.65 3.55-4.05' })
@@ -227,12 +237,17 @@ function ShieldIcon({ status }: { readonly status: ApprovalFlowStatus }) {
   )
 }
 
-/** Render one compact, native-token approval lifecycle row in the Chat stream. */
-export const ApprovalFlowItem = memo(function ApprovalFlowItem({
+/**
+ * Render one compact, native-token approval lifecycle row in the Chat stream.
+ * Pure and hook-free: the sidecar-resolved reason code arrives as a prop, so
+ * unit tests (and any host walk) may call this function outside a renderer.
+ */
+export function ApprovalFlowItemView({
   node,
   inspectCall,
   t,
-}: ApprovalFlowItemProps) {
+  sidecarReasonCode,
+}: ApprovalFlowItemProps & { readonly sidecarReasonCode?: ReasonCode }) {
   const data: ApprovalFlowData = node.data
   const status = statusOf(data)
   const summary = data.reason ?? t('approval.request', { toolName: data.toolName })
@@ -241,7 +256,7 @@ export const ApprovalFlowItem = memo(function ApprovalFlowItem({
   // the Gate authorization result — it only chooses the safe generic line.
   const reason = status === 'pending'
     ? null
-    : resolveReasonCodePresentation(status, data.reasonCode)
+    : resolveReasonCodePresentation(status, data.reasonCode ?? sidecarReasonCode)
   return createElement(
     'div',
     {
@@ -297,4 +312,33 @@ export const ApprovalFlowItem = memo(function ApprovalFlowItem({
         createElement('span', { className: 'dsh-afm-flow__chevron', 'aria-hidden': true }),
       ),
   )
+}
+
+/**
+ * Chat-slot component: owns the WP8-a sidecar fetch lifecycle. An 'unavailable'
+ * row without a code asks the read-only sidecar once; when the value settles
+ * the row re-renders with the resolved code. A miss settles to undefined and
+ * the presentation stays the generic safe line. Hooks are unconditional (rules
+ * of hooks); the pure view above stays directly callable from tests.
+ */
+export const ApprovalFlowItem = memo(function ApprovalFlowItem(props: ApprovalFlowItemProps) {
+  const data: ApprovalFlowData = props.node.data
+  const status = statusOf(data)
+  const nodeReasonCode = data.reasonCode
+  const requestId = data.requestId
+  const [sidecarReasonCode, setSidecarReasonCode] = useState<ReasonCode | undefined>(undefined)
+  useEffect(() => {
+    if (!shouldRequestReasonCode(status, nodeReasonCode)) return
+    let alive = true
+    void getReasonCodeRemoteBridge().request(requestId).then(() => {
+      if (!alive) return
+      const resolved = getReasonCodeRemoteBridge().resolve(requestId)
+      setSidecarReasonCode(current => current ?? resolved)
+    })
+    return () => { alive = false }
+  }, [status, nodeReasonCode, requestId])
+  return createElement(ApprovalFlowItemView, {
+    ...props,
+    ...sidecarReasonCode === undefined ? {} : { sidecarReasonCode },
+  })
 })

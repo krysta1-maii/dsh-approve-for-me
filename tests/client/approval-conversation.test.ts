@@ -7,7 +7,7 @@ import {
   matchApprovalEvent,
   type ApprovalFlowData,
 } from '../../src/client/approval-conversation.js'
-import { ApprovalFlowItem, APPROVAL_FLOW_STYLES } from '../../src/client/approval-flow-item.js'
+import { ApprovalFlowItemView, APPROVAL_FLOW_STYLES } from '../../src/client/approval-flow-item.js'
 import {
   APPROVE_FOR_ME_SETTINGS_NAMESPACE,
   APPROVAL_SETTINGS_STYLES,
@@ -114,7 +114,7 @@ describe('approval Chat projection', () => {
   })
 
   it('exposes the current tool and decision through the live-region name', () => {
-    const rendered = ApprovalFlowItem.type({
+    const rendered = ApprovalFlowItemView({
       node: { data: { requestId: 'ask-1', toolName: 'bash', askedSeq: 1, askedAt: 1, outcome: 'allowed-once' } },
       inspectCall: vi.fn(),
       t: (key: string) => key,

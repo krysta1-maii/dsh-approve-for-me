@@ -310,7 +310,56 @@ export type {
 
 // Application gate pieces (DSH-neutral).
 export { GateFailure, gateFailureOutcome, GATE_FAILURE_CODES } from './application/gate-failure.js'
+export {
+  createReasonCodeRouteHandler,
+  decideReasonCodeRoute,
+  parseReasonCodeRequestId,
+  REASON_CODE_ROUTE_MAX_REQUEST_ID,
+  REASON_CODE_ROUTE_PATH,
+} from './application/reason-code-route.js'
+export type {
+  ReasonCodeRouteRead,
+  ReasonCodeRouteRequest,
+  ReasonCodeRouteResponse,
+} from './application/reason-code-route.js'
+export {
+  createLedgerHealthRouteHandler,
+  decideLedgerHealthRoute,
+  LEDGER_HEALTH_ROUTE_PATH,
+  normalizeLedgerHealthAuthorizationStats,
+  normalizeLedgerHealthSealStats,
+} from './application/ledger-health-route.js'
+export type {
+  LedgerHealthAuthorizationRead,
+  LedgerHealthAuthorizationStats,
+  LedgerHealthClock,
+  LedgerHealthRouteInput,
+  LedgerHealthRouteRequest,
+  LedgerHealthRouteResponse,
+  LedgerHealthSealRead,
+  LedgerHealthSealStats,
+} from './application/ledger-health-route.js'
 export { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
+// WP8-c: the single seal/activity construction formula shared by the live
+// capture bridge and the background-once backfill, plus the backfill runner.
+export {
+  matchApprovalSnapshotsForExecutionV1,
+  projectSealForResultV1,
+} from './application/seal-projection.js'
+export type {
+  SealProjectionInputV1,
+  SealProjectionV1,
+} from './application/seal-projection.js'
+export { SealBackfillRunner } from './application/seal-backfill.js'
+export type {
+  SealBackfillAttempt,
+  SealBackfillDependencies,
+  SealBackfillEventAt,
+  SealBackfillLiveEventView,
+  SealBackfillOutcome,
+  SealBackfillSealedRow,
+  SealBackfillStopReason,
+} from './application/seal-backfill.js'
 export type { GateFailureCode, GateFailureCorrelationV1 } from './application/gate-failure.js'
 export {
   InMemoryAllowCache,

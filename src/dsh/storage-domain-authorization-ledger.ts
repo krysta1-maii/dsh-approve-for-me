@@ -16,6 +16,21 @@ export type AuthorizationLedgerWriteResult = 'created' | 'identical' | 'conflict
 /** Per-lifecycle ordered chain index row; an integrity index, never authorization. */
 interface AuthorizationChainV1 { readonly version: 1; readonly lifecycleFingerprint: string; readonly keys: readonly string[]; readonly tipHash: string; readonly canonical: string }
 
+/**
+ * WP8-b: writer-maintained global health gauge (entries/checkpoints/extractor
+ * watermark). The structural Storage Domain table API exposes only exact
+ * get/put (no enumeration), so the drawer cannot be counted on read; the
+ * append lane bumps this single O(1) row instead. It carries counts only —
+ * never ids, hashes, quotes, or content — and is an informal gauge (a crash
+ * window may skew it by one batch), never an authorizing surface.
+ */
+interface AuthorizationStatsV1 { readonly version: 1; readonly entries: number; readonly checkpoints: number; readonly maxThroughSeq: number | null; readonly canonical: string }
+const HEALTH_STATS_KEY = 'stats'
+const HEALTH_STATS_LANE = '#authorization-ledger-health#'
+const HEALTH_STATS_MAX = 0x7fffffff
+
+function isHealthCount(value: unknown): value is number { return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= HEALTH_STATS_MAX }
+
 function parseChain(tipDomain: 'authorization' | 'checkpoint', value: unknown): AuthorizationChainV1 {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(tipDomain + '-chain')
   const o = value as Record<string, unknown>
@@ -41,8 +56,29 @@ const spec = Object.freeze({
     entry_chains: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseChain('authorization', value) }) }),
     checkpoints: Object.freeze({ valueSchema: Object.freeze({ parse: parseExtractionCheckpointV1 }) }),
     checkpoint_chains: Object.freeze({ valueSchema: Object.freeze({ parse: (value: unknown) => parseChain('checkpoint', value) }) }),
+    stats: Object.freeze({ valueSchema: Object.freeze({ parse: parseStats }) }),
   }),
 })
+
+function parseStats(value: unknown): AuthorizationStatsV1 | undefined {
+  try {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const o = value as Record<string, unknown>
+    const expected = ['version', 'entries', 'checkpoints', 'maxThroughSeq', 'canonical']
+    if (Object.keys(o).length !== expected.length || expected.some(k => !Object.hasOwn(o, k))) return undefined
+    if (o.version !== 1 || !isHealthCount(o.entries) || !isHealthCount(o.checkpoints)) return undefined
+    if (o.maxThroughSeq !== null && !isHealthCount(o.maxThroughSeq)) return undefined
+    if (typeof o.canonical !== 'string') return undefined
+    const p = { version: 1 as const, entries: o.entries, checkpoints: o.checkpoints, maxThroughSeq: o.maxThroughSeq }
+    if (o.canonical !== canonicalJson(p)) return undefined
+    return Object.freeze({ ...p, canonical: o.canonical })
+  } catch { return undefined }
+}
+
+function makeStats(entries: number, checkpoints: number, maxThroughSeq: number | null): AuthorizationStatsV1 {
+  const p = { version: 1 as const, entries, checkpoints, maxThroughSeq }
+  return Object.freeze({ ...p, canonical: canonicalJson(p) })
+}
 
 function entryKey(lifecycle: string, entryHash: string) { return authorizationLedgerKey(lifecycle) + '_e_' + entryHash.slice('sha256:'.length) }
 function checkpointKey(lifecycle: string, checkpointHash: string) { return authorizationLedgerKey(lifecycle) + '_c_' + checkpointHash.slice('sha256:'.length) }
@@ -73,9 +109,21 @@ export class DshStorageDomainAuthorizationLedger {
   private readonly tails = new Map<string, Promise<void>>()
   private admissionOpen = true
   private readonly ready: Promise<StorageDomainHandle | undefined>
+  private readonly statsReady: Promise<void>
 
   constructor(facility: StorageDomainFacility | undefined, onUnavailable: () => void = () => {}) {
     this.ready = facility === undefined ? (onUnavailable(), Promise.resolve(undefined)) : facility.open(spec).catch((error) => { debugAuthorizationLedger('open failed', error); onUnavailable(); return undefined })
+    // WP8-b: eagerly materialize the health gauge row so health() reads
+    // deterministically from mount; best-effort and never authorizing.
+    this.statsReady = this.ready.then(async (domain) => {
+      if (domain === undefined) return
+      await this.serial(HEALTH_STATS_LANE, async () => {
+        try {
+          const table = domain.table('stats')
+          if (table.get(HEALTH_STATS_KEY) === undefined) await table.put(HEALTH_STATS_KEY, makeStats(0, 0, null))
+        } catch { /* gauge degrades to unavailable */ }
+      })
+    }).catch(() => {})
   }
 
   /**
@@ -180,6 +228,10 @@ export class DshStorageDomainAuthorizationLedger {
         // Re-validate both complete chains on every write: unrelated persistent
         // corruption fails closed (O(R+A), bounded drawer).
         if (this.validatedEntries(domain, lifecycleFingerprint) === undefined || this.validatedCheckpoints(domain, lifecycleFingerprint) === undefined) return 'unavailable'
+        // A committed batch reaches here exactly once per successful append (an
+        // identical replay takes the committed path above), so the O(1) gauge
+        // bump cannot double-count a replayed checkpoint.
+        if (!committed) await this.bumpStats(domain, parsed.length, parsedCheckpoint.throughSeq)
         return committed ? 'identical' : 'created'
       } catch { return 'unavailable' }
     })
@@ -190,6 +242,41 @@ export class DshStorageDomainAuthorizationLedger {
     if (!this.admissionOpen) return undefined
     const domain = await this.ready
     return domain === undefined ? undefined : this.validatedEntries(domain, lifecycleFingerprint)
+  }
+
+  /**
+   * WP8-b: read-only, O(1) health gauge for the presentational ledger-health
+   * route: drawer row counts plus the extractor watermark (max throughSeq across
+   * committed checkpoints, null when none). Returns undefined when the domain is
+   * unavailable, drained, or the gauge row is polluted — the route then omits
+   * the authorization segment entirely. Counts only; never ids, hashes, quotes,
+   * or content; never authorizing.
+   */
+  async health(): Promise<{ entries: number; checkpoints: number; maxThroughSeq: number | null } | undefined> {
+    if (!this.admissionOpen) return undefined
+    const domain = await this.ready
+    if (domain === undefined) return undefined
+    try {
+      await this.statsReady
+      const row = parseStats(domain.table('stats').get(HEALTH_STATS_KEY))
+      return row === undefined ? undefined : Object.freeze({ entries: row.entries, checkpoints: row.checkpoints, maxThroughSeq: row.maxThroughSeq })
+    } catch { return undefined }
+  }
+
+  private async bumpStats(domain: StorageDomainHandle, entryCount: number, throughSeq: number): Promise<void> {
+    await this.statsReady
+    await this.serial(HEALTH_STATS_LANE, async () => {
+      try {
+        const table = domain.table('stats')
+        const current = parseStats(table.get(HEALTH_STATS_KEY))
+        const watermark = Math.max(current?.maxThroughSeq ?? -1, throughSeq)
+        await table.put(HEALTH_STATS_KEY, makeStats(
+          Math.min(HEALTH_STATS_MAX, (current?.entries ?? 0) + entryCount),
+          Math.min(HEALTH_STATS_MAX, (current?.checkpoints ?? 0) + 1),
+          watermark < 0 ? null : Math.min(HEALTH_STATS_MAX, watermark),
+        ))
+      } catch { /* gauge best-effort, never authorizing */ }
+    })
   }
 
   /** The validated checkpoint chain tip, or undefined when unavailable/polluted; null when none exists yet. */

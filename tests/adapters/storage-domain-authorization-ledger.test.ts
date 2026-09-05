@@ -185,3 +185,101 @@ describe('DshStorageDomainAuthorizationLedger', () => {
     expect((await ledger.readCheckpoint(LIFE))!.throughSeq).toBe(77)
   })
 })
+
+describe('DshStorageDomainAuthorizationLedger health (WP8-b)', () => {
+  function batchFor(lifecycle: string, sourceSeqs: readonly number[], previousEntryHash: string, previousCheckpointHash: string, afterSeq = -1) {
+    let previous = previousEntryHash
+    const entries = sourceSeqs.map(seq => {
+      const entry = createAuthorizationEntryV1({
+        lifecycleFingerprint: lifecycle, sourceSeq: seq, occurredAt: 1000 + seq,
+        quote: 'allow it ' + seq, effect: 'grant', coverage: 'action', summary: 'grant ' + seq,
+        extractorVersion: EXTRACTOR, previousEntryHash: previous,
+      })
+      previous = entry.entryHash
+      return entry
+    })
+    const throughSeq = sourceSeqs.length === 0 ? afterSeq : sourceSeqs.at(-1)!
+    const checkpoint = createExtractionCheckpointV1({
+      lifecycleFingerprint: lifecycle, throughSeq, extractorVersion: EXTRACTOR,
+      inputHash: extractionInputHash(sourceSeqs.map(seq => ({ seq, text: 'allow it ' + seq }))),
+      producedEntryHashes: entries.map(entry => entry.entryHash),
+      previousCheckpointHash,
+    })
+    return { entries, checkpoint }
+  }
+
+  it('reports a null watermark for a fresh drawer', async () => {
+    const f = fake()
+    const ledger = new DshStorageDomainAuthorizationLedger(f.facility)
+    await expect(ledger.health()).resolves.toEqual({ entries: 0, checkpoints: 0, maxThroughSeq: null })
+  })
+
+  it('counts entries and checkpoints and tracks the extractor watermark, with replay idempotence', async () => {
+    const f = fake()
+    const ledger = new DshStorageDomainAuthorizationLedger(f.facility)
+    const g = genesis()
+    const a = batch([12, 30], g.entry, g.checkpoint)
+    await expect(ledger.appendBatch(LIFE, a.entries, a.checkpoint)).resolves.toBe('created')
+    // An identical replay of the committed tip batch must not double-count.
+    await expect(ledger.appendBatch(LIFE, a.entries, a.checkpoint)).resolves.toBe('identical')
+    await expect(ledger.health()).resolves.toEqual({ entries: 2, checkpoints: 1, maxThroughSeq: 30 })
+    const b = batch([44], a.entries.at(-1)!.entryHash, a.checkpoint.checkpointHash)
+    await expect(ledger.appendBatch(LIFE, b.entries, b.checkpoint)).resolves.toBe('created')
+    await expect(ledger.appendBatch(LIFE, b.entries, b.checkpoint)).resolves.toBe('identical')
+    await expect(ledger.health()).resolves.toEqual({ entries: 3, checkpoints: 2, maxThroughSeq: 44 })
+    // A crash-tail resume (entries + entry chain written, checkpoint chain not)
+    // counts the batch exactly once.
+    const c = batch([50], b.entries.at(-1)!.entryHash, b.checkpoint.checkpointHash)
+    await expect(ledger.appendBatch(LIFE, c.entries, c.checkpoint)).resolves.toBe('created')
+    await expect(ledger.health()).resolves.toEqual({ entries: 4, checkpoints: 3, maxThroughSeq: 50 })
+  })
+
+  it('aggregates across lifecycles', async () => {
+    const f = fake()
+    const ledger = new DshStorageDomainAuthorizationLedger(f.facility)
+    const g = genesis()
+    const a = batch([12], g.entry, g.checkpoint)
+    await ledger.appendBatch(LIFE, a.entries, a.checkpoint)
+    const other = batchFor('life-two', [7], genesisAuthorizationHash('life-two'), genesisExtractionCheckpointHash('life-two'))
+    await expect(ledger.appendBatch('life-two', other.entries, other.checkpoint)).resolves.toBe('created')
+    await expect(ledger.health()).resolves.toEqual({ entries: 2, checkpoints: 2, maxThroughSeq: 12 })
+  })
+
+  it('returns undefined when unavailable, drained, or when the gauge row is polluted', async () => {
+    const absent = new DshStorageDomainAuthorizationLedger(undefined, () => {})
+    await expect(absent.health()).resolves.toBeUndefined()
+    const f = fake()
+    const drained = new DshStorageDomainAuthorizationLedger(f.facility)
+    await drained.drain()
+    await expect(drained.health()).resolves.toBeUndefined()
+    const f2 = fake()
+    const ledger = new DshStorageDomainAuthorizationLedger(f2.facility)
+    const g = genesis()
+    const a = batch([12], g.entry, g.checkpoint)
+    await ledger.appendBatch(LIFE, a.entries, a.checkpoint)
+    f2.tables.get('stats')!.set('stats', { version: 99 })
+    await expect(ledger.health()).resolves.toBeUndefined()
+    expect(await ledger.read(LIFE)).toHaveLength(1)
+  })
+
+  it('a failing gauge bump never fails the authoritative batch', async () => {
+    const f = fake()
+    const original = f.facility.open
+    f.facility.open = async spec => {
+      const h = await original(spec)
+      return {
+        ...h,
+        table: (name: string) => {
+          const t = h.table(name)
+          return name === 'stats' ? { ...t, put: async () => { throw new Error('gauge down') } } : t
+        },
+      }
+    }
+    const ledger = new DshStorageDomainAuthorizationLedger(f.facility)
+    const g = genesis()
+    const a = batch([12], g.entry, g.checkpoint)
+    await expect(ledger.appendBatch(LIFE, a.entries, a.checkpoint)).resolves.toBe('created')
+    expect(await ledger.read(LIFE)).toHaveLength(1)
+    await expect(ledger.health()).resolves.toBeUndefined()
+  })
+})

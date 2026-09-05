@@ -113,7 +113,14 @@ export interface Config {
   readonly maxAuthorizationEntries?: number
   /** Maximum user/message events consumed by one incremental authorization extraction (default 256; WP7 decision 6). */
   readonly maxAuthorizationExtractionEvents?: number
-  /** Reserved for phase three; phase one accepts only false or an omitted value. */
+  /**
+   * Phase-three background-once seal backfill (WP8-c). When true, an idle root
+   * session (turn/end observed, no in-flight approval run) triggers one
+   * backfill attempt per lifecycle per process; it re-runs the full
+   * wire/catalog/projector verification and stops on the first failure, so an
+   * unbackfilled lifecycle simply stays unsealed (fail closed). It never makes
+   * an unsealed session automatically approvable. Default false.
+   */
   readonly sealBackfill?: boolean
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
@@ -172,7 +179,7 @@ export interface NormalizedConfig {
   readonly authorizationExtractorEnabled: boolean
   readonly maxAuthorizationEntries: number
   readonly maxAuthorizationExtractionEvents: number
-  readonly sealBackfill: false
+  readonly sealBackfill: boolean
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
@@ -354,11 +361,12 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(maxAuthorizationExtractionEvents) || maxAuthorizationExtractionEvents < 1) {
     throw new TypeError('maxAuthorizationExtractionEvents must be a positive safe integer')
   }
-  if (config.sealBackfill === true) {
-    throw new TypeError('sealBackfill is fixed off until phase three')
-  }
-  if (config.sealBackfill !== undefined && config.sealBackfill !== false) {
-    throw new TypeError('sealBackfill must be false when specified')
+  // WP8-c: sealBackfill unfreezes into a real boolean (default false). The
+  // loader schema already enforces z.boolean(); normalize repeats the check
+  // for programmatic compositions.
+  const sealBackfill = config.sealBackfill ?? false
+  if (typeof sealBackfill !== 'boolean') {
+    throw new TypeError('sealBackfill must be a boolean')
   }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
@@ -384,7 +392,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     authorizationExtractorEnabled,
     maxAuthorizationEntries,
     maxAuthorizationExtractionEvents,
-    sealBackfill: false,
+    sealBackfill,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),

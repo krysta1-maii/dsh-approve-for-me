@@ -9,8 +9,10 @@ import type {
 import {
   ApprovalSettingsCard,
   approvalModelKey,
+  ledgerHealthRows,
   type ApprovalModelSettings,
 } from '../../src/client/approval-settings-card.js'
+import type { LedgerHealthViewModel } from '../../src/client/ledger-health-remote.js'
 
 const baseRoute: ApprovalModelSettings = {
   reviewer: { provider: 'openai-codex', model: 'gpt-5.6-terra' },
@@ -179,5 +181,44 @@ describe('AFM Reviewer model settings card', () => {
     expect(statuses).toContain('settings.unknown')
     expect(statuses).toContain('settings.partial')
     expect(statuses).not.toContain('settings.unavailable')
+  })
+})
+
+describe('ledgerHealthRows (WP8-b render preparation)', () => {
+  const full: LedgerHealthViewModel = {
+    version: 1,
+    seal: { chains: 2, sealedFacts: 7 },
+    authorization: { entries: 3, checkpoints: 2, maxThroughSeq: 50615 },
+    generatedAt: 1725500000000,
+  }
+
+  it('maps every present segment to stable label/value rows', () => {
+    expect(ledgerHealthRows(full)).toEqual([
+      { labelKey: 'health.sealChains', value: '2' },
+      { labelKey: 'health.sealFacts', value: '7' },
+      { labelKey: 'health.authEntries', value: '3' },
+      { labelKey: 'health.authCheckpoints', value: '2' },
+      { labelKey: 'health.authWatermark', value: '50615' },
+    ])
+  })
+
+  it('renders a null extractor watermark as an em dash', () => {
+    expect(ledgerHealthRows({
+      version: 1,
+      authorization: { entries: 0, checkpoints: 0, maxThroughSeq: null },
+      generatedAt: 1,
+    })).toEqual([
+      { labelKey: 'health.authEntries', value: '0' },
+      { labelKey: 'health.authCheckpoints', value: '0' },
+      { labelKey: 'health.authWatermark', value: '—' },
+    ])
+  })
+
+  it('omits rows for absent segments (degraded bodies stay closed-set)', () => {
+    expect(ledgerHealthRows({ version: 1, generatedAt: 1 })).toEqual([])
+    expect(ledgerHealthRows({ version: 1, seal: { chains: 0, sealedFacts: 0 }, generatedAt: 1 })).toEqual([
+      { labelKey: 'health.sealChains', value: '0' },
+      { labelKey: 'health.sealFacts', value: '0' },
+    ])
   })
 })

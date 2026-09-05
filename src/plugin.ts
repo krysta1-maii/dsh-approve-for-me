@@ -55,6 +55,8 @@ import type { GatePreReview } from './application/gate-pipeline.js'
 import { InMemoryAllowCache, InMemoryExactDenialBreaker } from './application/breaker.js'
 import { DshStorageDomainGateDecisionRecordStore } from './dsh/storage-domain-decision-record.js'
 import type { StorageDomainFacility } from './dsh/storage-domain-decision-record.js'
+import { createReasonCodeRouteHandler, REASON_CODE_ROUTE_PATH } from './application/reason-code-route.js'
+import { createLedgerHealthRouteHandler, LEDGER_HEALTH_ROUTE_PATH } from './application/ledger-health-route.js'
 import {
   DshStorageDomainApprovalSnapshotRepository,
   DshStorageDomainExecutionFactRepository,
@@ -76,6 +78,8 @@ import { createExtractorProvider } from './reviewer/extractor-provider.js'
 import { DefaultExtractionChannel } from './application/extraction-channel.js'
 import { DefaultAuthorizationExtractionCoordinator, boundedSyncTailDeadline } from './application/authorization-extraction-coordinator.js'
 import type { AuthorizationLiveEventView } from './application/authorization-verification.js'
+import { SealBackfillRunner } from './application/seal-backfill.js'
+import type { SealBackfillLiveEventView } from './application/seal-backfill.js'
 import { DshStorageDomainAuthorizationLedger } from './dsh/storage-domain-authorization-ledger.js'
 import { AUTHORIZATION_EXTRACTOR_VERSION, createExtractorProviderData, EXTRACTION_PROVIDER } from './domain/extraction-protocol.js'
 
@@ -285,11 +289,17 @@ export function installApproveForMe(
   let rollbackDurableFacts: DshStorageDomainFactRepositories | undefined
   let rollbackRecords: DshStorageDomainGateDecisionRecordStore | undefined
   let rollbackLedger: DshStorageDomainSealedFacts | undefined
+  let rollbackSealBackfill: SealBackfillRunner | undefined
   let stopPreExecute = () => {}
   let stopPostExecute = () => {}
   let stopResult = () => {}
   let stopSessionEvent = () => {}
   let stopMachinePolicy = () => {}
+  // WP8-a: presentational reason-code route disposer; a no-op when the host has
+  // no webServer (CLI profile) or registration failed.
+  let stopReasonCodeRoute = () => {}
+  // WP8-b: presentational ledger-health route disposer; same no-op discipline.
+  let stopLedgerHealthRoute = () => {}
   try {
   const acquiredRegistration = registration = ctx.managedAgents.registerProvider(createReviewerProvider({
     submitDecision: {
@@ -350,6 +360,32 @@ export function installApproveForMe(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
     () => ctx.logger.error(new Error('authorization ledger storage unavailable')),
   )
+  // WP8-c: background-once seal backfill runner. Created unconditionally (it
+  // never triggers unless config.sealBackfill is on); every storage read is
+  // fail-closed and the ledger writes ride the same create-once append lane.
+  const sealBackfill = rollbackSealBackfill = new SealBackfillRunner({
+    listExecutions: async (session, signal) => {
+      try {
+        return await executionFacts.list(session, signal)
+      } catch {
+        return undefined
+      }
+    },
+    listApprovals: async (session, signal) => {
+      try {
+        return await approvalSnapshots.list(session, signal)
+      } catch {
+        return undefined
+      }
+    },
+    readSealed: lifecycleFingerprint => ledger.read(lifecycleFingerprint),
+    appendSealed: (seal, activity) => ledger.append(seal, activity),
+    // No closed-world projector registry (programmatic projector path): an
+    // old row can never be re-resolved, so backfill stops — fail closed.
+    projectorResolvable: (toolName, projectorId) => configuredProjectors?.matchesProjector(toolName, projectorId) ?? false,
+    now: () => Date.now(),
+    log: line => ctx.logger.error(new Error(line)),
+  })
   // Decision 6: one coordinator serves both triggers. The idle trigger covers
   // root user/message events; the approval path additionally runs one
   // synchronous tail catch-up before the sealed facts read. extract() never
@@ -582,6 +618,55 @@ export function installApproveForMe(
   const records = rollbackRecords = new DshStorageDomainGateDecisionRecordStore(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
   )
+  // WP8-a: read-only reason-code renderer transport. The web GUI host exposes
+  // ctx.webServer; the CLI profile has no such service, so probe-cast and skip
+  // silently rather than injecting a required service. The route is purely
+  // presentational — a failing/absent registration (or host) can never affect
+  // authorization, so registration failure is logged and never fails the mount.
+  {
+    const webServer = (ctx as unknown as {
+      webServer?: { register(route: { kind: 'exact'; path: string; handler: unknown }): () => void }
+    }).webServer
+    if (webServer !== undefined && typeof webServer.register === 'function') {
+      try {
+        stopReasonCodeRoute = webServer.register({
+          kind: 'exact',
+          path: REASON_CODE_ROUTE_PATH,
+          handler: createReasonCodeRouteHandler(requestId => records.readReasonCode(requestId)),
+        })
+        if (typeof stopReasonCodeRoute !== 'function') stopReasonCodeRoute = () => {}
+      } catch (error) {
+        stopReasonCodeRoute = () => {}
+        ctx.logger.error(error)
+      }
+    }
+  }
+  // WP8-b: read-only ledger-health transport (seal-chain counts + authorization
+  // drawer counts + extractor watermark). Same probe-cast, no-webServer skip,
+  // and never-fail-the-mount discipline as WP8-a: the route only ever exposes
+  // bounded scalars, and a degraded store merely omits its segment.
+  {
+    const webServer = (ctx as unknown as {
+      webServer?: { register(route: { kind: 'exact'; path: string; handler: unknown }): () => void }
+    }).webServer
+    if (webServer !== undefined && typeof webServer.register === 'function') {
+      try {
+        stopLedgerHealthRoute = webServer.register({
+          kind: 'exact',
+          path: LEDGER_HEALTH_ROUTE_PATH,
+          handler: createLedgerHealthRouteHandler({
+            seal: () => ledger.health(),
+            authorization: () => authorizationLedger.health(),
+            clock: () => Date.now(),
+          }),
+        })
+        if (typeof stopLedgerHealthRoute !== 'function') stopLedgerHealthRoute = () => {}
+      } catch (error) {
+        stopLedgerHealthRoute = () => {}
+        ctx.logger.error(error)
+      }
+    }
+  }
 
   // Pipeline pre-review uses the same ReviewCoordinator, sealing each result in
   // the in-memory registry so a later ask can replay instead of re-reviewing.
@@ -630,6 +715,30 @@ export function installApproveForMe(
   // approval/request answerer.
   const gate: GateMachinePolicyV1 = { id: 'dsh-approve-for-me/v1', decide: request => pipeline.decide(request) }
 
+  // WP8-c: per-session in-flight approval run counts. A turn/end only triggers
+  // a backfill when no run is in flight, and a newly started run aborts any
+  // running backfill for that session's lifecycle (the idle assumption is
+  // invalidated the moment the Host asks again).
+  const pendingApprovalRuns = new Map<string, number>()
+  const abortBackfillForAgentSession = (agent: Agent): void => {
+    const session = agent.session as unknown as {
+      id?: unknown
+      header?: { version?: unknown; createdAt?: unknown; cwd?: unknown }
+    } | undefined
+    const sessionId = typeof session?.id === 'string' ? session.id : ''
+    const header = session?.header
+    if (sessionId.length === 0 || header === undefined || header === null
+      || !Number.isSafeInteger(header.version) || (header.version as number) < 0
+      || !Number.isSafeInteger(header.createdAt) || (header.createdAt as number) < 0) return
+    const cwd = typeof header.cwd === 'string' && header.cwd.length > 0 ? header.cwd : undefined
+    const lifecycle = {
+      sessionId,
+      sessionFormatVersion: header.version as number,
+      createdAt: header.createdAt as number,
+      ...(cwd === undefined ? {} : { cwd }),
+    }
+    sealBackfill.abort(canonicalJson(lifecycle))
+  }
   const machinePolicy = createMachinePolicyAdapter({
     gate,
     mode: normalized.mode,
@@ -737,10 +846,73 @@ export function installApproveForMe(
           }
         }
       }
+      // WP8-c: background-once seal backfill trigger. Root sessions only (the
+      // parentSession header is the recursion guard that keeps managed child
+      // sessions from ever re-entering here) and only when the config switch
+      // is on. A turn/end with no in-flight approval run and an empty writer
+      // lane queues exactly one attempt per lifecycle per process; new
+      // user/message activity or a new approval run aborts it (the append-only
+      // create-once ledger makes a mid-run abort safe).
+      if (normalized.sealBackfill && sessionId.length > 0) {
+        const backfillBinding = session as unknown as {
+          eventAt?: (seq: number) => SealBackfillLiveEventView | undefined
+          header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown }
+        }
+        const backfillHeader = backfillBinding.header
+        const backfillEventType = (event as { type?: unknown }).type
+        if ((backfillHeader?.parentSession === undefined || backfillHeader.parentSession === '')
+          && Number.isSafeInteger(backfillHeader?.version) && (backfillHeader?.version as number) >= 0
+          && Number.isSafeInteger(backfillHeader?.createdAt) && (backfillHeader?.createdAt as number) >= 0
+          && typeof backfillBinding.eventAt === 'function') {
+          const backfillCwd = typeof backfillHeader?.cwd === 'string' && backfillHeader.cwd.length > 0 ? backfillHeader.cwd : undefined
+          const backfillLifecycle = {
+            sessionId,
+            sessionFormatVersion: backfillHeader!.version as number,
+            createdAt: backfillHeader!.createdAt as number,
+            ...(backfillCwd === undefined ? {} : { cwd: backfillCwd }),
+          }
+          const backfillFingerprint = canonicalJson(backfillLifecycle)
+          if (backfillEventType === 'user/message') {
+            sealBackfill.abort(backfillFingerprint)
+          } else if (backfillEventType === 'turn/end'
+            && !pendingApprovalRuns.has(sessionId)
+            && !sealBackfill.isRunning(backfillFingerprint)) {
+            const started = sealBackfill.attempt({
+              lifecycle: backfillLifecycle,
+              lifecycleFingerprint: backfillFingerprint,
+              eventAt: seq => backfillBinding.eventAt?.(seq) as SealBackfillLiveEventView | undefined,
+            })
+            if (started !== 'already-attempted') {
+              // Fire-and-forget: the runner logs a bounded scalar line for
+              // every outcome and never rejects.
+              void started.catch(() => {})
+            }
+          }
+        }
+      }
     })
     // The machine policy is the commit point: every fallible event hook is
     // installed first, so a partial mount can never leave authorization armed.
-    stopMachinePolicy = approval.registerMachinePolicy(machinePolicy)
+    // WP8-c: wrap the policy so every approval run start/settle updates the
+    // per-session in-flight count and a start aborts that session's backfill.
+    const trackedMachinePolicy: PatchedMachineApprovalPolicyLike = {
+      id: machinePolicy.id,
+      async decide(request) {
+        const sessionId = String(request.agent?.session?.id ?? '')
+        if (sessionId.length > 0) {
+          pendingApprovalRuns.set(sessionId, (pendingApprovalRuns.get(sessionId) ?? 0) + 1)
+          abortBackfillForAgentSession(request.agent)
+        }
+        try {
+          return await machinePolicy.decide(request)
+        } finally {
+          const remaining = (pendingApprovalRuns.get(sessionId) ?? 1) - 1
+          if (remaining <= 0) pendingApprovalRuns.delete(sessionId)
+          else pendingApprovalRuns.set(sessionId, remaining)
+        }
+      },
+    }
+    stopMachinePolicy = approval.registerMachinePolicy(trackedMachinePolicy)
   let disposal: Promise<void> | undefined
   return {
     config: normalized,
@@ -765,6 +937,8 @@ export function installApproveForMe(
       stopResult()
       stopPostExecute()
       stopPreExecute()
+      stopReasonCodeRoute()
+      stopLedgerHealthRoute()
       disposal = (async () => {
         const errors: unknown[] = []
         // The extraction channel closes BEFORE the lane drain so every in-flight
@@ -774,6 +948,9 @@ export function installApproveForMe(
           () => lifecycle.dispose(),
           () => extractionChannel.dispose(),
           () => lanes.drain(),
+          // WP8-c: abort in-flight backfills and drain their writer lane before
+          // the sealed ledger closes underneath them.
+          () => sealBackfill.dispose(),
           () => ledger.drain(),
           () => authorizationLedger.drain(),
         ]) {
@@ -792,7 +969,7 @@ export function installApproveForMe(
   }
   } catch (error) {
     const rollbackErrors: unknown[] = []
-    for (const stop of [stopMachinePolicy, stopSessionEvent, stopResult, stopPostExecute, stopPreExecute]) {
+    for (const stop of [stopMachinePolicy, stopSessionEvent, stopResult, stopPostExecute, stopPreExecute, stopReasonCodeRoute, stopLedgerHealthRoute]) {
       try { stop() } catch (reason) { rollbackErrors.push(reason) }
     }
     const rollback = (async () => {
@@ -800,6 +977,7 @@ export function installApproveForMe(
         () => lifecycle.dispose(),
         () => rollbackExtractionChannel?.dispose(),
         () => rollbackLanes?.drain(),
+        () => rollbackSealBackfill?.dispose(),
         () => rollbackLedger?.drain(),
         () => rollbackAuthorizationLedger?.drain(),
         () => rollbackDurableFacts?.drain(),

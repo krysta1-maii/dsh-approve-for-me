@@ -123,6 +123,13 @@ describe('plugin config', () => {
     })
   })
 
+  it('unfreezes sealBackfill as a real boolean defaulting to false (WP8-c)', () => {
+    expect(normalizeConfig(valid()).sealBackfill).toBe(false)
+    expect(normalizeConfig({ ...valid(), sealBackfill: false }).sealBackfill).toBe(false)
+    expect(normalizeConfig({ ...valid(), sealBackfill: true }).sealBackfill).toBe(true)
+    expect(() => normalizeConfig({ ...valid(), sealBackfill: 1 as never })).toThrow(/sealBackfill must be a boolean/)
+  })
+
   it('normalizes the authorization extractor and drawer budget knobs to their single-source defaults (WP7-c2a)', () => {
     const normalized = normalizeConfig(valid())
     expect(normalized.authorizationExtractorEnabled).toBe(true)
@@ -294,8 +301,7 @@ describe('plugin config', () => {
     expect(() => normalizeConfig({ ...valid(), maxRecentExcerptBytes: 1.5 })).toThrow(/maxRecentExcerptBytes/)
     expect(() => normalizeConfig({ ...valid(), maxHotPacketBytes: 256_001 })).toThrow(/maxHotPacketBytes/)
     expect(() => normalizeConfig({ ...valid(), maxHotPacketBytes: 0 })).toThrow(/maxHotPacketBytes/)
-    expect(() => normalizeConfig({ ...valid(), sealBackfill: true })).toThrow(/sealBackfill is fixed off/)
-    expect(() => normalizeConfig({ ...valid(), sealBackfill: 'yes' as never })).toThrow(/sealBackfill/)
+    expect(() => normalizeConfig({ ...valid(), sealBackfill: 'yes' as never })).toThrow(/sealBackfill must be a boolean/)
     expect(() => normalizeConfig({ ...valid(), maxSourceEvents: 20_000 } as never))
       .toThrow(/maxSourceEvents has been removed.*sealed-tail and ledger budgets/)
     expect(() => normalizeConfig({ ...valid(), trustEnvelope: { tools: ['unknown'] as never } }))

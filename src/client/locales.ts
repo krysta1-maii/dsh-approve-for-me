@@ -53,6 +53,15 @@ export const zh = {
   'settings.discard': '放弃',
   'settings.saveFailed': '保存失败；草稿已保留。',
   'settings.conflict': '设置已在其他位置更改；请重新选择模型或放弃草稿。',
+  'health.title': '台账健康',
+  'health.loading': '正在读取台账健康…',
+  'health.unavailable': '台账健康暂时不可用。',
+  'health.refresh': '刷新',
+  'health.sealChains': '盖章链数',
+  'health.sealFacts': '已盖章事实',
+  'health.authEntries': '授权条目',
+  'health.authCheckpoints': '提取检查点',
+  'health.authWatermark': '提取水位（最大 throughSeq）',
 } satisfies Record<string, string>
 
 export type ApproveForMeLocaleKey = keyof typeof zh
@@ -115,4 +124,13 @@ export const en = {
   'settings.discard': 'Discard',
   'settings.saveFailed': 'Save failed; the draft was kept.',
   'settings.conflict': 'Settings changed elsewhere. Choose the model again or discard this draft.',
+  'health.title': 'Ledger health',
+  'health.loading': 'Loading ledger health…',
+  'health.unavailable': 'Ledger health is currently unavailable.',
+  'health.refresh': 'Refresh',
+  'health.sealChains': 'Seal chains',
+  'health.sealFacts': 'Sealed facts',
+  'health.authEntries': 'Authorization entries',
+  'health.authCheckpoints': 'Extraction checkpoints',
+  'health.authWatermark': 'Extractor watermark (max throughSeq)',
 } satisfies Record<ApproveForMeLocaleKey, string>

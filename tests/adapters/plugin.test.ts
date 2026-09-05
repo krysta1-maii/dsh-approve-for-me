@@ -25,14 +25,23 @@ import {
   DEFAULT_MAX_SEALED_HISTORY_WINDOW,
   DshStorageDomainFactRepositories,
   DshStorageDomainGateDecisionRecordStore,
+  REASON_CODE_ROUTE_PATH,
+  LEDGER_HEALTH_ROUTE_PATH,
   DshStorageDomainSealedFacts,
   SerialLanes,
+  canonicalJson,
+  createActionSnapshot,
+  hashAction,
+  DSH_ALPHA2_SHELL_FAMILY,
+  DSH_ALPHA2_SHELL_PROJECTOR_ID,
+  SealBackfillRunner,
   installApproveForMe,
   parseApprovalReviewPacketV1,
   parseApprovalReviewPacketV2,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
-import type { Config } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, Config, ToolExecutionFactRecordV1 } from '../../src/index.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import * as approveForMe from '../../src/index.js'
 import { approvalE2ESchemas, buildApprovalE2EFixture, seedApprovalE2E } from '../helpers/approval-e2e.js'
 
@@ -88,6 +97,7 @@ interface InstallHarness {
     effect(setup: () => (() => void | Promise<void>), label?: string): unknown
     inject(services: readonly string[], listener: (ctx: unknown) => void): Promise<void>
     logger: { error(error: unknown): void }
+    webServer?: { register(route: { kind: 'exact'; path: string; handler: unknown }): () => void }
     llm: {
       listProviders(): Array<{ id: string; name: string }>
       listModels(provider: string): Promise<Array<{ provider: string; id: string; name: string }>>
@@ -112,6 +122,12 @@ interface InstallHarness {
   deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
   disposeRegistration: ReturnType<typeof vi.fn>
   disposeExtractorRegistration: ReturnType<typeof vi.fn>
+  webServerRoute: { kind: string; path: string; handler: unknown } | undefined
+  /** WP8-b: every registered route keyed by path (reason-code + ledger-health). */
+  webServerRoutes: ReadonlyMap<string, { kind: string; path: string; handler: unknown }>
+  disposeWebServerRoute: ReturnType<typeof vi.fn>
+  /** Per-route disposer spy (path-keyed), for unregister assertions. */
+  disposeWebServerRouteFor: (path: string) => ReturnType<typeof vi.fn> | undefined
   extractionDelivered: { request: Record<string, unknown>; window: readonly { seq: number; text: string }[] } | undefined
 }
 
@@ -124,6 +140,12 @@ function harness(options: {
   schemas?: readonly unknown[]
   storageDomain?: StorageDomainFacility
   agents?: { get(id: string): Agent | undefined }
+  /**
+   * WP8-a: model the web GUI host's ctx.webServer. When true the ctx exposes a
+   * stub register() that records the route and returns a spied disposer; when
+   * absent (default) the ctx has no webServer at all (CLI profile).
+   */
+  webServer?: boolean
   /** Test hook: propose extractor submission entries for a delivered window. */
   proposeExtractionEntries?: (request: Record<string, unknown>, window: readonly { seq: number; text: string }[]) => readonly Record<string, unknown>[]
   /**
@@ -158,6 +180,10 @@ function harness(options: {
   let delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
   let deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
   let extractionDelivered: InstallHarness['extractionDelivered']
+  // WP8-a/WP8-b: webServer stub capture, keyed by route path so two exact
+  // routes (reason-code + ledger-health) coexist without clobbering.
+  const webServerRoutes = new Map<string, { kind: string; path: string; handler: unknown }>()
+  const disposeWebServerRouteSpies = new Map<string, ReturnType<typeof vi.fn>>()
   // Materialize runs inside controller.create, so the scoped tool/observer must
   // be captured per provider: the Reviewer and the Extractor share the same
   // fake controller shape but register different scoped tools.
@@ -368,6 +394,16 @@ function harness(options: {
     logger: { error: vi.fn() },
     storageDomain: options.storageDomain,
     agents: options.agents,
+    webServer: options.webServer === true
+      ? {
+          register(route: { kind: 'exact'; path: string; handler: unknown }) {
+            webServerRoutes.set(route.path, route)
+            const spy = vi.fn(() => {})
+            disposeWebServerRouteSpies.set(route.path, spy)
+            return spy
+          },
+        }
+      : undefined,
   }
   return {
     ctx: ctx as unknown as InstallHarness['ctx'],
@@ -385,6 +421,10 @@ function harness(options: {
     get delivered() { return delivered },
     get deliveredPacket() { return deliveredPacket },
     get extractionDelivered() { return extractionDelivered },
+    get webServerRoute() { return webServerRoutes.get(REASON_CODE_ROUTE_PATH) },
+    get webServerRoutes() { return webServerRoutes },
+    get disposeWebServerRoute() { return disposeWebServerRouteSpies.get(REASON_CODE_ROUTE_PATH)! },
+    disposeWebServerRouteFor: (path: string) => disposeWebServerRouteSpies.get(path),
   }
 }
 
@@ -967,10 +1007,12 @@ describe('installApproveForMe composition root', () => {
     // WP7-c2b: the extraction channel closes before the lane drain (in-flight
     // extractions settle as 'disposed'), both drawers drain before the decision
     // channel and provider release, and the extractor unregisters after the
-    // Reviewer.
-    const spies = [spy(ApprovalRunLifecycle.prototype, 'dispose', 'abort'), spy(DefaultExtractionChannel.prototype, 'dispose', 'extraction-channel'), spy(SerialLanes.prototype, 'drain', 'lanes'), spy(DshStorageDomainSealedFacts.prototype, 'drain', 'ledger'), spy(DshStorageDomainAuthorizationLedger.prototype, 'drain', 'authorization-ledger'), spy(DshStorageDomainFactRepositories.prototype, 'drain', 'facts-close'), spy(DshStorageDomainGateDecisionRecordStore.prototype, 'drain', 'records-close')]
+    // Reviewer. WP8-c: the seal-backfill runner disposes after the review
+    // lanes; its own internal writer lane drains inside that step (second
+    // 'lanes'), always before the sealed ledger closes underneath it.
+    const spies = [spy(ApprovalRunLifecycle.prototype, 'dispose', 'abort'), spy(SealBackfillRunner.prototype, 'dispose', 'seal-backfill'), spy(DefaultExtractionChannel.prototype, 'dispose', 'extraction-channel'), spy(SerialLanes.prototype, 'drain', 'lanes'), spy(DshStorageDomainSealedFacts.prototype, 'drain', 'ledger'), spy(DshStorageDomainAuthorizationLedger.prototype, 'drain', 'authorization-ledger'), spy(DshStorageDomainFactRepositories.prototype, 'drain', 'facts-close'), spy(DshStorageDomainGateDecisionRecordStore.prototype, 'drain', 'records-close')]
     try { await installApproveForMe(h.ctx as unknown as Context, config).dispose() } finally { spies.forEach(item => item.mockRestore()) }
-    expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'extraction-channel', 'lanes', 'ledger', 'authorization-ledger', 'provider', 'extractor-provider', 'facts-close', 'records-close'])
+    expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'extraction-channel', 'lanes', 'seal-backfill', 'lanes', 'ledger', 'authorization-ledger', 'provider', 'extractor-provider', 'facts-close', 'records-close'])
   })
 
 describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
@@ -1130,6 +1172,264 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     // The server read-only channel resolves the typed reason code for the ask.
     await expect(plugin.readApprovalReasonCode('ask-1')).resolves.toBe('sealed-current-missing')
 
+    await plugin.dispose()
+  })
+})
+
+describe('WP8-a reason-code renderer transport route', () => {
+  it('mounts and disposes without a webServer (CLI profile) and registers nothing', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.webServerRoute).toBeUndefined()
+    await plugin.dispose()
+    expect(h.disposeMachinePolicy).toHaveBeenCalled()
+  })
+
+  it('registers the exact reason-code route and unregisters it on dispose', async () => {
+    const h = harness({ webServer: true })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.webServerRoute?.kind).toBe('exact')
+    expect(h.webServerRoute?.path).toBe(REASON_CODE_ROUTE_PATH)
+
+    // The mounted handler answers through the domain-less records store: a
+    // valid request degrades to the 200 miss body, never an error.
+    const captured = { status: undefined as number | undefined, headers: undefined as Record<string, string> | undefined, body: undefined as string | undefined }
+    const res = {
+      writeHead(status: number, headers: Record<string, string>) { captured.status = status; captured.headers = headers },
+      end(body?: string) { captured.body = body },
+    }
+    await (h.webServerRoute!.handler as (req: unknown, res: unknown) => Promise<void>)(
+      { method: 'GET', url: `${REASON_CODE_ROUTE_PATH}?requestId=ask-1` }, res)
+    expect(captured.status).toBe(200)
+    expect(captured.headers?.['Cache-Control']).toBe('no-store')
+    expect(JSON.parse(captured.body!)).toEqual({ version: 1 })
+
+    await plugin.dispose()
+    expect(h.disposeWebServerRoute).toHaveBeenCalledOnce()
+  })
+
+  it('a failing webServer registration never fails the mount', async () => {
+    const h = harness({ webServer: true })
+    const ctx = h.ctx as unknown as { webServer: { register(): () => void } }
+    ctx.webServer.register = () => { throw new Error('route table frozen') }
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.webServerRoute).toBeUndefined()
+    await plugin.dispose()
+  })
+})
+
+describe('WP8-b ledger-health route', () => {
+  it('registers both presentational routes and serves a degraded body without storage', async () => {
+    const h = harness({ webServer: true })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const route = h.webServerRoutes.get(LEDGER_HEALTH_ROUTE_PATH)
+    expect(route?.kind).toBe('exact')
+    expect(h.webServerRoutes.get(REASON_CODE_ROUTE_PATH)?.kind).toBe('exact')
+
+    // No storageDomain in this ctx: both segments must be omitted (never a
+    // false/available field) and the body stays inside the closed set.
+    const captured = { status: undefined as number | undefined, headers: undefined as Record<string, string> | undefined, body: undefined as string | undefined }
+    const res = {
+      writeHead(status: number, headers: Record<string, string>) { captured.status = status; captured.headers = headers },
+      end(body?: string) { captured.body = body },
+    }
+    await (route!.handler as (req: unknown, res: unknown) => Promise<void>)({ method: 'GET' }, res)
+    expect(captured.status).toBe(200)
+    expect(captured.headers?.['Cache-Control']).toBe('no-store')
+    const parsed = JSON.parse(captured.body!) as Record<string, unknown>
+    expect(Object.keys(parsed).sort()).toEqual(['generatedAt', 'version'])
+    expect(parsed.version).toBe(1)
+    expect(typeof parsed.generatedAt).toBe('number')
+    expect(parsed.generatedAt as number).toBeGreaterThan(0)
+
+    await plugin.dispose()
+    expect(h.disposeWebServerRouteFor(LEDGER_HEALTH_ROUTE_PATH)).toHaveBeenCalledOnce()
+    expect(h.disposeWebServerRoute).toHaveBeenCalledOnce()
+  })
+
+  it('405s a non-GET method on the ledger-health route', async () => {
+    const h = harness({ webServer: true })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const route = h.webServerRoutes.get(LEDGER_HEALTH_ROUTE_PATH)!
+    const captured = { status: undefined as number | undefined, body: undefined as string | undefined }
+    const res = {
+      writeHead(status: number) { captured.status = status },
+      end(body?: string) { captured.body = body },
+    }
+    await (route.handler as (req: unknown, res: unknown) => Promise<void>)({ method: 'POST' }, res)
+    expect(captured.status).toBe(405)
+    expect(JSON.parse(captured.body!)).toEqual({ version: 1, error: 'bad-request' })
+    await plugin.dispose()
+  })
+
+  it('mounts and disposes without a webServer (CLI profile) and registers nothing', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    expect(h.webServerRoutes.size).toBe(0)
+    await plugin.dispose()
+    expect(h.disposeMachinePolicy).toHaveBeenCalled()
+  })
+})
+
+describe('WP8-c seal backfill wiring', () => {
+  const backfillConfig: Config = { ...config, toolCatalog: validToolCatalog(), sealBackfill: true }
+
+  const backfillLogLines = (h: InstallHarness): string[] =>
+    (h.ctx.logger.error as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map(call => String((call[0] as Error)?.message ?? call[0]))
+      .filter(line => line.includes('seal-backfill'))
+
+  const settle = (ms = 30) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+  /**
+   * Seed one approval-bound execution fact + snapshot that the live pipeline
+   * never sealed (as if capture predated the ledger) and extend the fixture
+   * session with the ask/result/turn-end live events the backfill re-binds.
+   */
+  const seedUnsealedExecution = async (fixture: ReturnType<typeof buildApprovalE2EFixture>) => {
+    const effective = createDshAlpha2EffectiveCatalog([approvalE2ESchemas])
+    const dossier = effective.dossier
+    const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, [approvalE2ESchemas])
+    const descriptor = dossier.descriptors.find(item => item.toolName === 'bash')!
+    const command = 'pwd'
+    const action = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command, description: 'print the working directory' },
+      projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID,
+      semantics: {
+        family: DSH_ALPHA2_SHELL_FAMILY,
+        value: { operation: 'bash', command, description: 'print the working directory', cwd: '/workspace', runInBackground: false },
+      },
+      requestedPermissions: [],
+    })
+    const requestEventSeq = fixture.requestEventSeq
+    const askedSeq = fixture.askedSeq
+    const resultEventSeq = askedSeq + 1
+    const record: ToolExecutionFactRecordV1 = {
+      version: 1,
+      session: fixture.lifecycle,
+      request: { kind: 'model-tool-call', eventSeq: requestEventSeq, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+      catalogCommitment: commitment,
+      toolClassification: { classificationCatalogFingerprint: dossier.fingerprint, descriptor },
+      projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, actionHash: hashAction(action), observedAt: 100 + requestEventSeq },
+      result: { eventSeq: resultEventSeq, eventType: 'tool/result', outcome: { kind: 'completed' } },
+    }
+    const snapshot: ApprovalSnapshotRecordV1 = {
+      version: 1,
+      session: fixture.lifecycle,
+      approvalRequestId: 'ask-1',
+      approvalAskedSeq: askedSeq,
+      execution: {
+        requestEventSeq,
+        callId: 'call-1',
+        toolName: 'bash',
+        actionHash: hashAction(action),
+        classificationCatalogFingerprint: dossier.fingerprint,
+        projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID,
+      },
+      environment: { version: 1, kind: 'native-header-only' },
+    }
+    const facts = new DshStorageDomainFactRepositories(fixture.storageDomain)
+    expect(await facts.create(record)).toBe('created')
+    expect(await facts.createApproval(snapshot)).toBe('created')
+    fixture.appendCurrentAsk()
+    fixture.events.push({ seq: resultEventSeq, time: 100 + resultEventSeq, type: 'tool/result', sourceEventSeqs: [requestEventSeq], data: {} })
+    const turnEndSeq = resultEventSeq + 1
+    fixture.events.push({ seq: turnEndSeq, time: 100 + turnEndSeq, type: 'turn/end', data: {} })
+    return { requestEventSeq, resultEventSeq, turnEndSeq }
+  }
+
+  it('never triggers when sealBackfill is off', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, toolCatalog: validToolCatalog() }, { toolFamilyActionProjectors: catalogProjectors })
+    const session = { id: 'parent-1', header: { id: 'parent-1', version: 1, createdAt: 100 }, eventAt: () => undefined }
+    h.listeners.sessionEvent!(session, { seq: 0, type: 'turn/end', time: 1, data: {} })
+    await settle()
+    expect(backfillLogLines(h)).toHaveLength(0)
+    await plugin.dispose()
+  })
+
+  it('turn/end backfills an unsealed approval-bound fact once and links it to the validated tip', async () => {
+    const fixture = buildApprovalE2EFixture()
+    const seeded = await seedUnsealedExecution(fixture)
+    await seedApprovalE2E(fixture)
+    const h = harness({ storageDomain: fixture.storageDomain, agents: { get: () => fixture.parent } })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, backfillConfig, { toolFamilyActionProjectors: catalogProjectors })
+    h.listeners.sessionEvent!(fixture.parent.session, { seq: seeded.turnEndSeq, time: 100 + seeded.turnEndSeq, type: 'turn/end', data: {} })
+    const fingerprint = canonicalJson(fixture.lifecycle)
+    await vi.waitFor(async () => {
+      const rows = await fixture.sealedReader.read(fingerprint)
+      expect(rows?.length).toBe(2)
+    }, { timeout: 2000 })
+    const rows = (await fixture.sealedReader.read(fingerprint))!
+    expect(rows[0]!.seal.sourceSeq).toBe(3) // seeded historical row (call-past)
+    expect(rows[1]!.seal).toMatchObject({
+      sourceSeq: seeded.requestEventSeq,
+      request: { eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+      approvalAsked: { requestId: 'ask-1' },
+      result: { eventSeq: seeded.resultEventSeq, status: 'completed' },
+      catalog: { epoch: 0 },
+    })
+    expect(rows[1]!.seal.previousSealHash).toBe(rows[0]!.seal.sealHash)
+    // occurredAt comes from the live result event, not from the record.
+    expect(rows[1]!.activity.occurredAt).toBe(100 + seeded.resultEventSeq)
+    // Once per lifecycle per process: a second turn/end never re-runs it.
+    const linesBefore = backfillLogLines(h).length
+    h.listeners.sessionEvent!(fixture.parent.session, { seq: seeded.turnEndSeq + 1, time: 100 + seeded.turnEndSeq + 1, type: 'turn/end', data: {} })
+    await settle()
+    expect(backfillLogLines(h)).toHaveLength(linesBefore)
+    await plugin.dispose()
+  })
+
+  it('does not trigger while an approval run is in flight, and triggers once it settles', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, sealBackfill: true })
+    const policy = h.machinePolicy as { decide(request: unknown): Promise<string> }
+    const parent = { id: 'parent-1', session: { id: 'parent-1' } }
+    const session = { id: 'parent-1', header: { id: 'parent-1', version: 1, createdAt: 100 }, eventAt: () => undefined }
+    const deciding = policy.decide({ agent: parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+    // The policy wrapper holds the in-flight count synchronously from the call;
+    // a turn/end inside that window must not start a backfill.
+    h.listeners.sessionEvent!(session, { seq: 0, type: 'turn/end', time: 1, data: {} })
+    await settle()
+    expect(backfillLogLines(h)).toHaveLength(0)
+    await deciding
+    // No storageDomain here: the attempt starts and stops as
+    // executions-unavailable, which still proves exactly one trigger.
+    h.listeners.sessionEvent!(session, { seq: 1, type: 'turn/end', time: 2, data: {} })
+    await vi.waitFor(() => expect(backfillLogLines(h).length).toBe(1), { timeout: 2000 })
+    await plugin.dispose()
+  })
+
+  it('a new approval run aborts the queued backfill before it writes anything', async () => {
+    const fixture = buildApprovalE2EFixture()
+    const seeded = await seedUnsealedExecution(fixture)
+    await seedApprovalE2E(fixture)
+    const h = harness({ storageDomain: fixture.storageDomain, agents: { get: () => fixture.parent } })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, backfillConfig, { toolFamilyActionProjectors: catalogProjectors })
+    h.listeners.sessionEvent!(fixture.parent.session, { seq: seeded.turnEndSeq, time: 100 + seeded.turnEndSeq, type: 'turn/end', data: {} })
+    // Synchronously start an approval run on the same session lifecycle: the
+    // policy wrapper aborts the backfill before its first lane step, so no
+    // seal can be promoted while the session is asking again.
+    const policy = h.machinePolicy as { decide(request: unknown): Promise<string> }
+    await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+    await vi.waitFor(() => expect(backfillLogLines(h).some(line => line.includes('aborted'))).toBe(true), { timeout: 2000 })
+    const rows = await fixture.sealedReader.read(canonicalJson(fixture.lifecycle))
+    expect(rows?.length).toBe(1) // only the seeded historical row
+    await plugin.dispose()
+  })
+
+  it('never triggers for managed child session events (parentSession recursion guard)', async () => {
+    const h = harness()
+    const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, sealBackfill: true })
+    const childSession = {
+      id: 'child-1',
+      header: { id: 'child-1', version: 1, createdAt: 100, parentSession: 'parent-1' },
+      eventAt: () => undefined,
+    }
+    h.listeners.sessionEvent!(childSession, { seq: 0, type: 'turn/end', time: 1, data: {} })
+    await settle()
+    expect(backfillLogLines(h)).toHaveLength(0)
     await plugin.dispose()
   })
 })
