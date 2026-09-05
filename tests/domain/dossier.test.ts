@@ -80,3 +80,26 @@ describe('Guardian dossier shape', () => {
     })).toThrow(/parent/)
   })
 })
+
+describe('WP9-a stored action semantics budget (review minor-1)', () => {
+  it('createStoredActionSnapshotV2 throws on semantics beyond the 256KB inline budget', async () => {
+    const { createStoredActionSnapshotV2, MAX_STORED_ACTION_SEMANTICS_BYTES } = await import('../../src/domain/dossier.js')
+    const base = {
+      version: 1 as const, kind: 'tool-call' as const, toolName: 'bash',
+      arguments: {}, requestedPermissions: [], projectorId: 'p',
+      semantics: { family: 'f', value: 'x'.repeat(MAX_STORED_ACTION_SEMANTICS_BYTES) },
+    }
+    expect(() => createStoredActionSnapshotV2(base)).toThrowError(/inline budget/)
+  })
+
+  it('accepts semantics exactly at the budget edge', async () => {
+    const { createStoredActionSnapshotV2, MAX_STORED_ACTION_SEMANTICS_BYTES } = await import('../../src/domain/dossier.js')
+    // canonicalJson wraps the string in quotes: 2 bytes of envelope.
+    const action = {
+      version: 1 as const, kind: 'tool-call' as const, toolName: 'bash',
+      arguments: {}, requestedPermissions: [], projectorId: 'p',
+      semantics: { family: 'f', value: 'x'.repeat(MAX_STORED_ACTION_SEMANTICS_BYTES - 2) },
+    }
+    expect(createStoredActionSnapshotV2(action).semantics.value).toHaveLength(MAX_STORED_ACTION_SEMANTICS_BYTES - 2)
+  })
+})

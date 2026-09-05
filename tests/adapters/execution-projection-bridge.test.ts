@@ -112,6 +112,19 @@ describe('DshExecutionFactProjectionBridge', () => {
     await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toHaveLength(0)
   })
 
+  it('fails closed without persisting when the projected semantics exceed the inline budget (review minor-1)', async () => {
+    const repository = new InMemoryExecutionFactRepository()
+    const owner = agent([{ seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash', arguments: '{}' } }], '/workspace')
+    const bridge = new DshExecutionFactProjectionBridge(
+      { project: e => ({ toolName: e.name, arguments: e.arguments, semantics: { family: 'f', value: 'x'.repeat(300_000) } }) },
+      effectiveCatalog, repository)
+    // The oversize semantics make createStoredActionSnapshotV2 throw; the
+    // bridge converts the projection failure into "no durable record" rather
+    // than letting it escape or persisting a truncated action.
+    await bridge.project(execution(owner))
+    await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10, cwd: '/workspace' })).resolves.toHaveLength(0)
+  })
+
   it('captures an immutable snapshot only for one prior canonical call', async () => {
     const repository = new InMemoryExecutionFactRepository()
     const approvals = new InMemoryApprovalSnapshotRepository()

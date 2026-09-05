@@ -9,7 +9,7 @@ import {
   validateDurableCatalogEvidenceV2,
   validateDurableToolCatalogCommitmentV1,
 } from '../domain/dossier.js'
-import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
+import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
 import { canonicalSha256, isPayloadRefV1 } from '../domain/payload-ref.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository, PruneLifecycleOptions, PruneLifecycleResult } from '../application/fact-repositories.js'
@@ -126,99 +126,14 @@ function parseIndex(value: unknown): StoredIndex {
 
 
 /**
- * WP8-c: exported strict shape-V1 guards shared by the storage repositories
+ * WP8-c: exported strict shape guards shared by the storage repositories
  * and the seal backfill (seal-backfill.ts re-parses every listed row before
  * promoting it, so a poisoned sidecar can never reach the ledger). Same
  * predicates the create/list paths already enforced; zero behavior change.
+ * (WP9-a removed the legacy isToolExecutionFactRecordV1 guard: v1 rows are
+ * a foreign version and read as absent by design — keeping a validator for
+ * them invited exactly the silent re-admission the v2 shell forbids.)
  */
-  export function isToolExecutionFactRecordV1(value: unknown): value is ToolExecutionFactRecordV1 {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-    const record = value as Partial<ToolExecutionFactRecordV1>
-    if (record.version !== 1 || !validSession(record.session)
-      || record.request === null || typeof record.request !== 'object' || Array.isArray(record.request)
-      || record.catalogCommitment === null || typeof record.catalogCommitment !== 'object' || Array.isArray(record.catalogCommitment)
-      || record.toolClassification === null || typeof record.toolClassification !== 'object' || Array.isArray(record.toolClassification)
-      || record.toolClassification.descriptor === null || typeof record.toolClassification.descriptor !== 'object' || Array.isArray(record.toolClassification.descriptor)
-      || record.projection === null || typeof record.projection !== 'object' || Array.isArray(record.projection)
-      || record.projection.action === null || typeof record.projection.action !== 'object' || Array.isArray(record.projection.action)
-      || !['model-tool-call', 'code-dispatch'].includes(record.request.kind)
-      || !['tool/call', 'tool/code-dispatch-start'].includes(record.request.eventType)
-      || (record.request.kind === 'model-tool-call' && record.request.eventType !== 'tool/call')
-      || (record.request.kind === 'code-dispatch' && (
-        record.request.eventType !== 'tool/code-dispatch-start'
-        || typeof record.request.rootCallId !== 'string' || record.request.rootCallId.length === 0
-        || typeof record.request.parentCallId !== 'string' || record.request.parentCallId.length === 0
-        || !Number.isSafeInteger(record.request.rootRequestEventSeq) || (record.request.rootRequestEventSeq as number) < 0
-        || !Number.isSafeInteger(record.request.parentRequestEventSeq) || (record.request.parentRequestEventSeq as number) < 0
-        || record.request.arguments === undefined))
-      || typeof record.request.callId !== 'string' || record.request.callId.length === 0
-      || typeof record.request.toolName !== 'string' || record.request.toolName.length === 0
-      || !Number.isSafeInteger(record.request.eventSeq) || (record.request.eventSeq as number) < 0
-      || typeof record.toolClassification.classificationCatalogFingerprint !== 'string' || record.toolClassification.classificationCatalogFingerprint.length === 0
-      || typeof record.projection.projectorId !== 'string' || record.projection.projectorId.length === 0
-      || typeof record.projection.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
-      || !Number.isSafeInteger(record.projection.observedAt) || (record.projection.observedAt as number) < 0
-      || (record.terminalEvidence !== undefined && (record.terminalEvidence === null
-        || typeof record.terminalEvidence !== 'object' || Array.isArray(record.terminalEvidence)
-        || Object.keys(record.terminalEvidence).some(key => key !== 'isError' && key !== 'outcome' && key !== 'receipt')
-        || typeof record.terminalEvidence.isError !== 'boolean'
-        || !validToolOutcome(record.terminalEvidence.outcome)
-        || (record.terminalEvidence.outcome.kind === 'completed' && record.terminalEvidence.isError)
-        || (record.terminalEvidence.outcome.kind === 'tool-error' && !record.terminalEvidence.isError)
-        || (record.terminalEvidence.receipt !== undefined
-          && (record.toolClassification.descriptor.classification !== 'delegation'
-            || record.terminalEvidence.outcome.kind !== 'completed'
-            || !validReceipt(record.terminalEvidence.receipt)))))
-      || (record.result !== undefined && (record.result === null || typeof record.result !== 'object' || Array.isArray(record.result)
-        || Object.keys(record.result).some(key => key !== 'eventSeq' && key !== 'eventType' && key !== 'outcome')
-        || !Number.isSafeInteger(record.result.eventSeq) || (record.result.eventSeq as number) <= record.request.eventSeq
-        || (record.request.kind === 'model-tool-call' ? record.result.eventType !== 'tool/result' : record.result.eventType !== 'tool/code-dispatch')
-        || !validToolOutcome(record.result.outcome)))
-      || (record.delegationReceipt !== undefined && (record.result === undefined
-        || record.delegationReceipt === null || typeof record.delegationReceipt !== 'object' || Array.isArray(record.delegationReceipt)
-        || !sameLifecycle(record.delegationReceipt.session, record.session)
-        || record.delegationReceipt.requestEventSeq !== record.request.eventSeq
-        || record.delegationReceipt.callId !== record.request.callId
-        || record.delegationReceipt.resultEvent?.seq !== record.result.eventSeq
-        || record.delegationReceipt.resultEvent?.type !== record.result.eventType
-        || record.delegationReceipt.classificationCatalogFingerprint !== record.toolClassification.classificationCatalogFingerprint
-        || record.toolClassification.descriptor.classification !== 'delegation'
-        || record.delegationReceipt.projectorId !== record.toolClassification.descriptor.projectorId
-        || !validReceipt(record.delegationReceipt.receipt)))) return false
-    let action: ActionSnapshot
-    try {
-      action = parseActionSnapshot(record.projection.action)
-    } catch {
-      return false
-    }
-    if (hashAction(action) !== record.projection.actionHash
-      || action.toolName !== record.request.toolName
-      || action.projectorId !== record.projection.projectorId) return false
-    const commitment = record.catalogCommitment
-    if (validateDurableToolCatalogCommitmentV1(commitment).kind !== 'ok') return false
-    const dossierDescriptor = commitment.classificationCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
-    const approvalDescriptor = commitment.approvalCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
-    const rootEventSeq = record.request.kind === 'model-tool-call' ? record.request.eventSeq : record.request.rootRequestEventSeq
-    if (commitment.requestHeaderEventSeq >= rootEventSeq || rootEventSeq > record.request.eventSeq
-      || (record.request.kind === 'code-dispatch'
-        && (!Number.isSafeInteger(record.request.parentRequestEventSeq)
-          || record.request.parentRequestEventSeq < rootEventSeq
-          || record.request.parentRequestEventSeq >= record.request.eventSeq))
-      || commitment.classificationCatalog.fingerprint !== record.toolClassification.classificationCatalogFingerprint
-      || dossierDescriptor === undefined || approvalDescriptor === undefined
-      || canonicalJson(dossierDescriptor) !== canonicalJson(record.toolClassification.descriptor)
-      || dossierDescriptor.toolSchemaFingerprint !== approvalDescriptor.toolSchemaFingerprint
-      || record.projection.projectorId !== approvalDescriptor.actionProjectorId) return false
-    try {
-      snapshotJson(record.projection.action)
-      if (record.request.kind === 'code-dispatch') snapshotJson(record.request.arguments)
-      if (record.terminalEvidence !== undefined) snapshotJson(record.terminalEvidence)
-      if (record.delegationReceipt !== undefined) snapshotJson(record.delegationReceipt)
-      return true
-    } catch {
-      return false
-    }
-  }
 
   /**
    * WP9-a strict shape-V2 guard. Same fail-closed discipline as the V1 guard:
