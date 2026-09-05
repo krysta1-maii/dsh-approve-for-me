@@ -5,12 +5,16 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import {
   REASON_CODE_TABLE,
   REASON_MISS_COPY_KEY,
+  createServerBackedReasonCodeReader,
   missingReasonCodeReader,
   readReasonCode,
   readReasonCodeFrom,
   resolveReasonCodePresentation,
+  setApprovalReasonCodeServerReader,
   type ReasonCode,
 } from '../../src/client/reason-code.js'
+import { DshStorageDomainGateDecisionRecordStore } from '../../src/index.js'
+import type { GateDecisionRecord, StorageDomainFacility } from '../../src/index.js'
 import {
   approvalConversationDefinition,
   setApprovalReasonCodeSidecarReader,
@@ -196,6 +200,79 @@ describe('reason-code sidecar read-only API', () => {
     const node = approvalConversationDefinition.buildViewNode!(contextOf([asked, decided], undefined))
     expect(node?.data).toMatchObject({ outcome: 'unavailable' })
     expect((node?.data as ApprovalFlowData).reasonCode).toBeUndefined()
+  })
+})
+
+function memoryFacility(): StorageDomainFacility {
+  const rows = new Map<string, unknown>()
+  return {
+    open: async () => ({
+      table: () => ({ get: (key: string) => rows.get(key), put: async (key: string, value: unknown) => { rows.set(key, value) } }),
+      close: async () => {},
+    }),
+  }
+}
+
+function failureRecordOverStore(requestId: string, code: ReasonCode): GateDecisionRecord {
+  return {
+    version: 2, route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'unavailable',
+    requestId, parentSessionId: 'session-1', parentLifecycleFingerprint: 'lifecycle-1', callId: 'call-1',
+    actionHash: `sha256:${'a'.repeat(64)}`, generation: 'gen-1', policyVersion: 'policy-1',
+    configurationFingerprint: `sha256:${'b'.repeat(64)}`, disposition: 'no-decision', reviewAttempts: 0,
+    contaminatedRotationAttempts: 0, contaminatedRotations: 0, failureStage: 'verified-dossier',
+    failureCode: code as never,
+  }
+}
+
+describe('WP5-c server read channel -> renderer (real decided unavailable row)', () => {
+  it('flows a real stored failure code to the decided renderer, not a generic miss', async () => {
+    const store = new DshStorageDomainGateDecisionRecordStore(memoryFacility())
+    await expect(store.createConfirmed(failureRecordOverStore('ask-fail', 'sealed-current-missing'))).resolves.toBe('confirmed')
+    const code = await store.readReasonCode('ask-fail')
+    expect(code).toBe('sealed-current-missing')
+
+    // Wire the read-only server channel into the browser sidecar reader exactly
+    // as client.ts apply() does.
+    setApprovalReasonCodeSidecarReader(createServerBackedReasonCodeReader())
+    setApprovalReasonCodeServerReader({ resolve: requestId => requestId === 'ask-fail' ? code : undefined })
+    try {
+      const asked = matchOf(event('approval/asked', 40, { id: 'ask-fail', toolName: 'bash' }), 'start')
+      const decided = matchOf(event('approval/decided', 41, { id: 'ask-fail', outcome: 'unavailable' }), 'update')
+      const node = approvalConversationDefinition.buildViewNode!(contextOf([asked, decided], undefined))
+      expect(node?.data).toMatchObject({ outcome: 'unavailable', reasonCode: 'sealed-current-missing', decidedSeq: 41 })
+
+      const item = ApprovalFlowItem.type({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
+      const reason = collectByClass(item, 'dsh-afm-flow__reason')
+      expect(reason).toHaveLength(1)
+      expect(reason[0]!.props['title']).toBe('reason.sealed-current-missing')
+      expect(reason[0]!.props['data-reason-miss']).toBeUndefined()
+    } finally {
+      setApprovalReasonCodeServerReader(undefined)
+      setApprovalReasonCodeSidecarReader(undefined)
+    }
+  })
+
+  it('degrades to the generic miss when the server channel returns no code (unchanged safe path)', async () => {
+    const store = new DshStorageDomainGateDecisionRecordStore(memoryFacility())
+    const code = await store.readReasonCode('no-such-ask')
+    expect(code).toBeUndefined()
+
+    setApprovalReasonCodeSidecarReader(createServerBackedReasonCodeReader())
+    setApprovalReasonCodeServerReader({ resolve: requestId => requestId === 'ask-fail' ? 'sealed-current-missing' as const : undefined })
+    try {
+      const asked = matchOf(event('approval/asked', 50, { id: 'ask-other', toolName: 'bash' }), 'start')
+      const decided = matchOf(event('approval/decided', 51, { id: 'ask-other', outcome: 'unavailable' }), 'update')
+      const node = approvalConversationDefinition.buildViewNode!(contextOf([asked, decided], undefined))
+      expect((node?.data as ApprovalFlowData).reasonCode).toBeUndefined()
+
+      const item = ApprovalFlowItem.type({ node, inspectCall: vi.fn(), t: (key: string) => key } as never)
+      const reason = collectByClass(item, 'dsh-afm-flow__reason')
+      expect(reason[0]!.props['data-reason-miss']).toBe('true')
+      expect(reason[0]!.props['title']).toBe(REASON_MISS_COPY_KEY)
+    } finally {
+      setApprovalReasonCodeServerReader(undefined)
+      setApprovalReasonCodeSidecarReader(undefined)
+    }
   })
 })
 

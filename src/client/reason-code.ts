@@ -159,3 +159,31 @@ export function readReasonCodeFrom(
     return undefined
   }
 }
+
+/**
+ * Browser-side resolve function backed by the server's read-only reason-code
+ * query, plus a synchronous cache for values already resolved. The server
+ * half {@link setApprovalReasonCodeServerReader} wires the durable, metadata-only
+ * query; a miss (unset, unclearable or failing read) degrades to the generic
+ * safe line and never touches the Gate outcome. This signature keeps the
+ * reader {@link ApprovalReasonCodeReader} synchronous for `buildViewNode`.
+ */
+export interface ApprovalReasonCodeServerBridge {
+  /** Resolve (and cache) a reason code for a decided approval request id. */
+  readonly resolve: (requestId: string) => ReasonCode | undefined
+}
+
+/** WP5-c: the installed server-backed read bridge, or `undefined` (all misses). */
+let serverReasonCodeBridge: ApprovalReasonCodeServerBridge | undefined = undefined
+
+/** Wire (or clear) the server-backed read-only reason-code bridge. */
+export function setApprovalReasonCodeServerReader(
+  bridge: ApprovalReasonCodeServerBridge | undefined,
+): void {
+  serverReasonCodeBridge = bridge
+}
+
+/** The default browser reader: read through the server bridge, else miss. */
+export function createServerBackedReasonCodeReader(): ApprovalReasonCodeReader {
+  return { read: requestId => serverReasonCodeBridge?.resolve(requestId) }
+}

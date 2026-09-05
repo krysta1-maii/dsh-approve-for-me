@@ -945,5 +945,38 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     expect(excerpts.length).toBeGreaterThan(0)
     await plugin.dispose()
   })
+
+  it('records a real source-backed unavailable reason code and reads it back (WP5-c)', async () => {
+    const fixture = buildApprovalE2EFixture({ padEvents: 0 })
+    // Deliberately do NOT seed a sealed ledger, so the sealed reader returns an
+    // empty ledger -> the resolver throws `sealed-current-missing` (an
+    // explainable unsealed current action) and the gate records a metadata-only
+    // post-facts-failure row with that typed reason code.
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+    })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const session = fixture.parent.session as any
+    session.snapshotEvents = vi.fn(() => fixture.events)
+    session.eventAt = (seq: number) => fixture.events[seq]
+
+    await h.listeners.preExecute!({
+      agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+      arguments: { command: 'pwd', description: 'print the working directory' },
+      signal: new AbortController().signal, token: Symbol('wp5c'),
+    } as never, async () => ({ kind: 'ask' } as never))
+
+    const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+    fixture.appendCurrentAsk()
+    // auto mode: an explainable missing seal stays unavailable (never delegated).
+    await expect(policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })).resolves.toBe('unavailable')
+
+    // The server read-only channel resolves the typed reason code for the ask.
+    await expect(plugin.readApprovalReasonCode('ask-1')).resolves.toBe('sealed-current-missing')
+
+    await plugin.dispose()
+  })
 })
 })

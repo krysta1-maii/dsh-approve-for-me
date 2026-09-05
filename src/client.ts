@@ -19,6 +19,8 @@ import {
   decodeApprovalModelSettings,
 } from './client/approval-settings-card.js'
 import { en, zh } from './client/locales.js'
+import { setApprovalReasonCodeSidecarReader } from './client/approval-conversation.js'
+import { createServerBackedReasonCodeReader } from './client/reason-code.js'
 
 const NS = 'approve-for-me'
 const STYLE_ID = 'dsh-approve-for-me/ApprovalFlowItem'
@@ -89,4 +91,13 @@ export function apply(ctx: ClientContext): void {
     key: APPROVE_FOR_ME_SETTINGS_NAMESPACE,
     locale: NS,
   }, SettingsCard))
+
+  // WP5-c: wire the read-only server reason-code query into the browser sidecar
+  // seam. The reader is presentational: a miss (server bridge absent, storage
+  // unavailable, or an unknown/unclearable value) degrades to the generic safe
+  // line and never touches the Gate authorization result.
+  ctx.effect(() => {
+    setApprovalReasonCodeSidecarReader(createServerBackedReasonCodeReader())
+    return () => setApprovalReasonCodeSidecarReader(undefined)
+  }, 'approve-for-me: reason-code sidecar reader')
 }

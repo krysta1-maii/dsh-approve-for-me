@@ -116,5 +116,18 @@ describe('DshStorageDomainGateDecisionRecordStore reason-code read (WP5-c)', () 
     // action may escape. A mutation that returns the whole record must fail here.
     expect(code).toBe('ledger-storage-unavailable')
     expect(typeof code).toBe('string')
+    // The value serializes to a bare JSON string code, never a record/hash object.
+    expect(JSON.stringify(code)).toBe(JSON.stringify('ledger-storage-unavailable'))
+  })
+
+  it('metadata-only boundary is enforced by the index value schema (a record write is rejected)', async () => {
+    // A mutation that tried to store the whole record in the reason-code index
+    // would fail the index valueSchema (only {version, failureCode} allowed), so
+    // an unauthorized field can never survive into the read channel.
+    const fake = facility()
+    const store = new DshStorageDomainGateDecisionRecordStore(fake.facility)
+    await expect(store.createConfirmed(failureRecord('seal-chain-invalid'))).resolves.toBe('confirmed')
+    const raw = fake.rows.get('ask-fail') as { version: number; failureCode: string }
+    expect(Object.keys(raw).sort()).toEqual(['failureCode', 'version'])
   })
 })
