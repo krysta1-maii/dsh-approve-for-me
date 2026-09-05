@@ -20,10 +20,13 @@ import {
   DshStorageDomainSealedFacts,
   SerialLanes,
   installApproveForMe,
+  parseApprovalReviewPacketV1,
+  parseApprovalReviewPacketV2,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
 import type { Config } from '../../src/index.js'
 import * as approveForMe from '../../src/index.js'
+import { approvalE2ESchemas, buildApprovalE2EFixture, seedApprovalE2E } from '../helpers/approval-e2e.js'
 
 type CtxEvent = 'tools/pre-execute' | 'tools/result'
 
@@ -95,6 +98,7 @@ interface InstallHarness {
     topology: (() => unknown) | undefined
   }
   delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
+  deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
   disposeRegistration: ReturnType<typeof vi.fn>
 }
 
@@ -122,6 +126,7 @@ function harness(options: {
   let childTool: InstallHarness['childTool']
   let resultObserver: InstallHarness['resultObserver']
   let delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
+  let deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
   const child: { id: string; session: { id: string; append: (type: string, data: unknown) => void } } = {
     id: 'reviewer-1',
     session: {
@@ -176,7 +181,19 @@ function harness(options: {
             async deliver(_parent: unknown, _childId: unknown, content: readonly unknown[]) {
               const raw = (content[0] as { text: string } | undefined)?.text.split('\n').at(-1)
               if (raw === undefined) throw new Error('approval request was not delivered')
-              const request = parseApprovalReviewRequest(JSON.parse(raw))
+              // Capture the raw packet so packet-level (dossier.interaction.sealed.excerpts)
+              // assertions are possible on the real Reviewer deliver payload.
+              const rawJson = JSON.parse(raw) as unknown
+              let packet: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown }
+              try {
+                const parsed = parseApprovalReviewPacketV2(rawJson)
+                packet = { request: parsed.request, dossier: parsed.dossier }
+              } catch {
+                const parsed = parseApprovalReviewPacketV1(rawJson)
+                packet = { request: parsed.request, dossier: parsed.dossier }
+              }
+              deliveredPacket = packet
+              const request = packet.request
               delivered = request
               expect(childTool?.name).toBe(SUBMIT_DECISION_TOOL)
               // Simulate the real two-phase pipeline: the scoped tool stages
@@ -241,6 +258,7 @@ function harness(options: {
     listeners,
     disposeRegistration,
     get delivered() { return delivered },
+    get deliveredPacket() { return deliveredPacket },
   }
 }
 
@@ -823,4 +841,108 @@ describe('installApproveForMe composition root', () => {
     try { await installApproveForMe(h.ctx as unknown as Context, config).dispose() } finally { spies.forEach(item => item.mockRestore()) }
     expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'lanes', 'ledger', 'provider', 'facts-close', 'records-close'])
   })
+
+describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
+  function e2eHarness(padEvents: number) {
+    const fixture = buildApprovalE2EFixture({ padEvents })
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+    })
+    return { fixture, h }
+  }
+
+  it('lets a real plugin allow a real approval and carries sealed excerpts in the Reviewer packet (item 4)', async () => {
+    const { fixture, h } = e2eHarness(0)
+    await seedApprovalE2E(fixture)
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+
+    // Live-session spies: snapshotEvents is used only by the capture/pre-execute
+    // path (an accepted remnant); the decide segment must not re-materialize it.
+    const session = fixture.parent.session as any
+    const snapshotEvents = vi.fn(() => fixture.events)
+    session.snapshotEvents = snapshotEvents
+    const eventAtCalls: number[] = []
+    session.eventAt = (seq: number) => { eventAtCalls.push(seq); return fixture.events[seq] }
+
+    await h.listeners.preExecute!({
+      agent: fixture.parent,
+      callId: 'call-1',
+      rootCallId: 'call-1',
+      name: 'bash',
+      arguments: { command: 'pwd', description: 'print the working directory' },
+      signal: new AbortController().signal,
+      token: Symbol('e2e'),
+    } as never, async () => ({ kind: 'ask' } as never))
+
+    // Capture path on a clean tree asserted above; clear so the decide segment
+    // can only reflect full-history rematerialization (must be zero).
+    snapshotEvents.mockClear()
+    eventAtCalls.length = 0
+
+    const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+    fixture.appendCurrentAsk()
+    const outcome = await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+    expect(outcome).toBe('allowed-once')
+
+    // The decide / resolver hot path never materializes the full session snapshot.
+    expect(snapshotEvents).not.toHaveBeenCalled()
+
+    // The Reviewer packet was delivered with the sealed dossier excerpts channel.
+    expect(h.deliveredPacket).toBeDefined()
+    const excerpts = (h.deliveredPacket as any)?.dossier?.interaction?.sealed?.excerpts
+    expect(excerpts).toBeDefined()
+    expect(excerpts.length).toBeGreaterThan(0)
+    expect(excerpts[0]).toMatchObject({ seq: expect.any(Number), text: expect.any(String) })
+
+    // The Reviewer's explicit decision is committed as the allow outcome.
+    await plugin.dispose()
+  })
+
+  it('keeps the >20k approve hot path bounded and still allows (item 5)', async () => {
+    const { fixture, h } = e2eHarness(20_001)
+    await seedApprovalE2E(fixture)
+    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+
+    const session = fixture.parent.session as any
+    const snapshotEvents = vi.fn(() => fixture.events)
+    session.snapshotEvents = snapshotEvents
+    const eventAtCalls: number[] = []
+    session.eventAt = (seq: number) => { eventAtCalls.push(seq); return fixture.events[seq] }
+
+    await h.listeners.preExecute!({
+      agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash', arguments: { command: 'pwd', description: 'print the working directory' },
+      signal: new AbortController().signal, token: Symbol('e2e'),
+    } as never, async () => ({ kind: 'ask' } as never))
+    snapshotEvents.mockClear()
+    eventAtCalls.length = 0
+
+    const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+    fixture.appendCurrentAsk()
+    const hotSeq = fixture.hotSeq
+    const outcome = await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+    expect(outcome).toBe('allowed-once')
+    expect(snapshotEvents).not.toHaveBeenCalled()
+
+    // Every decide-path live read is an exact eventAt inside a bounded horizon.
+    // Two bounded windows compose here, both of order maxSealedTailEvents: the
+    // ask-position scan anchors at session.seq, while the recent-excerpt
+    // assembler anchors its own 512-event window at the ask seq (which is
+    // session.seq - 1). Their union is [session.seq - maxSealedTailEvents - 1,
+    // session.seq), still O(maxSealedTailEvents) - never a full-history scan.
+    expect(eventAtCalls.length).toBeGreaterThan(0)
+    const lower = Math.max(0, hotSeq - 512 - 1)
+    for (const seq of eventAtCalls) {
+      expect(seq).toBeGreaterThanOrEqual(lower)
+      expect(seq).toBeLessThan(hotSeq)
+    }
+
+    // The sealed dossier still carried excerpts (user messages are inside the window).
+    const excerpts = (h.deliveredPacket as any)?.dossier?.interaction?.sealed?.excerpts
+    expect(excerpts).toBeDefined()
+    expect(excerpts.length).toBeGreaterThan(0)
+    await plugin.dispose()
+  })
+})
 })
