@@ -15,6 +15,8 @@ import { hashAction } from '../domain/protocol.js'
 import { DEFAULT_MAX_SEALED_HISTORY_WINDOW } from '../domain/sealed-facts.js'
 import type { SealResultStatusV1 } from '../domain/sealed-facts.js'
 import type { SealedParentSessionFactsV1 } from '../dsh/parent-session-fact-source.js'
+import { DEFAULT_MAX_AUTHORIZATION_ENTRIES } from '../domain/authorization-ledger.js'
+import type { AuthorizationEntryV1 } from '../domain/authorization-ledger.js'
 
 /** The absolute upper bound for a hot packet; it must never exceed the full dossier budget. */
 const MAX_HOT_PACKET_BYTES = 256_000
@@ -87,6 +89,12 @@ export interface SealedDossierCompilerOptions {
    * overflow that is detected during assembly.
    */
   readonly maxLedgerEntries?: number
+  /**
+   * Upper bound on the number of authorization drawer entries projected into the
+   * dossier's interaction.sealed.authorizations section (WP7-c1). Validated once
+   * at construction; must be a positive safe integer. Defaults to 64.
+   */
+  readonly maxAuthorizationEntries?: number
 }
 
 export type CompileSealed = (input: SealedDossierCompileInputV1) => DossierCompilationResultV1
@@ -235,6 +243,10 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
   if (!Number.isSafeInteger(ledgerEntryBudget) || ledgerEntryBudget < 1) {
     throw new TypeError('maxLedgerEntries must be a positive safe integer')
   }
+  const authorizationEntryBudget = options.maxAuthorizationEntries ?? DEFAULT_MAX_AUTHORIZATION_ENTRIES
+  if (!Number.isSafeInteger(authorizationEntryBudget) || authorizationEntryBudget < 1) {
+    throw new TypeError('maxAuthorizationEntries must be a positive safe integer')
+  }
 
   return function compileSealed(input: SealedDossierCompileInputV1): DossierCompilationResultV1 {
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
@@ -251,6 +263,7 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
     }
     if (packet === null || typeof packet !== 'object' || packet.version !== 1
       || !Array.isArray(packet.seals) || !Array.isArray(packet.activities) || !Array.isArray(packet.catalogEpochs)
+      || !Array.isArray(packet.authorizations)
       || (packet.current !== undefined && (packet.current === null || typeof packet.current !== 'object'))) {
       return { kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' }
     }
@@ -273,6 +286,10 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
     // overflow that is detected during assembly. The metrics stay a minimal
     // non-sensitive candidate accounting (zero bytes, no content sections).
     if (packet.activities.length > ledgerEntryBudget) {
+      return { kind: 'incomplete', reason: 'ledger-budget-overflow', metrics: metricsFrom(packet, current, 0, 0, []) }
+    }
+    // Authorization drawer row-count gate (WP7-c1): same short-circuit discipline.
+    if (packet.authorizations.length > authorizationEntryBudget) {
       return { kind: 'incomplete', reason: 'ledger-budget-overflow', metrics: metricsFrom(packet, current, 0, 0, []) }
     }
 
@@ -399,6 +416,38 @@ function projectActivity(activity: unknown): SealedLedgerEntryV1 | undefined {
   })
 }
 
+/** The bounded, ID-free projection of one authorization drawer entry (WP7-c1). */
+interface AuthorizationProjectionV1 {
+  readonly sourceSeq: number
+  readonly occurredAt: number
+  readonly effect: 'grant' | 'deny'
+  readonly coverage: 'action' | 'turn' | 'session'
+  readonly summary: string
+  readonly quote: string
+}
+
+/**
+ * Project one authorization entry to a bounded, ID-free shape, or undefined when
+ * any projected field is malformed. Closed-set validation on effect/coverage
+ * enums; quote and summary must be strings.
+ */
+function projectAuthorization(entry: unknown): AuthorizationProjectionV1 | undefined {
+  if (entry === null || typeof entry !== 'object') return undefined
+  const e = entry as Record<string, unknown>
+  if (!nonNegativeSafeInteger(e.sourceSeq) || !nonNegativeSafeInteger(e.occurredAt)
+    || typeof e.quote !== 'string' || typeof e.summary !== 'string') return undefined
+  if (e.effect !== 'grant' && e.effect !== 'deny') return undefined
+  if (e.coverage !== 'action' && e.coverage !== 'turn' && e.coverage !== 'session') return undefined
+  return Object.freeze({
+    sourceSeq: e.sourceSeq,
+    occurredAt: e.occurredAt,
+    effect: e.effect as 'grant' | 'deny',
+    coverage: e.coverage as 'action' | 'turn' | 'session',
+    summary: e.summary,
+    quote: e.quote,
+  })
+}
+
 /** Project one sealed catalog epoch to the closed three-field shape, or undefined
  * when it carries any unknown field or an out-of-set value. Unknown fields are
  * rejected fail-closed rather than silently stripped so a schema violation cannot
@@ -458,12 +507,21 @@ function buildInteraction(packet: SealedParentSessionFactsV1, currentFacts: Seal
   const catalogEpochs = projectEpochs(packet.catalogEpochs)
   if (catalogEpochs === undefined) return undefined
 
+  // Project authorization drawer entries (WP7-c1). Empty array is deterministic.
+  const authorizations: AuthorizationProjectionV1[] = []
+  for (const entry of packet.authorizations) {
+    const projected = projectAuthorization(entry)
+    if (projected === undefined) return undefined
+    authorizations.push(projected)
+  }
+
   return Object.freeze({
     sealed: Object.freeze({
       ...(currentSeal === undefined ? {} : { current: currentSeal }),
       tail: Object.freeze(tail),
       ledger: Object.freeze(ledger),
       catalogEpochs,
+      authorizations: Object.freeze(authorizations),
       ...(currentFacts.excerpts === undefined ? {} : {
         excerpts: currentFacts.excerpts,
         excerptTruncated: currentFacts.excerptTruncated ?? 0,

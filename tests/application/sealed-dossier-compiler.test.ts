@@ -12,6 +12,7 @@ import {
 } from '../../src/index.js'
 import type {
   ActivityV1,
+  AuthorizationEntryV1,
   SealResultStatusV1,
   SealV1,
   SealedDossierCompileInputV1,
@@ -82,6 +83,7 @@ function packet(seals: readonly SealV1[], activities: readonly ActivityV1[], ove
     seals,
     activities,
     catalogEpochs: [{ epoch: 0, headerEventSeq: 3, commitment: hash('c') }],
+    authorizations: [],
     ...overrides,
   }
 }
@@ -592,5 +594,132 @@ describe('createSealedDossierCompiler maxLedgerEntries (WP4 终审 T1)', () => {
     const acts = Array.from({ length: 257 }, (_, i) => (i === 0 ? { sourceSeq: 0 } : activity(i, 'class-1', 'ran', 'completed'))) as unknown as ActivityV1[]
     const got = compile(input({ packet: packet([], acts) }))
     expect(got).toMatchObject({ kind: 'incomplete', reason: 'ledger-budget-overflow' })
+  })
+})
+
+describe('createSealedDossierCompiler authorization drawer (WP7-c1)', () => {
+  it('rejects a non-positive, non-integer maxAuthorizationEntries at construction', () => {
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: 0 })).toThrow(TypeError)
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: -1 })).toThrow(TypeError)
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: 1.5 })).toThrow(TypeError)
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: Number.NaN })).toThrow(TypeError)
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: 1 })).not.toThrow()
+    expect(() => createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: 64 })).not.toThrow()
+  })
+
+  it('projects authorizations into interaction.sealed.authorizations with verbatim quote', () => {
+    const compile = compiler(256_000)
+    const auths = [{
+      version: 1 as const,
+      lifecycleFingerprint: lifecycle,
+      sourceSeq: 1,
+      occurredAt: 100,
+      quote: 'yes do it',
+      effect: 'grant' as const,
+      coverage: 'action' as const,
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: hash('p'),
+      entryHash: hash('e'),
+      canonical: 'canon',
+    }]
+    const result = compile(input({ packet: packet([], [], { authorizations: auths }) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const sealed = result.verified.dossier.interaction as unknown as { readonly sealed: { readonly authorizations: readonly { readonly sourceSeq: number; readonly occurredAt: number; readonly effect: string; readonly coverage: string; readonly summary: string; readonly quote: string }[] } }
+    expect(sealed.sealed.authorizations).toHaveLength(1)
+    expect(sealed.sealed.authorizations[0]).toEqual({
+      sourceSeq: 1,
+      occurredAt: 100,
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      quote: 'yes do it',
+    })
+  })
+
+  it('projects an empty authorizations array deterministically', () => {
+    const compile = compiler(256_000)
+    const result = compile(input({ packet: packet([], []) }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const sealed = result.verified.dossier.interaction as unknown as { readonly sealed: { readonly authorizations: readonly unknown[] } }
+    expect(sealed.sealed.authorizations).toEqual([])
+  })
+
+  it('rejects a malformed authorization row as invalid-sealed-fact-snapshot', () => {
+    const compile = compiler(256_000)
+    const bad = [{
+      version: 1,
+      lifecycleFingerprint: lifecycle,
+      sourceSeq: 1,
+      occurredAt: 100,
+      quote: 'yes',
+      effect: 'bogus',
+      coverage: 'action',
+      summary: 's',
+      extractorVersion: 'v1',
+      previousEntryHash: hash('p'),
+      entryHash: hash('e'),
+      canonical: 'c',
+    }] as unknown as readonly AuthorizationEntryV1[]
+    const result = compile(input({ packet: packet([], [], { authorizations: bad }) }))
+    expect(result).toEqual({ kind: 'incomplete', reason: 'invalid-sealed-fact-snapshot' })
+  })
+
+  it('rejects a packet exceeding maxAuthorizationEntries as ledger-budget-overflow', () => {
+    const compile = createSealedDossierCompiler({ maxHotPacketBytes: 256_000, maxAuthorizationEntries: 2 })
+    const auths = Array.from({ length: 3 }, (_, i) => ({
+      version: 1 as const,
+      lifecycleFingerprint: lifecycle,
+      sourceSeq: i,
+      occurredAt: 100 + i,
+      quote: 'q',
+      effect: 'grant' as const,
+      coverage: 'action' as const,
+      summary: 's',
+      extractorVersion: 'v1',
+      previousEntryHash: hash('p'),
+      entryHash: hash('e'),
+      canonical: 'c',
+    }))
+    const got = compile(input({ packet: packet([], [], { authorizations: auths }) }))
+    expect(got).toMatchObject({ kind: 'incomplete', reason: 'ledger-budget-overflow' })
+  })
+
+  it('defaults maxAuthorizationEntries to 64', () => {
+    const compile = createSealedDossierCompiler({ maxHotPacketBytes: 256_000 })
+    const auths = Array.from({ length: 64 }, (_, i) => ({
+      version: 1 as const,
+      lifecycleFingerprint: lifecycle,
+      sourceSeq: i,
+      occurredAt: 100 + i,
+      quote: 'q',
+      effect: 'grant' as const,
+      coverage: 'action' as const,
+      summary: 's',
+      extractorVersion: 'v1',
+      previousEntryHash: hash('p'),
+      entryHash: hash('e'),
+      canonical: 'c',
+    }))
+    const result = compile(input({ packet: packet([], [], { authorizations: auths }) }))
+    expect(result.kind).toBe('ready')
+    const auths65 = [...auths, {
+      version: 1 as const,
+      lifecycleFingerprint: lifecycle,
+      sourceSeq: 64,
+      occurredAt: 200,
+      quote: 'q',
+      effect: 'grant' as const,
+      coverage: 'action' as const,
+      summary: 's',
+      extractorVersion: 'v1',
+      previousEntryHash: hash('p'),
+      entryHash: hash('e'),
+      canonical: 'c',
+    }]
+    const overflow = compile(input({ packet: packet([], [], { authorizations: auths65 }) }))
+    expect(overflow).toMatchObject({ kind: 'incomplete', reason: 'ledger-budget-overflow' })
   })
 })

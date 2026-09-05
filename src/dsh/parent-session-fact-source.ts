@@ -14,6 +14,8 @@ import type {
 } from '../domain/dossier.js'
 import { isApprovalEnvironmentEvidenceV1, validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
 import type { LiveAgentRegistry, ParentSessionFactSource } from '../ports/parent-session-facts.js'
+import type { AuthorizationEntryV1 } from '../domain/authorization-ledger.js'
+import { verifyAuthorizationEntryLiveV1 } from '../application/authorization-verification.js'
 
 interface SessionEventLike {
   readonly seq: number
@@ -355,6 +357,8 @@ export interface SealedParentSessionFactsV1 {
   readonly seals: readonly SealV1[]
   readonly activities: readonly ActivityV1[]
   readonly catalogEpochs: readonly { readonly epoch: number; readonly headerEventSeq: number; readonly commitment: string }[]
+  /** Host-verified authorization drawer entries (WP7-c1). Empty array when no drawer is provided or no entries exist. */
+  readonly authorizations: readonly AuthorizationEntryV1[]
 }
 
 /**
@@ -401,6 +405,8 @@ export async function readSealedParentSessionFacts(input: {
   /** Bounded leading-tail window for rows entering the hot packet (default matches the chain config). */
   readonly maxSealedTailEvents?: number
   readonly signal?: AbortSignal
+  /** Authorization drawer reader (WP7-c1). When absent, authorizations defaults to empty array. */
+  readonly authorizationLedger?: { readonly read: (lifecycleFingerprint: string) => Promise<readonly AuthorizationEntryV1[] | undefined> }
 }): Promise<SealedFactsReadResult> {
   const fail = (subcode: SealedFactsUnavailableSubcodeV1, reason: string, detail?: unknown): SealedFactsReadResult => {
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', reason, detail === undefined ? '' : JSON.stringify(detail))
@@ -553,10 +559,32 @@ export async function readSealedParentSessionFacts(input: {
       return fail('seal-live-rebind-failed', 'live-events')
     }
   }
+  // Authorization drawer read (WP7-c1): after seal rows are all ok, read the
+  // drawer and verify each entry against the live Session eventAt.
+  let authorizations: readonly AuthorizationEntryV1[] = Object.freeze([])
+  if (input.authorizationLedger !== undefined) {
+    let drawerEntries: readonly AuthorizationEntryV1[] | undefined
+    try { drawerEntries = await input.authorizationLedger.read(lifecycleFingerprint) } catch { return fail('ledger-storage-unavailable', 'authorization-ledger-read') }
+    if (input.signal?.aborted) return fail('unclassified', 'aborted')
+    if (drawerEntries === undefined) return fail('ledger-storage-unavailable', 'authorization-ledger-read')
+    const verified: AuthorizationEntryV1[] = []
+    for (let index = 0; index < drawerEntries.length; index += 1) {
+      if (input.signal?.aborted) return fail('unclassified', 'aborted')
+      if (index % 256 === 0 && index > 0) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (input.signal?.aborted) return fail('unclassified', 'aborted')
+      }
+      const entry = verifyAuthorizationEntryLiveV1(drawerEntries[index], eventAt)
+      if (entry === undefined) return fail('seal-live-rebind-failed', 'authorization-live-rebind')
+      verified.push(entry)
+    }
+    authorizations = Object.freeze(verified)
+  }
+
   const current = packetRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
   // Zero current rows is the normal pending state (asked precedes any result
   // seal); more than one is a conflict and must stay fail-closed, never degrade
   // to an explainable 'missing current' (that would disguise tampering).
   if (current.length > 1) return fail('sealed-current-conflict', 'current-conflict')
-  return { kind: 'ok', facts: Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(packetRows.map(row => row.seal)), activities: Object.freeze(packetRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a, b) => a.epoch - b.epoch)) }) }
+  return { kind: 'ok', facts: Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(packetRows.map(row => row.seal)), activities: Object.freeze(packetRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a, b) => a.epoch - b.epoch)), authorizations }) }
 }

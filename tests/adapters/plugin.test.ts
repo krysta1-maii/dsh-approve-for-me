@@ -8,7 +8,14 @@ import type { StorageDomainFacility } from '../../src/dsh/storage-domain-decisio
 import type { ManagedAgentProvider, ManagedProviderRegistration } from 'dsh-managed-agent'
 import {
   REVIEWER_PROVIDER,
+  EXTRACTION_PROVIDER,
   SUBMIT_DECISION_TOOL,
+  SUBMIT_EXTRACTION_TOOL,
+  DefaultExtractionChannel,
+  DshStorageDomainAuthorizationLedger,
+  AUTHORIZATION_EXTRACTOR_VERSION,
+  createExtractorProviderData,
+  createReviewerProviderData,
   fingerprintApprovalToolCatalogV1,
   createFilesystemActionProjector,
   createShellProcessActionProjector,
@@ -29,7 +36,7 @@ import type { Config } from '../../src/index.js'
 import * as approveForMe from '../../src/index.js'
 import { approvalE2ESchemas, buildApprovalE2EFixture, seedApprovalE2E } from '../helpers/approval-e2e.js'
 
-type CtxEvent = 'tools/pre-execute' | 'tools/result'
+type CtxEvent = 'tools/pre-execute' | 'tools/result' | 'session/event'
 
 const validToolCatalog = () => {
   const unsealed = {
@@ -88,6 +95,8 @@ interface InstallHarness {
     }
   }
   registered: ManagedAgentProvider | undefined
+  extractorRegistered: ManagedAgentProvider | undefined
+  registeredNames: string[]
   machinePolicy: unknown | undefined
   disposeMachinePolicy: ReturnType<typeof vi.fn>
   composition: { suppressions: number; restrictions: number; approvalNever: number; sandboxReadOnly: number; resultObservers: number }
@@ -96,21 +105,38 @@ interface InstallHarness {
   listeners: {
     preExecute: ((exec: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     result: ((exec: unknown, result: unknown) => unknown) | undefined
+    sessionEvent: ((session: unknown, event: unknown) => unknown) | undefined
     topology: (() => unknown) | undefined
   }
   delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
   deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
   disposeRegistration: ReturnType<typeof vi.fn>
+  disposeExtractorRegistration: ReturnType<typeof vi.fn>
+  extractionDelivered: { request: Record<string, unknown>; window: readonly { seq: number; text: string }[] } | undefined
+}
+
+interface ScopedCapture {
+  childTool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> } | undefined
+  resultObserver: ((exec: unknown, result: unknown) => unknown) | undefined
 }
 
 function harness(options: {
   schemas?: readonly unknown[]
   storageDomain?: StorageDomainFacility
   agents?: { get(id: string): Agent | undefined }
+  /** Test hook: propose extractor submission entries for a delivered window. */
+  proposeExtractionEntries?: (request: Record<string, unknown>, window: readonly { seq: number; text: string }[]) => readonly Record<string, unknown>[]
+  /**
+   * Model a session whose managed directory already lists an extractor child
+   * (e.g. a previous approval created one): the idle no-op guard treats the
+   * directory as the only valid childSession evidence.
+   */
+  existingExtractorChild?: boolean
 } = {}): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
     result: undefined,
+    sessionEvent: undefined,
     topology: undefined,
   }
   const composition: InstallHarness['composition'] = {
@@ -121,13 +147,21 @@ function harness(options: {
     resultObservers: 0,
   }
   const disposeRegistration = vi.fn(async () => {})
+  const disposeExtractorRegistration = vi.fn(async () => {})
   const disposeMachinePolicy = vi.fn(() => {})
   let registered: ManagedAgentProvider | undefined
+  let extractorRegistered: ManagedAgentProvider | undefined
+  const registeredNames: string[] = []
   let machinePolicy: unknown | undefined
   let childTool: InstallHarness['childTool']
   let resultObserver: InstallHarness['resultObserver']
   let delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
   let deliveredPacket: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown } | undefined
+  let extractionDelivered: InstallHarness['extractionDelivered']
+  // Materialize runs inside controller.create, so the scoped tool/observer must
+  // be captured per provider: the Reviewer and the Extractor share the same
+  // fake controller shape but register different scoped tools.
+  const scopedByProvider = new Map<string, ScopedCapture>()
   const child: { id: string; session: { id: string; append: (type: string, data: unknown) => void } } = {
     id: 'reviewer-1',
     session: {
@@ -141,22 +175,42 @@ function harness(options: {
   const ctx = {
     managedAgents: {
       registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration {
-        registered = provider
-        return {
-          controller: {
-            async create(_parent: unknown, options: { providerData?: unknown; label: string }) {
-              const compositionResult = registered!.materialize({
-                source: 'startup',
-                parentSessionId: SessionId('parent-1'),
-                childSessionId: SessionId('reviewer-1'),
-                descriptor: {
-                  version: 1,
-                  provider: REVIEWER_PROVIDER,
-                  label: options.label,
-                  providerData: options.providerData as never,
-                },
-              })
-              compositionResult.setup?.({
+        registeredNames.push(provider.name)
+        if (provider.name === REVIEWER_PROVIDER) registered = provider
+        if (provider.name === EXTRACTION_PROVIDER) extractorRegistered = provider
+        const childSessionId = provider.name === REVIEWER_PROVIDER ? 'reviewer-1' : 'extractor-1'
+        const dispose = provider.name === REVIEWER_PROVIDER ? disposeRegistration : disposeExtractorRegistration
+        // Materialize captures this provider's scoped tool/observer. A child
+        // that already exists in the directory (existingExtractorChild) never
+        // passes through create, so deliver materializes lazily -- mirroring a
+        // real session whose scoped tool was registered at child startup.
+        const materializeScoped = (): ScopedCapture => {
+          let captured = scopedByProvider.get(provider.name)
+          if (captured !== undefined) return captured
+          const compositionResult = provider.materialize({
+            source: 'startup',
+            parentSessionId: SessionId('parent-1'),
+            childSessionId: SessionId(childSessionId),
+            descriptor: {
+              version: 1,
+              provider: provider.name,
+              label: provider.name === REVIEWER_PROVIDER ? 'Reviewer' : 'Authorization Extractor',
+              providerData: (provider.name === REVIEWER_PROVIDER
+                ? createReviewerProviderData({
+                    generation: 'reviewer-v1',
+                    modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+                    policyVersion: 'policy-v1',
+                    toolsetVersion: 1,
+                  })
+                : createExtractorProviderData({
+                    generation: 'reviewer-v1',
+                    modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+                    extractorVersion: AUTHORIZATION_EXTRACTOR_VERSION,
+                  })) as never,
+            },
+          })
+          captured = { childTool: undefined, resultObserver: undefined }
+          compositionResult.setup?.({
                 agent: child,
                 systemPrompt: {
                   suppressRuntimeContext: () => { composition.suppressions += 1; return () => {} },
@@ -164,27 +218,93 @@ function harness(options: {
                 },
                 tools: {
                   restrict: () => { composition.restrictions += 1; return () => {} },
-                  register: (tool: unknown) => { childTool = tool as InstallHarness['childTool']; return () => {} },
+                  register: (tool: unknown) => {
+                    captured.childTool = tool as ScopedCapture['childTool']
+                    childTool = captured.childTool
+                    return () => {}
+                  },
                 },
                 on: (event: string, listener: (...args: unknown[]) => unknown) => {
                   if (event === 'tools/result') {
                     composition.resultObservers += 1
-                    resultObserver = listener as InstallHarness['resultObserver']
+                    captured.resultObserver = listener as ScopedCapture['resultObserver']
+                    resultObserver = captured.resultObserver
                   }
                   return () => {}
                 },
               } as never)
-              return SessionId('reviewer-1')
+          scopedByProvider.set(provider.name, captured)
+          return captured
+        }
+        return {
+          controller: {
+            async create(_parent: unknown, _options: { providerData?: unknown; label: string }) {
+              materializeScoped()
+              return SessionId(childSessionId)
             },
-            async list() { return [] },
-            async rotate() { return SessionId('reviewer-1') },
-            async renew() { return SessionId('reviewer-1') },
+            async list() {
+              if (options.existingExtractorChild && provider.name === EXTRACTION_PROVIDER) {
+                return [{
+                  id: SessionId('extractor-1'),
+                  parentSessionId: SessionId('parent-1'),
+                  provider: EXTRACTION_PROVIDER,
+                  label: 'Authorization Extractor',
+                  providerData: createExtractorProviderData({
+                    generation: 'reviewer-v1',
+                    modelRoute: { providerId: 'deepseek', modelId: 'deepseek-chat' },
+                    extractorVersion: AUTHORIZATION_EXTRACTOR_VERSION,
+                  }),
+                  deliveryAttempts: 0,
+                  retired: false,
+                  contaminated: false,
+                }] as never
+              }
+              return []
+            },
+            async rotate() { return SessionId(childSessionId) },
+            async renew() { return SessionId(childSessionId) },
             async deliver(_parent: unknown, _childId: unknown, content: readonly unknown[]) {
               const raw = (content[0] as { text: string } | undefined)?.text.split('\n').at(-1)
               if (raw === undefined) throw new Error('approval request was not delivered')
+              const rawJson = JSON.parse(raw) as Record<string, unknown>
+              if (provider.name === EXTRACTION_PROVIDER) {
+                // Authorization extraction delivery: echo one structured
+                // submission (entries proposed by the test hook, identity
+                // fields verbatim from the delivered request) and run the real
+                // two-phase scoped tool flow: execute stages, the child-scoped
+                // tools/result observer submits with the ACTUAL extractor
+                // Session id.
+                const window = (rawJson.window as readonly { seq: number; text: string }[] | undefined) ?? []
+                extractionDelivered = { request: rawJson, window }
+                const scoped = materializeScoped()
+                if (scoped.childTool === undefined) throw new Error('extraction tool was not materialized')
+                const submission = {
+                  protocolVersion: 1,
+                  extractionId: rawJson.extractionId,
+                  parentSessionId: rawJson.parentSessionId,
+                  extractorSessionId: rawJson.extractorSessionId,
+                  generation: rawJson.generation,
+                  extractorVersion: rawJson.extractorVersion,
+                  throughSeq: rawJson.throughSeq,
+                  entries: options.proposeExtractionEntries?.(rawJson, window) ?? [],
+                }
+                const exec = {
+                  callId: 'extract-call-1',
+                  rootCallId: 'extract-call-1',
+                  name: SUBMIT_EXTRACTION_TOOL,
+                  arguments: submission,
+                  agent: { id: childSessionId, session: { id: childSessionId } },
+                  signal: new AbortController().signal,
+                  token: Symbol('token'),
+                  deferContext: () => {},
+                  concludeTurn: () => {},
+                }
+                await scoped.childTool.execute(submission, exec)
+                scoped.resultObserver?.(exec, { isError: false, value: { recorded: true }, content: [] })
+                return MessageId('message-extract-1')
+              }
               // Capture the raw packet so packet-level (dossier.interaction.sealed.excerpts)
               // assertions are possible on the real Reviewer deliver payload.
-              const rawJson = JSON.parse(raw) as unknown
               let packet: { request: ReturnType<typeof parseApprovalReviewRequest>; dossier: unknown }
               try {
                 const parsed = parseApprovalReviewPacketV2(rawJson)
@@ -217,7 +337,7 @@ function harness(options: {
             },
             interrupt: vi.fn(),
           },
-          dispose: disposeRegistration,
+          dispose,
         }
       },
     },
@@ -239,6 +359,7 @@ function harness(options: {
     on(event: CtxEvent | 'llm/adapters-updated', listener: (...args: unknown[]) => unknown) {
       if (event === 'tools/pre-execute') listeners.preExecute = listener as InstallHarness['listeners']['preExecute']
       if (event === 'tools/result') listeners.result = listener as InstallHarness['listeners']['result']
+      if (event === 'session/event') listeners.sessionEvent = listener as InstallHarness['listeners']['sessionEvent']
       if (event === 'llm/adapters-updated') listeners.topology = listener as InstallHarness['listeners']['topology']
       return () => {}
     },
@@ -251,6 +372,8 @@ function harness(options: {
   return {
     ctx: ctx as unknown as InstallHarness['ctx'],
     get registered() { return registered },
+    get extractorRegistered() { return extractorRegistered },
+    get registeredNames() { return registeredNames },
     get machinePolicy() { return machinePolicy },
     disposeMachinePolicy,
     composition,
@@ -258,8 +381,10 @@ function harness(options: {
     get resultObserver() { return resultObserver },
     listeners,
     disposeRegistration,
+    disposeExtractorRegistration,
     get delivered() { return delivered },
     get deliveredPacket() { return deliveredPacket },
+    get extractionDelivered() { return extractionDelivered },
   }
 }
 
@@ -776,7 +901,7 @@ describe('installApproveForMe composition root', () => {
     const registerProvider = vi.spyOn(h.ctx.managedAgents, 'registerProvider')
     h.disposeRegistration.mockRejectedValue(new Error('managed provider retirement failed'))
     await approveForMe.apply(h.ctx as unknown as Context, config)
-    expect(registerProvider).toHaveBeenCalledOnce()
+    expect(registerProvider).toHaveBeenCalledTimes(2)
 
     h.listeners.topology?.()
     expect(h.machinePolicy).toBeUndefined()
@@ -785,7 +910,7 @@ describe('installApproveForMe composition root', () => {
     h.listeners.topology?.()
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(h.machinePolicy).toBeUndefined()
-    expect(registerProvider).toHaveBeenCalledOnce()
+    expect(registerProvider).toHaveBeenCalledTimes(2)
   })
 
   it('does not settle loader reconciliation before post-registration rollback finishes', async () => {
@@ -837,20 +962,25 @@ describe('installApproveForMe composition root', () => {
     const ctx = h.ctx as any
     const on = ctx.on.bind(ctx); ctx.on = (event: string, listener: (...args: unknown[]) => unknown) => { on(event, listener); return () => { order.push('fence:' + event) } }
     const policy = ctx.approval.registerMachinePolicy.bind(ctx.approval); ctx.approval.registerMachinePolicy = (value: unknown) => { const dispose = policy(value); return () => { order.push('fence:policy'); dispose() } }
-    const register = ctx.managedAgents.registerProvider.bind(ctx.managedAgents); ctx.managedAgents.registerProvider = (provider: ManagedAgentProvider) => { const registration = register(provider); return { ...registration, dispose: async () => { order.push('provider'); await registration.dispose() } } }
+    const register = ctx.managedAgents.registerProvider.bind(ctx.managedAgents); ctx.managedAgents.registerProvider = (provider: ManagedAgentProvider) => { const registration = register(provider); return { ...registration, dispose: async () => { order.push(provider.name === REVIEWER_PROVIDER ? 'provider' : 'extractor-provider'); await registration.dispose() } } }
     const spy = (prototype: any, key: string, label: string) => { const original = prototype[key]; return vi.spyOn(prototype, key).mockImplementation(function (this: any, ...args: unknown[]) { order.push(label); return original.apply(this, args) }) }
-    const spies = [spy(ApprovalRunLifecycle.prototype, 'dispose', 'abort'), spy(SerialLanes.prototype, 'drain', 'lanes'), spy(DshStorageDomainSealedFacts.prototype, 'drain', 'ledger'), spy(DshStorageDomainFactRepositories.prototype, 'drain', 'facts-close'), spy(DshStorageDomainGateDecisionRecordStore.prototype, 'drain', 'records-close')]
+    // WP7-c2b: the extraction channel closes before the lane drain (in-flight
+    // extractions settle as 'disposed'), both drawers drain before the decision
+    // channel and provider release, and the extractor unregisters after the
+    // Reviewer.
+    const spies = [spy(ApprovalRunLifecycle.prototype, 'dispose', 'abort'), spy(DefaultExtractionChannel.prototype, 'dispose', 'extraction-channel'), spy(SerialLanes.prototype, 'drain', 'lanes'), spy(DshStorageDomainSealedFacts.prototype, 'drain', 'ledger'), spy(DshStorageDomainAuthorizationLedger.prototype, 'drain', 'authorization-ledger'), spy(DshStorageDomainFactRepositories.prototype, 'drain', 'facts-close'), spy(DshStorageDomainGateDecisionRecordStore.prototype, 'drain', 'records-close')]
     try { await installApproveForMe(h.ctx as unknown as Context, config).dispose() } finally { spies.forEach(item => item.mockRestore()) }
-    expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'lanes', 'ledger', 'provider', 'facts-close', 'records-close'])
+    expect(order).toEqual(['fence:policy', 'fence:session/event', 'fence:tools/result', 'fence:tools/post-execute', 'fence:tools/pre-execute', 'abort', 'extraction-channel', 'lanes', 'ledger', 'authorization-ledger', 'provider', 'extractor-provider', 'facts-close', 'records-close'])
   })
 
 describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
-  function e2eHarness(padEvents: number) {
+  function e2eHarness(padEvents: number, options: { existingExtractorChild?: boolean } = {}) {
     const fixture = buildApprovalE2EFixture({ padEvents })
     const h = harness({
       schemas: [approvalE2ESchemas],
       storageDomain: fixture.storageDomain,
       agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+      ...(options.existingExtractorChild === undefined ? {} : { existingExtractorChild: options.existingExtractorChild }),
     })
     return { fixture, h }
   }
@@ -907,7 +1037,10 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
   })
 
   it('keeps the >20k approve hot path bounded and still allows (item 5)', async () => {
-    const { fixture, h } = e2eHarness(20_001)
+    // The session's managed directory already lists an extractor child (a
+    // prior approval created one), so the idle no-op guard treats extraction
+    // as potentially effective and the idle trigger below actually runs.
+    const { fixture, h } = e2eHarness(20_001, { existingExtractorChild: true })
     await seedApprovalE2E(fixture)
     const plugin = installApproveForMe(h.ctx as unknown as Context, config)
 
@@ -924,6 +1057,19 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     snapshotEvents.mockClear()
     eventAtCalls.length = 0
 
+    // WP7-c2b: the authorization extractor's first window on a mature session
+    // scans the full history once (its deterministic collector walks
+    // (checkpoint, throughSeq] via exact eventAt reads only -- never
+    // snapshotEvents). Trigger that first idle extraction on the last root
+    // user/message BEFORE the decide segment so the sync-tail catch-up inside
+    // the approval stays incremental and the bounded-read pin below still
+    // describes the decide segment exactly. Without directory evidence the
+    // idle no-op guard would (correctly) refuse this first trigger.
+    const userMessage = fixture.events.find(event => event.type === 'user/message')!
+    h.listeners.sessionEvent!(fixture.parent.session, userMessage)
+    await vi.waitFor(() => expect(h.extractionDelivered).toBeDefined())
+    eventAtCalls.length = 0
+
     const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
     fixture.appendCurrentAsk()
     const hotSeq = fixture.hotSeq
@@ -937,6 +1083,9 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     // the recent-excerpt assembler keeps its own independent 512-event window at
     // the ask seq (which is session.seq - 1). The union is bounded by the wider
     // excerpt window: [session.seq - 512 - 1, session.seq) - never a full-history scan.
+    // The extraction sync-tail catch-up reads only (checkpoint, askedSeq): after
+    // the idle extraction above advanced the checkpoint past the last user/message,
+    // that window is a handful of seqs inside the same horizon.
     expect(eventAtCalls.length).toBeGreaterThan(0)
     const lower = Math.max(0, hotSeq - 512 - 1)
     for (const seq of eventAtCalls) {

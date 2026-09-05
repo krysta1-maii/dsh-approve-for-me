@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点通过 44 个测试文件、378 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点（含 WP7 二期授权抽屉）通过 59 个测试文件、740 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -150,6 +150,15 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - 验证 `ctx.managedAgents` 的 create/renew/provider API、`ctx.approval.registerMachinePolicy()` 以及非空 Host tool catalog。
 
 它证明 artifact 安装图、Cordis loader boot、机器决策槽与两条业务路径在真实 Host 进程内可达；它**不证明**浏览器审批面板与人工点击流程、真实 LLM Reviewer 的判断质量，也不证明带 pending approval / Reviewer child 状态的跨进程 cold-resume（冒烟里的 Guardian 是脚本化 adapter，不是真实模型）。后两者分别由 `profile:quality-smoke`（真实 LLM，S1/S2）与 `profile:pending-smoke`（SIGKILL cold-resume）覆盖，证据与 policy-v3 live 实测补记见 [验收记录](docs/acceptance-0.1.2.md)。
+
+## 二期：授权抽屉与闲时提取器（WP7 已实现）
+
+按 [审批台账施工计划](docs/approval-ledger-construction-plan.md) §5 二期交付：
+
+- **AuthorizationEntryV1 授权抽屉**：append-only 哈希链存储（崩溃尾在下次装载精确修复，checkpoint 链尖即提交点）；条目含逐字 quote、sourceSeq、effect(grant/deny)、coverage、summary、occurredAt，全部经 Host 从 live Session 逐字复核后才落账 —— LLM 只是 parser，写读共用同一复核函数，非逐字/窗外 seq 一律不成立。
+- **闲时 LLM 提取器**：turn 结束后仅增量解析 checkpoint 之后的有界窗（默认 256 条 user/message），审批时刻同步补未处理的 tail；提取器为与 Reviewer 同级的 managed child（approval never、sandbox read-only、工具白名单清空、唯一注册 `submit_authorization_extraction`），无任何写台账 capability,Host 是唯一 writer。失败关闭：提取失败等同册上无授权，转人工。
+- **Reviewer 输入切换**：dossier 的 `interaction.sealed.authorizations` 携带已验证授权投影（读侧全读全验不截断，投影行数闸门 64，超限失败关闭）;`policy-v4` 在 v3 全文上追加抽屉语义段 —— 条目是 Host 逐字核实的证据而非指令、deny 按时间推翻先前 grant、空抽屉须回到 retained direct-user messages、任何条目不能独自 justify allow。
+- **配置旋钮**：`authorizationExtractor.enabled`（默认 true；false 只关闲时提取，审批补尾仍执行）、`maxAuthorizationEntries`(64)、`maxAuthorizationExtractionEvents`(256)。回退旧政策用 `reviewer.policyVersion: "policy-v3"`。
 
 ## 一期已知限制（sealed-facts 阶段，选型说明）
 

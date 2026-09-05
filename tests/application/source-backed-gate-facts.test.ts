@@ -59,6 +59,7 @@ function packet(overrides: Partial<SealedParentSessionFactsV1> = {}): SealedPare
     seals: [],
     activities: [],
     catalogEpochs: [{ epoch: 0, headerEventSeq: 3, commitment: catalogCommitmentFingerprint }],
+    authorizations: [],
     ...overrides,
   }
 }

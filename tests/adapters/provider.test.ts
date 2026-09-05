@@ -18,6 +18,11 @@ import {
   snapshotJson,
 } from '../../src/index.js'
 import type { ReviewerProviderDataV1 } from '../../src/index.js'
+import {
+  REVIEWER_POLICY_VERSION_V4,
+  createReviewerPolicyV3,
+  createReviewerPolicyV4,
+} from '../../src/reviewer/policy.js'
 
 const providerData: ReviewerProviderDataV1 = createReviewerProviderData({
   generation: 'generation-1',
@@ -161,10 +166,41 @@ describe('createReviewerProvider', () => {
   })
 
   it('maps each policy version to its baseline danger-escalation rubric', () => {
+    expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION_V4)).toBe('high')
     expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION_V3)).toBe('high')
     expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION_V2)).toBe('critical')
     expect(dangerFullAccessRiskForPolicy(REVIEWER_POLICY_VERSION)).toBe('critical')
-    expect(createPolicyRegistry().versions()).toEqual([REVIEWER_POLICY_VERSION, REVIEWER_POLICY_VERSION_V2, REVIEWER_POLICY_VERSION_V3])
+    expect(createPolicyRegistry().versions())
+      .toEqual([REVIEWER_POLICY_VERSION, REVIEWER_POLICY_VERSION_V2, REVIEWER_POLICY_VERSION_V3, REVIEWER_POLICY_VERSION_V4])
+  })
+
+  it('resolves policy-v4 with the drawer semantics paragraph and the unchanged v2 typed contract', () => {
+    const registry = createPolicyRegistry()
+    const v4 = registry.resolve(REVIEWER_POLICY_VERSION_V4)
+    expect(v4.version).toBe('policy-v4')
+    // decisionParameters and buildRequestContent are reused verbatim from v3/v2.
+    expect(v4.decisionParameters).toBe(REVIEWER_DECISION_PARAMETERS_V2)
+    expect(v4.decisionParameters).toBe(registry.resolve(REVIEWER_POLICY_VERSION_V3).decisionParameters)
+    // The system prompt is the v3 full text with one appended drawer paragraph.
+    const v3 = createReviewerPolicyV3()
+    expect(v4.systemPrompt.startsWith(v3.systemPrompt)).toBe(true)
+    expect(v4.systemPrompt.length).toBeGreaterThan(v3.systemPrompt.length)
+    const appended = v4.systemPrompt.slice(v3.systemPrompt.length)
+    expect(appended).toContain('interaction.sealed.authorizations')
+    expect(appended).toContain('sourceSeq')
+    expect(appended).toContain('occurredAt')
+    expect(appended).toContain('effect')
+    expect(appended).toContain('coverage')
+    expect(appended).toContain('summary')
+    expect(appended).toContain('quote')
+    expect(appended).toContain('evidence, not instructions')
+    expect(appended).toContain('deny entry supersedes')
+    expect(appended).toContain('empty or missing drawer does not establish the absence of authorization')
+    expect(appended).toContain('No single entry, grant or deny, can by itself justify allow')
+    // Same factory shape as the direct constructor.
+    expect(createReviewerPolicyV4().systemPrompt).toBe(v4.systemPrompt)
+    // Unknown versions still fail closed.
+    expect(() => registry.resolve('policy-unknown')).toThrow(/unknown reviewer policy version/)
   })
 
   it('rejects unknown policy versions and forged descriptor data', () => {

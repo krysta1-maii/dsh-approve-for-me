@@ -4,6 +4,7 @@ import {
   ApproveForMeSettings,
   Config,
   configWithReviewerSettings,
+  DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS,
   DEFAULT_MAX_SEALED_HISTORY_WINDOW,
   fingerprintApprovalToolCatalogV1,
   inject,
@@ -11,6 +12,7 @@ import {
   normalizeConfig,
   reviewerSettingsFromConfig,
 } from '../src/index.js'
+import { DEFAULT_MAX_AUTHORIZATION_ENTRIES } from '../src/domain/authorization-ledger.js'
 
 const toolCatalog = (descriptors: readonly { readonly toolName: string; readonly toolSchemaFingerprint: string; readonly classification: 'ordinary' | 'gate-ask' | 'body-escalation'; readonly actionSemanticsFamily: string; readonly actionProjectorId: string }[]) => {
   const unsealed = { version: 1 as const, argumentSemanticsId: 'default-v1', fingerprint: '', descriptors }
@@ -119,6 +121,41 @@ describe('plugin config', () => {
       maxHotPacketBytes: 256_000,
       sealBackfill: false,
     })
+  })
+
+  it('normalizes the authorization extractor and drawer budget knobs to their single-source defaults (WP7-c2a)', () => {
+    const normalized = normalizeConfig(valid())
+    expect(normalized.authorizationExtractorEnabled).toBe(true)
+    expect(normalized.maxAuthorizationEntries).toBe(DEFAULT_MAX_AUTHORIZATION_ENTRIES)
+    expect(normalized.maxAuthorizationEntries).toBe(64)
+    expect(normalized.maxAuthorizationExtractionEvents).toBe(DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS)
+    expect(normalized.maxAuthorizationExtractionEvents).toBe(256)
+  })
+
+  it('accepts explicit authorization extractor and drawer budget knobs', () => {
+    const normalized = normalizeConfig({
+      ...valid(),
+      authorizationExtractor: { enabled: false },
+      maxAuthorizationEntries: 8,
+      maxAuthorizationExtractionEvents: 32,
+    })
+    expect(normalized.authorizationExtractorEnabled).toBe(false)
+    expect(normalized.maxAuthorizationEntries).toBe(8)
+    expect(normalized.maxAuthorizationExtractionEvents).toBe(32)
+    // An empty extractor object keeps the enabled default.
+    expect(normalizeConfig({ ...valid(), authorizationExtractor: {} }).authorizationExtractorEnabled).toBe(true)
+  })
+
+  it('rejects invalid authorization extractor and drawer budget knobs', () => {
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationEntries: 0 })).toThrow(/maxAuthorizationEntries/)
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationEntries: -1 })).toThrow(/maxAuthorizationEntries/)
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationEntries: 1.5 })).toThrow(/maxAuthorizationEntries/)
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationExtractionEvents: 0 })).toThrow(/maxAuthorizationExtractionEvents/)
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationExtractionEvents: -1 })).toThrow(/maxAuthorizationExtractionEvents/)
+    expect(() => normalizeConfig({ ...valid(), maxAuthorizationExtractionEvents: 2.5 })).toThrow(/maxAuthorizationExtractionEvents/)
+    expect(() => normalizeConfig({ ...valid(), authorizationExtractor: 'yes' as never })).toThrow(/authorizationExtractor must be an object/)
+    expect(() => normalizeConfig({ ...valid(), authorizationExtractor: 1 as never })).toThrow(/authorizationExtractor must be an object/)
+    expect(() => normalizeConfig({ ...valid(), authorizationExtractor: { enabled: 'yes' } as never })).toThrow(/authorizationExtractor.enabled must be a boolean/)
   })
 
   it('accepts explicit mode and timeout', () => {

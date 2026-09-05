@@ -72,6 +72,12 @@ import type { RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
 import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
 import { resolveReviewerModelRouteFromDshCatalog } from './dsh/reviewer-model-catalog.js'
+import { createExtractorProvider } from './reviewer/extractor-provider.js'
+import { DefaultExtractionChannel } from './application/extraction-channel.js'
+import { DefaultAuthorizationExtractionCoordinator } from './application/authorization-extraction-coordinator.js'
+import type { AuthorizationLiveEventView } from './application/authorization-verification.js'
+import { DshStorageDomainAuthorizationLedger } from './dsh/storage-domain-authorization-ledger.js'
+import { AUTHORIZATION_EXTRACTOR_VERSION, createExtractorProviderData, EXTRACTION_PROVIDER } from './domain/extraction-protocol.js'
 
 export interface ApproveForMePlugin {
   readonly config: NormalizedConfig
@@ -232,6 +238,12 @@ export function installApproveForMe(
     throw new Error('caseCapture.mode "full" requires a host-private durable case-capture adapter, which is not available')
   }
   const channel = new DefaultDecisionChannel()
+  // The extractor submission channel (WP7-c2b, brief decisions 5/6) is created
+  // alongside the decision channel so the extractor provider's submit closure
+  // is complete before either provider is registered; mount rollback can then
+  // always fence it.
+  let rollbackExtractionChannel: DefaultExtractionChannel | undefined
+  const extractionChannel = rollbackExtractionChannel = new DefaultExtractionChannel()
   // One complete deadline covers fact repair/compilation as well as Reviewer I/O.
   const lifecycle = new ApprovalRunLifecycle(normalized.timeoutMs)
   const captures = new DefaultActionCapture<Agent, string>()
@@ -267,6 +279,8 @@ export function installApproveForMe(
   const bridge = createCaptureBridge(actionProjector, captures)
 
   let registration: ManagedProviderRegistration | undefined
+  let extractorRegistration: ManagedProviderRegistration | undefined
+  let rollbackAuthorizationLedger: DshStorageDomainAuthorizationLedger | undefined
   let rollbackLanes: SerialLanes | undefined
   let rollbackDurableFacts: DshStorageDomainFactRepositories | undefined
   let rollbackRecords: DshStorageDomainGateDecisionRecordStore | undefined
@@ -284,6 +298,18 @@ export function installApproveForMe(
     },
   }))
   const port = createManagedReviewerPort(acquiredRegistration.controller)
+  // Decision 5: the Authorization Extractor is a second managed provider with
+  // Reviewer-level isolation; its only output is the typed extraction
+  // submission, staged through the one-shot extraction channel whose identity
+  // binding comes from the ACTUAL extractor Session (mirroring the decision
+  // tool discipline).
+  const acquiredExtractorRegistration = extractorRegistration = ctx.managedAgents.registerProvider(createExtractorProvider({
+    submitExtraction: {
+      submit: (payload, actualExtractorSessionId) =>
+        extractionChannel.submit(payload, { actualExtractorSessionId }),
+    },
+  }))
+  const extractorPort = createManagedReviewerPort(acquiredExtractorRegistration.controller)
   const lanes = rollbackLanes = new SerialLanes()
   const reviewerTelemetry = new InMemoryReviewerTelemetry()
   const reviewerTelemetrySink: ReviewerTelemetrySink = {
@@ -317,12 +343,38 @@ export function installApproveForMe(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
     () => ctx.logger.error(new Error('approval ledger storage unavailable')),
   )
+  // Private authorization drawer (WP7-a, decision 9). Drawer pollution or
+  // storage failure degrades to an empty drawer (fewer authorizing rows,
+  // never more), so a failed domain can never block or amplify an approval.
+  const authorizationLedger = rollbackAuthorizationLedger = new DshStorageDomainAuthorizationLedger(
+    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    () => ctx.logger.error(new Error('authorization ledger storage unavailable')),
+  )
+  // Decision 6: one coordinator serves both triggers. The idle trigger covers
+  // root user/message events; the approval path additionally runs one
+  // synchronous tail catch-up before the sealed facts read. extract() never
+  // throws into either path: a missed extraction only means the drawer holds
+  // fewer rows, and the checkpoint idempotence makes every retry safe.
+  const authorizationCoordinator = new DefaultAuthorizationExtractionCoordinator<Agent, string>({
+    port: extractorPort,
+    channel: extractionChannel,
+    ledger: authorizationLedger,
+    preset: createExtractorProviderData({
+      generation: normalized.preset.generation,
+      modelRoute: normalized.preset.modelRoute,
+      extractorVersion: AUTHORIZATION_EXTRACTOR_VERSION,
+    }),
+    lane: lanes,
+    timeoutMs: normalized.timeoutMs,
+    maxDeliveryAttemptsPerChild: normalized.maxDeliveryAttemptsPerChild,
+    maxExtractionEvents: normalized.maxAuthorizationExtractionEvents,
+  })
   const registry: LiveAgentRegistry = {
     get: sessionId => (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId),
   }
   const sealedFacts: SealedFactsReader = {
     read: ({ agent, approvalRequestId, callId, toolName, maxSealedTailEvents, signal }) =>
-      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
+      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, authorizationLedger, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
   }
   const compileSealed = createSealedDossierCompiler({
     maxHotPacketBytes: normalized.maxHotPacketBytes,
@@ -334,6 +386,10 @@ export function installApproveForMe(
     // count is bounded at compile time; a packet whose activity rows exceed it
     // fails closed as ledger-budget-overflow.
     maxLedgerEntries: normalized.maxLedgerEntries,
+    // Decision 7 (WP7-c1): bound the authorization drawer row count entering
+    // the hot packet; an over-budget drawer fails closed as the same
+    // ledger-budget-overflow code as a ledger row overflow.
+    maxAuthorizationEntries: normalized.maxAuthorizationEntries,
   })
   // The approval hot path compiles exclusively through createSealedDossierCompiler.
   // The complete-footprint DefaultDossierCompiler is a manual/debug entry provided
@@ -386,6 +442,27 @@ export function installApproveForMe(
         sessionFormatVersion: version as number,
         createdAt: createdAt as number,
         ...(cwd === undefined ? {} : { cwd }),
+      }
+      // Decision 6 (§5): synchronous drawer tail catch-up before the sealed
+      // facts read covers every user/message in (checkpoint, approvalAskedSeq)
+      // the idle trigger missed. This runs even when the idle extractor is
+      // disabled; the result is deliberately ignored in every case -- a missed
+      // extraction only means the drawer holds fewer rows and must never
+      // block the approval. extract() itself never throws; the try/catch is
+      // defense in depth on the hot path.
+      try {
+        const lifecycleFingerprint = canonicalJson(lifecycle)
+        await authorizationCoordinator.extract({
+          authority: pending.authority,
+          lifecycleFingerprint,
+          // Re-bind to the session instance (WP6-b5): a bare eventAt reference
+          // drops the receiver and would poison every live re-verification.
+          eventAt: seq => session.eventAt?.(seq) as AuthorizationLiveEventView | undefined,
+          throughSeq: approvalAskedSeq - 1,
+          ...(signal === undefined ? {} : { signal }),
+        })
+      } catch {
+        // Degrade to the drawer as it already stands; never fail the ask.
       }
       let projectedExecutions = await executionFacts.list(lifecycle, signal)
       const projectedApprovals = await approvalSnapshots.list(lifecycle, signal)
@@ -590,6 +667,67 @@ export function installApproveForMe(
           // A failed observer write is non-authorizing; an unhandled rejection
           // must not be able to take down the Host process.
         })
+        // Decision 6 idle trigger: one incremental drawer extraction per root
+        // session user/message. Managed child sessions carry a parentSession
+        // header, so the Reviewer/Extractor's own events can never re-enter
+        // this hook (recursion guard). A failed extraction only means the
+        // drawer holds fewer rows -- the next root user/message or the
+        // approval-time catch-up retries, and checkpoint idempotence makes
+        // retries safe -- so the promise is deliberately fire-and-forget.
+        if (normalized.authorizationExtractorEnabled && sessionId.length > 0) {
+          const binding = session as unknown as {
+            eventAt?: (seq: number) => AuthorizationLiveEventView | undefined
+            header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown }
+          }
+          const header = binding.header
+          const eventSeq = (event as { seq?: unknown }).seq
+          if ((event as { type?: unknown }).type === 'user/message'
+            && (header?.parentSession === undefined || header.parentSession === '')
+            && Number.isSafeInteger(header?.version) && (header?.version as number) >= 0
+            && Number.isSafeInteger(header?.createdAt) && (header?.createdAt as number) >= 0
+            && Number.isSafeInteger(eventSeq) && (eventSeq as number) >= 0
+            && typeof binding.eventAt === 'function') {
+            const cwd = typeof header?.cwd === 'string' && header.cwd.length > 0 ? header.cwd : undefined
+            // Same lifecycle key set as the sealed reader (parent-session-fact-source):
+            // { sessionId, sessionFormatVersion, createdAt, cwd? } -- the drawer
+            // rows and the sealed facts must hash under one fingerprint.
+            const lifecycle = {
+              sessionId,
+              sessionFormatVersion: header!.version as number,
+              createdAt: header!.createdAt as number,
+              ...(cwd === undefined ? {} : { cwd }),
+            }
+            const authority: ParentAuthority<Agent, string> = { live: agent, sessionId }
+            const lifecycleFingerprint = canonicalJson(lifecycle)
+            // No-op guard: an event that cannot change the drawer must never
+            // run ensureExtractorChild / arm the channel / deliver. Drawer rows
+            // only ever exist behind an extraction checkpoint, so a session
+            // with NO checkpoint and NO extractor child (the managed directory
+            // list is the only valid childSession evidence, spec: discovery
+            // only) holds no incremental state worth waking the model for --
+            // and the approval-time catch-up still initializes the drawer.
+            // Fail-closed toward extraction: any binding/reader doubt runs it.
+            void (async () => {
+              try {
+                const tip = await authorizationLedger.readCheckpoint(lifecycleFingerprint)
+                if (tip !== undefined && tip !== null && (eventSeq as number) <= tip.throughSeq) return
+                const children = await extractorPort.list(sessionId)
+                if (tip === null
+                  && !children.some(child => child.provider === EXTRACTION_PROVIDER && child.parentSessionId === sessionId)) {
+                  return
+                }
+              } catch {
+                // Reader/directory doubt: fall through and extract.
+              }
+              await authorizationCoordinator.extract({
+                authority,
+                lifecycleFingerprint,
+                eventAt: seq => binding.eventAt?.(seq) as AuthorizationLiveEventView | undefined,
+                throughSeq: eventSeq as number,
+              })
+            })().catch(() => {})
+          }
+        }
       }
     })
     // The machine policy is the commit point: every fallible event hook is
@@ -621,11 +759,21 @@ export function installApproveForMe(
       stopPreExecute()
       disposal = (async () => {
         const errors: unknown[] = []
-        for (const close of [() => lifecycle.dispose(), () => lanes.drain(), () => ledger.drain()]) {
+        // The extraction channel closes BEFORE the lane drain so every in-flight
+        // extraction settles immediately as 'disposed'; draining lanes then
+        // waits for those settlements, and only after that do the drawers close.
+        for (const close of [
+          () => lifecycle.dispose(),
+          () => extractionChannel.dispose(),
+          () => lanes.drain(),
+          () => ledger.drain(),
+          () => authorizationLedger.drain(),
+        ]) {
           try { await close() } catch (error) { errors.push(error) }
         }
         try { channel.dispose() } catch (error) { errors.push(error) }
         try { await acquiredRegistration.dispose() } catch (error) { errors.push(error) }
+        try { await acquiredExtractorRegistration.dispose() } catch (error) { errors.push(error) }
         for (const close of [() => durableFacts.drain(), () => records.drain()]) {
           try { await close() } catch (error) { errors.push(error) }
         }
@@ -642,15 +790,18 @@ export function installApproveForMe(
     const rollback = (async () => {
       for (const close of [
         () => lifecycle.dispose(),
+        () => rollbackExtractionChannel?.dispose(),
         () => rollbackLanes?.drain(),
-        () => rollbackDurableFacts?.drain(),
         () => rollbackLedger?.drain(),
+        () => rollbackAuthorizationLedger?.drain(),
+        () => rollbackDurableFacts?.drain(),
         () => rollbackRecords?.drain(),
       ]) {
         try { await close() } catch (reason) { rollbackErrors.push(reason) }
       }
       try { channel.dispose() } catch (reason) { rollbackErrors.push(reason) }
       try { await registration?.dispose() } catch (reason) { rollbackErrors.push(reason) }
+      try { await extractorRegistration?.dispose() } catch (reason) { rollbackErrors.push(reason) }
       if (rollbackErrors.length > 0) {
         throw new AggregateError(rollbackErrors, 'dsh-approve-for-me mount rollback failed')
       }

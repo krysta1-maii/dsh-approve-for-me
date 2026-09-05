@@ -79,7 +79,7 @@ function excerptBytes(entry: RecentExcerptV1): number {
  * content blocks are read: tool-result bodies, tool-call argument JSON, LLM
  * reasoning, IDs (message.id, data.id, callId, sessionId) are never copied.
  */
-function extractUserText(data: unknown): string | undefined {
+export function extractUserText(data: unknown): string | undefined {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return undefined
   const payload = data as Record<string, unknown>
   const source = payload.source

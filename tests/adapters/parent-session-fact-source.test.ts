@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, createSealedDossierCompiler, DEFAULT_MAX_SEALED_HISTORY_WINDOW, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import { describe, expect, it, vi } from 'vitest'
+import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createAuthorizationEntryV1, createSealV1, createSealedDossierCompiler, DEFAULT_MAX_SEALED_HISTORY_WINDOW, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
 import type { ActivityV1, SealV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
@@ -947,6 +947,104 @@ describe('readSealedParentSessionFacts WP5-a unavailable subcode', () => {
     ])
     const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
     expect(result).toMatchObject({ kind: 'unavailable', subcode: 'sealed-current-conflict' })
+  })
+})
+
+describe('readSealedParentSessionFacts authorization drawer (WP7-c1)', () => {
+  function authFixture() {
+    const fixture = sealedReaderFixture()
+    // Insert a user/message event at seq 11 for authorization testing
+    fixture.events.push({ seq: 11, time: 111, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'yes run it' }] } })
+    const authEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: canonicalJson(lifecycle),
+      sourceSeq: 11,
+      occurredAt: 111,
+      quote: 'yes run it',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '0'.repeat(64),
+    })
+    return { fixture, authEntry }
+  }
+
+  it('defaults authorizations to empty array when no authorizationLedger provided', async () => {
+    const { fixture } = authFixture()
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
+    expect(facts.authorizations).toEqual([])
+  })
+
+  it('reads and verifies authorization entries from the drawer', async () => {
+    const { fixture, authEntry } = authFixture()
+    const authLedger = { read: vi.fn().mockResolvedValue([authEntry]) }
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), authorizationLedger: authLedger }))
+    expect(facts.authorizations).toHaveLength(1)
+    expect(facts.authorizations[0]!.quote).toBe('yes run it')
+    expect(facts.authorizations[0]!.effect).toBe('grant')
+  })
+
+  it('returns ledger-storage-unavailable when drawer read returns undefined', async () => {
+    const { fixture } = authFixture()
+    const authLedger = { read: vi.fn().mockResolvedValue(undefined) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), authorizationLedger: authLedger })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'ledger-storage-unavailable' })
+  })
+
+  it('returns seal-live-rebind-failed when a single entry live rebind fails (quote mismatch)', async () => {
+    const { fixture, authEntry } = authFixture()
+    // A valid entry structurally, but the quote doesn't match the live event text
+    const badEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: authEntry.lifecycleFingerprint,
+      sourceSeq: authEntry.sourceSeq,
+      occurredAt: authEntry.occurredAt,
+      quote: 'tampered quote',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '1'.repeat(64),
+    })
+    const authLedger = { read: vi.fn().mockResolvedValue([badEntry]) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), authorizationLedger: authLedger })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'seal-live-rebind-failed' })
+  })
+
+  it('returns seal-live-rebind-failed when source is not user/message', async () => {
+    const { fixture, authEntry } = authFixture()
+    // sourceSeq 0 is request/header, not user/message
+    const badEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: authEntry.lifecycleFingerprint,
+      sourceSeq: 0,
+      occurredAt: 100,
+      quote: 'yes',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '2'.repeat(64),
+    })
+    const authLedger = { read: vi.fn().mockResolvedValue([badEntry]) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), authorizationLedger: authLedger })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'seal-live-rebind-failed' })
+  })
+
+  it('returns seal-live-rebind-failed when occurredAt does not match event time', async () => {
+    const { fixture, authEntry } = authFixture()
+    const badEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: authEntry.lifecycleFingerprint,
+      sourceSeq: authEntry.sourceSeq,
+      occurredAt: 999,
+      quote: 'yes run it',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '3'.repeat(64),
+    })
+    const authLedger = { read: vi.fn().mockResolvedValue([badEntry]) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), authorizationLedger: authLedger })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'seal-live-rebind-failed' })
   })
 })
 

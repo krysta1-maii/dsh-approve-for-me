@@ -12,6 +12,8 @@ import type {
 import { fingerprintApprovalToolCatalogV1 } from './approval-gate/catalog.js'
 import type { ApprovalToolCatalog } from './approval-gate/catalog.js'
 import { DEFAULT_MAX_SEALED_HISTORY_WINDOW } from './domain/sealed-facts.js'
+import { DEFAULT_MAX_AUTHORIZATION_ENTRIES } from './domain/authorization-ledger.js'
+import { DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS } from './application/authorization-verification.js'
 import { validateCaseCaptureConfig } from './domain/records.js'
 import type { GuardianCaseCaptureConfigV1 } from './domain/records.js'
 
@@ -101,6 +103,16 @@ export interface Config {
   readonly maxRecentExcerptBytes?: number
   /** Maximum bytes of a prebuilt approval hot packet. */
   readonly maxHotPacketBytes?: number
+  /**
+   * Idle authorization-extractor switch (WP7 decision 6). `enabled: false`
+   * disables idle extraction only; the approval-time synchronous tail
+   * extraction still runs.
+   */
+  readonly authorizationExtractor?: { readonly enabled?: boolean }
+  /** Maximum authorization drawer entries admitted to an approval hot packet (default 64; WP7-c2a). */
+  readonly maxAuthorizationEntries?: number
+  /** Maximum user/message events consumed by one incremental authorization extraction (default 256; WP7 decision 6). */
+  readonly maxAuthorizationExtractionEvents?: number
   /** Reserved for phase three; phase one accepts only false or an omitted value. */
   readonly sealBackfill?: boolean
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
@@ -125,6 +137,11 @@ export const Config: z<Config> = z.object({
   maxLedgerEntries: z.number().min(1),
   maxRecentExcerptBytes: z.number().min(1),
   maxHotPacketBytes: z.number().min(1).max(256_000),
+  // Structural validation lives in normalizeConfig; keep the loader schema
+  // permissive so YAML partials remain expressible.
+  authorizationExtractor: z.any(),
+  maxAuthorizationEntries: z.number().min(1),
+  maxAuthorizationExtractionEvents: z.number().min(1),
   sealBackfill: z.boolean(),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
@@ -152,6 +169,9 @@ export interface NormalizedConfig {
   readonly maxLedgerEntries: number
   readonly maxRecentExcerptBytes: number
   readonly maxHotPacketBytes: number
+  readonly authorizationExtractorEnabled: boolean
+  readonly maxAuthorizationEntries: number
+  readonly maxAuthorizationExtractionEvents: number
   readonly sealBackfill: false
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
@@ -169,6 +189,14 @@ const DEFAULT_MAX_SEALED_TAIL_EVENTS = DEFAULT_MAX_SEALED_HISTORY_WINDOW
 const DEFAULT_MAX_LEDGER_ENTRIES = DEFAULT_MAX_SEALED_HISTORY_WINDOW
 const DEFAULT_MAX_RECENT_EXCERPT_BYTES = 24_000
 const DEFAULT_MAX_HOT_PACKET_BYTES = 96_000
+// WP7-c2a: the reader validates the entire drawer and the dossier-compiler
+// authorization row gate fails closed (ledger-budget-overflow) above this
+// bound — never a silent truncation. The default resolves to the domain
+// single source.
+const DEFAULT_MAX_AUTHORIZATION_DRAWER_ENTRIES = DEFAULT_MAX_AUTHORIZATION_ENTRIES
+// WP7 decision 6: one incremental extraction consumes at most this many
+// user/message events; single-sourced with authorization-verification.ts.
+const DEFAULT_AUTHORIZATION_EXTRACTION_EVENTS = DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS
 
 const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = (() => {
   const unsealed = {
@@ -309,6 +337,23 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(maxHotPacketBytes) || maxHotPacketBytes < 1 || maxHotPacketBytes > DEFAULT_MAX_DOSSIER_BYTES) {
     throw new TypeError(`maxHotPacketBytes must be a positive safe integer no greater than ${DEFAULT_MAX_DOSSIER_BYTES}`)
   }
+  const extractorConfig = config.authorizationExtractor
+  if (extractorConfig !== undefined
+    && (extractorConfig === null || typeof extractorConfig !== 'object' || Array.isArray(extractorConfig))) {
+    throw new TypeError('authorizationExtractor must be an object')
+  }
+  const authorizationExtractorEnabled = extractorConfig?.enabled ?? true
+  if (typeof authorizationExtractorEnabled !== 'boolean') {
+    throw new TypeError('authorizationExtractor.enabled must be a boolean')
+  }
+  const maxAuthorizationEntries = config.maxAuthorizationEntries ?? DEFAULT_MAX_AUTHORIZATION_DRAWER_ENTRIES
+  if (!Number.isSafeInteger(maxAuthorizationEntries) || maxAuthorizationEntries < 1) {
+    throw new TypeError('maxAuthorizationEntries must be a positive safe integer')
+  }
+  const maxAuthorizationExtractionEvents = config.maxAuthorizationExtractionEvents ?? DEFAULT_AUTHORIZATION_EXTRACTION_EVENTS
+  if (!Number.isSafeInteger(maxAuthorizationExtractionEvents) || maxAuthorizationExtractionEvents < 1) {
+    throw new TypeError('maxAuthorizationExtractionEvents must be a positive safe integer')
+  }
   if (config.sealBackfill === true) {
     throw new TypeError('sealBackfill is fixed off until phase three')
   }
@@ -336,6 +381,9 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     maxLedgerEntries,
     maxRecentExcerptBytes,
     maxHotPacketBytes,
+    authorizationExtractorEnabled,
+    maxAuthorizationEntries,
+    maxAuthorizationExtractionEvents,
     sealBackfill: false,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),

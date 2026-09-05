@@ -151,6 +151,15 @@ export {
   DefaultDecisionChannel,
   ReviewProtocolError,
 } from './application/decision-channel.js'
+export {
+  DefaultExtractionChannel,
+} from './application/extraction-channel.js'
+export type {
+  AuthorizationExtractionRequest,
+  ExtractionChannel,
+  ExtractionSubmissionContext,
+  SubmitExtractionResult,
+} from './application/extraction-channel.js'
 export type {
   DecisionChannel,
   DecisionSubmissionContext,
@@ -223,10 +232,12 @@ export {
   REVIEWER_POLICY_VERSION,
   REVIEWER_POLICY_VERSION_V2,
   REVIEWER_POLICY_VERSION_V3,
+  REVIEWER_POLICY_VERSION_V4,
   createPolicyRegistry,
   createReviewerPolicyV1,
   createReviewerPolicyV2,
   createReviewerPolicyV3,
+  createReviewerPolicyV4,
   dangerFullAccessRiskForPolicy,
 } from './reviewer/policy.js'
 export type { PolicyRegistry, ReviewerPolicy } from './reviewer/policy.js'
@@ -235,6 +246,21 @@ export {
   createDecisionTool,
 } from './reviewer/decision-tool.js'
 export type { DecisionSubmitter, ScopedDecisionTool } from './reviewer/decision-tool.js'
+export {
+  EXTRACTION_SUBMISSION_PARAMETERS,
+  SUBMIT_EXTRACTION_TOOL,
+  createExtractionTool,
+} from './reviewer/extraction-tool.js'
+export type {
+  ExtractionSubmitter,
+  ScopedExtractionTool,
+} from './reviewer/extraction-tool.js'
+export {
+  AUTHORIZATION_EXTRACTOR_SYSTEM_PROMPT,
+  EXTRACTOR_SECTION,
+  createExtractorProvider,
+} from './reviewer/extractor-provider.js'
+export type { ExtractorProviderOptions } from './reviewer/extractor-provider.js'
 
 // DSH adapters.
 export { createManagedReviewerPort } from './dsh/managed-controller.js'
@@ -375,6 +401,65 @@ export type {
   DossierSectionAggregateV1,
 } from './ports/dossier-compilation-metrics.js'
 export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
+export {
+  AUTHORIZATION_LEDGER_VERSION,
+  authorizationChainTipHash,
+  authorizationEntryHash,
+  authorizationLedgerKey,
+  createAuthorizationEntryV1,
+  createExtractionCheckpointV1,
+  extractionCheckpointChainTipHash,
+  extractionCheckpointHash,
+  extractionInputHash,
+  DEFAULT_MAX_AUTHORIZATION_ENTRIES,
+  genesisAuthorizationHash,
+  genesisExtractionCheckpointHash,
+  MAX_AUTHORIZATION_QUOTE_BYTES,
+  MAX_AUTHORIZATION_SUMMARY_BYTES,
+  parseAuthorizationEntryV1,
+  parseExtractionCheckpointV1,
+} from './domain/authorization-ledger.js'
+export type {
+  AuthorizationCoverageV1,
+  AuthorizationEffectV1,
+  AuthorizationEntryV1,
+  ExtractionCheckpointV1,
+} from './domain/authorization-ledger.js'
+export {
+  AUTHORIZATION_EXTRACTOR_VERSION,
+  EXTRACTION_PROVIDER,
+  EXTRACTION_PROTOCOL_VERSION,
+  createExtractorProviderData,
+  fingerprintExtractorConfiguration,
+  parseAuthorizationExtractionSubmissionV1,
+  parseExtractorProviderData,
+} from './domain/extraction-protocol.js'
+export type {
+  AuthorizationExtractionSubmissionV1,
+  ExtractedAuthorizationCandidateV1,
+  ExtractorProviderDataV1,
+} from './domain/extraction-protocol.js'
+export {
+  collectAuthorizationInputWindow,
+  DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS,
+  verifyAuthorizationEntriesLiveV1,
+  verifyAuthorizationEntryLiveV1,
+} from './application/authorization-verification.js'
+export type {
+  AuthorizationEventAt,
+  AuthorizationInputItemV1,
+  AuthorizationInputWindowV1,
+  AuthorizationLiveEventView,
+} from './application/authorization-verification.js'
+export { DefaultAuthorizationExtractionCoordinator } from './application/authorization-extraction-coordinator.js'
+export type {
+  AuthorizationExtractionCoordinator,
+  AuthorizationExtractionCoordinatorOptions,
+  AuthorizationExtractionStatus,
+} from './application/authorization-extraction-coordinator.js'
+export { DshStorageDomainAuthorizationLedger } from './dsh/storage-domain-authorization-ledger.js'
+export type { AuthorizationLedgerWriteResult } from './dsh/storage-domain-authorization-ledger.js'
+export { extractUserText } from './application/recent-excerpts.js'
 export { DshParentSessionFactSource, deriveRequesterDepthV1, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
 export type { RequesterDepthEvidenceV1, SealedFactsReadResult, SealedFactsUnavailableSubcodeV1, SealedParentSessionFactsV1 } from './dsh/parent-session-fact-source.js'
 export type { LiveAgentRegistry, ParentSessionFactSource } from './ports/parent-session-facts.js'
