@@ -74,6 +74,17 @@ export interface SealedDossierCompilerOptions {
    * silently truncated.
    */
   readonly maxRecentExcerptBytes?: number
+  /**
+   * Upper bound on the number of sealed ledger (activity) rows projected into the
+   * dossier's interaction.sealed.ledger section. Validated once at construction;
+   * must be a positive safe integer. Defaults to 256 (the config
+   * maxLedgerEntries default). The ledger row-count gate is checked before any
+   * row is projected: a packet whose activity count exceeds this bound fails
+   * closed as { kind: 'incomplete', reason: 'ledger-budget-overflow' } without
+   * doing the (possibly large) projection work, distinct from the byte-budget
+   * overflow that is detected during assembly.
+   */
+  readonly maxLedgerEntries?: number
 }
 
 export type CompileSealed = (input: SealedDossierCompileInputV1) => DossierCompilationResultV1
@@ -218,6 +229,10 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
   if (!Number.isSafeInteger(excerptByteBudget) || excerptByteBudget < 1) {
     throw new TypeError('maxRecentExcerptBytes must be a positive safe integer')
   }
+  const ledgerEntryBudget = options.maxLedgerEntries ?? 256
+  if (!Number.isSafeInteger(ledgerEntryBudget) || ledgerEntryBudget < 1) {
+    throw new TypeError('maxLedgerEntries must be a positive safe integer')
+  }
 
   return function compileSealed(input: SealedDossierCompileInputV1): DossierCompilationResultV1 {
     if (input.signal?.aborted) return { kind: 'incomplete', reason: 'aborted' }
@@ -247,6 +262,16 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
       actionHash = hashAction(current.action)
     } catch {
       return { kind: 'incomplete', reason: 'invalid-current-action-facts' }
+    }
+
+    // Ledger row-count gate: a packet carrying more activity rows than
+    // maxLedgerEntries is a bounded-scale overflow. It is checked BEFORE any row
+    // is projected so the (possibly large) ledger is never traversed, and it
+    // produces its own precise reason code, distinct from the byte-budget
+    // overflow that is detected during assembly. The metrics stay a minimal
+    // non-sensitive candidate accounting (zero bytes, no content sections).
+    if (packet.activities.length > ledgerEntryBudget) {
+      return { kind: 'incomplete', reason: 'ledger-budget-overflow', metrics: metricsFrom(packet, current, 0, 0, []) }
     }
 
     // Pre-build accounting starts with the fixed top-level frame (version/kind) so a

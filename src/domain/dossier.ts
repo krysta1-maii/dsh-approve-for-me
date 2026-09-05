@@ -748,9 +748,9 @@ export interface DossierMetricsV1 {
 
 export type DossierCompilationResultV1 =
   | { readonly kind: 'ready'; readonly verified: SourceVerifiedDossierV1; readonly metrics: DossierMetricsV1 }
-  /** Budget overflows retain only non-sensitive candidate accounting; no dossier is branded. */
-  | { readonly kind: 'incomplete'; readonly reason: 'budget-overflow'; readonly metrics: DossierMetricsV1 }
-  | { readonly kind: 'incomplete'; readonly reason: Exclude<string, 'budget-overflow'> }
+  /** Bounded-capacity overflows retain only non-sensitive candidate accounting; no dossier is branded. */
+  | { readonly kind: 'incomplete'; readonly reason: 'budget-overflow' | 'ledger-budget-overflow'; readonly metrics: DossierMetricsV1 }
+  | { readonly kind: 'incomplete'; readonly reason: Exclude<string, 'budget-overflow' | 'ledger-budget-overflow'> }
 
 export interface SemanticActionBindingV1 {
   readonly toolName: string
