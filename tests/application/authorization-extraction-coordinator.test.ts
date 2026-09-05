@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DefaultAuthorizationExtractionCoordinator,
+  boundedSyncTailDeadline,
 } from '../../src/application/authorization-extraction-coordinator.js'
 import { DefaultExtractionChannel } from '../../src/application/extraction-channel.js'
 import type { ExtractionChannel } from '../../src/application/extraction-channel.js'
@@ -465,6 +466,19 @@ describe('DefaultAuthorizationExtractionCoordinator', () => {
     expect(status).toBe('unavailable')
     expect(port.deliverCount).toBe(0)
     expect(port.createCount).toBe(0)
+  })
+
+  it('bounds the sync tail to a quarter slice of the remaining run budget', async () => {
+    expect(boundedSyncTailDeadline(0, 4000)).toBe(1000)
+    expect(boundedSyncTailDeadline(1000, 5000)).toBe(2000)
+    // A nearly-expired run still gets a minimal slice (floor 1ms), never an extension.
+    expect(boundedSyncTailDeadline(0, 3)).toBe(1)
+    // No remaining budget or invalid inputs skip the tail entirely.
+    expect(boundedSyncTailDeadline(0, 1)).toBeUndefined()
+    expect(boundedSyncTailDeadline(0, 0)).toBeUndefined()
+    expect(boundedSyncTailDeadline(100, 50)).toBeUndefined()
+    expect(boundedSyncTailDeadline(-1, 4000)).toBeUndefined()
+    expect(boundedSyncTailDeadline(0, 1.5)).toBeUndefined()
   })
 
   it('never extends the caller deadline beyond the coordinator budget', async () => {

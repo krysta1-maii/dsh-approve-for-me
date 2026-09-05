@@ -451,7 +451,7 @@ export type {
   AuthorizationInputWindowV1,
   AuthorizationLiveEventView,
 } from './application/authorization-verification.js'
-export { DefaultAuthorizationExtractionCoordinator } from './application/authorization-extraction-coordinator.js'
+export { DefaultAuthorizationExtractionCoordinator, boundedSyncTailDeadline } from './application/authorization-extraction-coordinator.js'
 export type {
   AuthorizationExtractionCoordinator,
   AuthorizationExtractionCoordinatorOptions,

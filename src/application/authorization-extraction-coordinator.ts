@@ -52,6 +52,24 @@ export type AuthorizationExtractionStatus =
   | 'failed'
   | 'invalid'
 
+/**
+ * Approval-time sync-tail budget policy (WP7 smoke fix): the tail extraction
+ * runs BEFORE the sealed read and review on the same machine-policy run, so it
+ * must never consume the run's whole budget — a scripted/slow/absent model
+ * otherwise starves the actual decision until the run deadline (observed in
+ * the artifact smoke: extraction stalled the full timeoutMs and the gate fell
+ * to 'deadline'/'unavailable' without ever reaching the composed answerer).
+ * The tail gets at most a quarter of the remaining run budget (at least 1ms
+ * so a nearly-expired run degrades to 'failed' extraction instead of
+ * extending the run); the coordinator still applies its own cap on top.
+ */
+export function boundedSyncTailDeadline(now: number, outerDeadlineAt: number): number | undefined {
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(outerDeadlineAt)) return undefined
+  const remaining = outerDeadlineAt - now
+  if (remaining <= 1) return undefined
+  return now + Math.max(1, Math.floor(remaining / 4))
+}
+
 export interface AuthorizationExtractionCoordinator<Parent, SessionId extends string = string> {
   extract(input: {
     readonly authority: ParentAuthority<Parent, SessionId>

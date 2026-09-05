@@ -74,7 +74,7 @@ import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
 import { resolveReviewerModelRouteFromDshCatalog } from './dsh/reviewer-model-catalog.js'
 import { createExtractorProvider } from './reviewer/extractor-provider.js'
 import { DefaultExtractionChannel } from './application/extraction-channel.js'
-import { DefaultAuthorizationExtractionCoordinator } from './application/authorization-extraction-coordinator.js'
+import { DefaultAuthorizationExtractionCoordinator, boundedSyncTailDeadline } from './application/authorization-extraction-coordinator.js'
 import type { AuthorizationLiveEventView } from './application/authorization-verification.js'
 import { DshStorageDomainAuthorizationLedger } from './dsh/storage-domain-authorization-ledger.js'
 import { AUTHORIZATION_EXTRACTOR_VERSION, createExtractorProviderData, EXTRACTION_PROVIDER } from './domain/extraction-protocol.js'
@@ -417,7 +417,7 @@ export function installApproveForMe(
       normalized.preset.policyVersion,
       dangerFullAccessRiskForPolicy(normalized.preset.policyVersion),
     ),
-    async snapshotInput(pending, signal) {
+    async snapshotInput(pending, signal, deadlineAt) {
       if (signal?.aborted) return undefined
       const session = pending.agent.session as unknown as {
         header?: { version?: unknown; createdAt?: unknown; cwd?: unknown; parentSession?: unknown; delegationDepth?: unknown }
@@ -452,13 +452,21 @@ export function installApproveForMe(
       // defense in depth on the hot path.
       try {
         const lifecycleFingerprint = canonicalJson(lifecycle)
-        await authorizationCoordinator.extract({
+        // The tail shares the run's wall clock but never its whole budget:
+        // boundedSyncTailDeadline slices at most a quarter of the remaining
+        // run deadline so a slow/absent extractor cannot starve the actual
+        // decision (artifact-smoke evidence: a full-budget tail consumed the
+        // machine deadline and the ask ended 'unavailable' without ever
+        // reaching the composed answerer).
+        const tailDeadline = deadlineAt === undefined ? undefined : boundedSyncTailDeadline(Date.now(), deadlineAt)
+        if (tailDeadline !== undefined) await authorizationCoordinator.extract({
           authority: pending.authority,
           lifecycleFingerprint,
           // Re-bind to the session instance (WP6-b5): a bare eventAt reference
           // drops the receiver and would poison every live re-verification.
           eventAt: seq => session.eventAt?.(seq) as AuthorizationLiveEventView | undefined,
           throughSeq: approvalAskedSeq - 1,
+          deadlineAt: tailDeadline,
           ...(signal === undefined ? {} : { signal }),
         })
       } catch {

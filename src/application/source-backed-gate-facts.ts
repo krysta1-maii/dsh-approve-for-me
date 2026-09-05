@@ -127,7 +127,7 @@ export interface SourceBackedGateFactResolverDependencies {
   readonly policyVersion?: string
   readonly reviewerConfigurationFingerprint?: string
   /** Obtains the exact capture/sidecar facts + live re-validation for this same immutable approval ask. */
-  snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal): Promise<SealedAskFactsInputV1 | undefined>
+  snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal, deadlineAt?: number): Promise<SealedAskFactsInputV1 | undefined>
 }
 
 const GATE_CONFIGURATION_HASH_DOMAIN = 'dsh-approve-for-me/gate-configuration/v1\0'
@@ -398,7 +398,7 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     const pending = this.pending.get(key)
     if (pending === undefined || pending.authority.sessionId !== request.parentSessionId) return debug('missing-pending')
 
-    const input = await this.deps.snapshotInput(pending, request.signal)
+    const input = await this.deps.snapshotInput(pending, request.signal, request.deadlineAt)
     if (input === undefined || request.signal?.aborted) return debug('missing-snapshot-input')
     if (input.agent !== pending.agent || input.approvalRequestId !== pending.requestId
       || input.callId !== pending.callId || input.toolName !== pending.toolName) return debug('snapshot-input-mismatch')
