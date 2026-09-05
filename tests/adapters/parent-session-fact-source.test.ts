@@ -825,4 +825,59 @@ describe('deriveRequesterDepthV1 (WP4-c S-5)', () => {
     expect(deriveRequesterDepthV1({ runtimeSubagentDepth: negativeZero })).toBeUndefined()
     expect(deriveRequesterDepthV1({ headerDelegationDepth: negativeZero })).toBeUndefined()
   })
+
+describe('readSealedParentSessionFacts WP5-a unavailable subcode', () => {
+  function chain3() {
+    return buildSpoofChain([
+      { sourceSeq: 1, askedSeq: 2, resultSeq: 3, headerEventSeq: 0, callId: 'call-1', requestId: 'ask-1' },
+      { sourceSeq: 4, askedSeq: 5, resultSeq: 6, headerEventSeq: 0, callId: 'call-2', requestId: 'ask-2' },
+      { sourceSeq: 7, askedSeq: 8, resultSeq: 9, headerEventSeq: 0, callId: 'call-3', requestId: 'ask-3' },
+    ])
+  }
+
+  it('classifies a disconnected seal chain as seal-chain-invalid', async () => {
+    const fixture = chain3(), old = fixture.rows[1]!
+    const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
+    fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'seal-chain-invalid' })
+  })
+
+  it('classifies a self-consistent activity rebind rejection as activity-projection-invalid', async () => {
+    const fixture = chain3(), old = fixture.rows[2]!
+    const { version: _v, canonical: _c, ...input } = old.activity
+    fixture.rows[2] = { ...old, activity: createActivityV1({ ...input, sourceSealHash: sealedHash('f') }) }
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'activity-projection-invalid' })
+  })
+
+  it('classifies a live rebind rejection as seal-live-rebind-failed', async () => {
+    const fixture = chain3()
+    fixture.events[7].data.callId = 'other'
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'seal-live-rebind-failed' })
+  })
+
+  it('classifies an unreadable ledger as ledger-storage-unavailable', async () => {
+    const fixture = chain3()
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(undefined) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'ledger-storage-unavailable' })
+  })
+
+  it('classifies a malformed disk row as ledger-conflict', async () => {
+    const fixture = chain3()
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger([{ seal: 'x', activity: 'y' } as never]) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'ledger-conflict' })
+  })
+
+  it('classifies a duplicate current seal as sealed-current-conflict', async () => {
+    const fixture = buildSpoofChain([
+      { sourceSeq: 1, askedSeq: 2, resultSeq: 3, headerEventSeq: 0, callId: 'call-1', requestId: 'ask-1' },
+      { sourceSeq: 4, askedSeq: 5, resultSeq: 6, headerEventSeq: 0, callId: 'call-1', requestId: 'ask-1' },
+    ])
+    const result = await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) })
+    expect(result).toMatchObject({ kind: 'unavailable', subcode: 'sealed-current-conflict' })
+  })
+})
+
 })

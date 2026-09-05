@@ -194,7 +194,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', stage, detail === undefined ? '' : JSON.stringify(detail))
       return undefined
     }
-    if (input.signal?.aborted) return fail('aborted')
+    if (input.signal?.aborted) return fail('unclassified', 'aborted')
     const bound = sessionIdentity(input.agent)
     if (bound === undefined || this.agents.get(bound.identity.sessionId) !== input.agent) return fail('identity')
     if (typeof bound.session.snapshotEvents !== 'function') return fail('no-snapshot-events')
@@ -358,6 +358,24 @@ export interface SealedParentSessionFactsV1 {
 }
 
 /**
+ * Closed classification for an unavailable sealed-facts read (WP5-a §4.4). The
+ * reader distinguishes a tampering signal (sealed-current-conflict /
+ * seal-chain-invalid / seal-live-rebind-failed), a Storage-domain failure
+ * (ledger-storage-unavailable / ledger-conflict) and an invalid activity
+ * projection (activity-projection-invalid) so the caller can surface the exact
+ * machine reason code rather than a bare unavailable. `unclassified` is the
+ * catch-all for read-local conditions that are not §4.4 failure classes (abort,
+ * identity, configuration) and never routes to a typed gate code.
+ */
+export type SealedFactsUnavailableSubcodeV1 =
+  | 'sealed-current-conflict'
+  | 'seal-chain-invalid'
+  | 'seal-live-rebind-failed'
+  | 'ledger-storage-unavailable'
+  | 'ledger-conflict'
+  | 'activity-projection-invalid'
+  | 'unclassified'
+/**
  * Discriminated result of a sealed-facts read. WP4-b4's design input requires
  * the caller to distinguish an incomplete-but-explainable ledger
  * (empty-ledger), an over-budget tail (tail-budget-overflow), and any
@@ -367,7 +385,7 @@ export interface SealedParentSessionFactsV1 {
  */
 export type SealedFactsReadResult =
   | { readonly kind: 'ok'; readonly facts: SealedParentSessionFactsV1 }
-  | { readonly kind: 'unavailable'; readonly reason?: string }
+  | { readonly kind: 'unavailable'; readonly subcode: SealedFactsUnavailableSubcodeV1; readonly reason?: string }
   | { readonly kind: 'tail-budget-overflow'; readonly sealedCount: number; readonly maxSealedTailEvents: number }
   | { readonly kind: 'empty-ledger' }
 
@@ -384,21 +402,21 @@ export async function readSealedParentSessionFacts(input: {
   readonly maxSealedTailEvents?: number
   readonly signal?: AbortSignal
 }): Promise<SealedFactsReadResult> {
-  const fail = (reason: string, detail?: unknown): SealedFactsReadResult => {
+  const fail = (subcode: SealedFactsUnavailableSubcodeV1, reason: string, detail?: unknown): SealedFactsReadResult => {
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', reason, detail === undefined ? '' : JSON.stringify(detail))
-    return { kind: 'unavailable', reason }
+    return { kind: 'unavailable', subcode, reason }
   }
   const maxSealedTailEvents = input.maxSealedTailEvents ?? 512
-  if (input.signal?.aborted) return fail('aborted')
-  if (!Number.isSafeInteger(maxSealedTailEvents) || maxSealedTailEvents < 1) return fail('max-sealed-tail-events-invalid', { maxSealedTailEvents })
+  if (input.signal?.aborted) return fail('unclassified', 'aborted')
+  if (!Number.isSafeInteger(maxSealedTailEvents) || maxSealedTailEvents < 1) return fail('unclassified', 'max-sealed-tail-events-invalid', { maxSealedTailEvents })
   const bound = sessionIdentity(input.agent)
-  if (bound === undefined || input.registry.get(bound.identity.sessionId) !== input.agent || typeof bound.session.eventAt !== 'function') return fail('identity')
+  if (bound === undefined || input.registry.get(bound.identity.sessionId) !== input.agent || typeof bound.session.eventAt !== 'function') return fail('unclassified', 'identity')
   const lifecycleFingerprint = canonicalJson({ sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) })
-  if (input.ledger === undefined) return fail('ledger-missing')
+  if (input.ledger === undefined) return fail('ledger-storage-unavailable', 'ledger-missing')
   let rows: readonly { readonly seal: SealV1; readonly activity: ActivityV1 }[] | undefined
-  try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return fail('ledger-read') }
-  if (input.signal?.aborted) return fail('aborted')
-  if (rows === undefined) return fail('ledger-unavailable')
+  try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return fail('ledger-storage-unavailable', 'ledger-read') }
+  if (input.signal?.aborted) return fail('unclassified', 'aborted')
+  if (rows === undefined) return fail('ledger-storage-unavailable', 'ledger-unavailable')
   if (rows.length === 0) return { kind: 'empty-ledger' }
   // Disk-side chain integrity only: genesis → tip hash / topology / canonical
   // continuity. The seal chain is never a trust root, so we do NOT re-read the
@@ -412,30 +430,30 @@ export async function readSealedParentSessionFacts(input: {
   let previousSeal: SealV1 | undefined
   let processed = 0
   for (const row of rows) {
-    if (input.signal?.aborted) return fail('aborted')
+    if (input.signal?.aborted) return fail('unclassified', 'aborted')
     if (processed % 256 === 0) {
       await new Promise<void>(resolve => setImmediate(resolve))
-      if (input.signal?.aborted) return fail('aborted')
+      if (input.signal?.aborted) return fail('unclassified', 'aborted')
     }
     try {
       const seal = parseSealV1(row.seal)
       const activity = parseActivityV1(row.activity)
-      if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return fail('chain-discontinuity')
+      if (seal.lifecycleFingerprint !== lifecycleFingerprint || seal.sourceSeq <= previousSourceSeq || seal.previousSealHash !== previousSealHash) return fail('seal-chain-invalid', 'chain-discontinuity')
       if (previousSeal === undefined) {
-        if (seal.catalog.epoch !== 0 || seal.epochBoundary.previousEpoch !== null || seal.epochBoundary.changed !== false) return fail('epoch-boundary')
+        if (seal.catalog.epoch !== 0 || seal.epochBoundary.previousEpoch !== null || seal.epochBoundary.changed !== false) return fail('seal-chain-invalid', 'epoch-boundary')
       } else {
         const changed = seal.catalog.commitment !== previousSeal.catalog.commitment
         if (seal.epochBoundary.previousEpoch !== previousSeal.catalog.epoch || seal.epochBoundary.changed !== changed
-          || seal.catalog.epoch !== (changed ? previousSeal.catalog.epoch + 1 : previousSeal.catalog.epoch)) return fail('epoch-transition')
+          || seal.catalog.epoch !== (changed ? previousSeal.catalog.epoch + 1 : previousSeal.catalog.epoch)) return fail('seal-chain-invalid', 'epoch-transition')
       }
       if (activity.lifecycleFingerprint !== lifecycleFingerprint || activity.sourceSeq !== seal.sourceSeq
-        || activity.sourceSealHash !== seal.sealHash || activity.resultCategory !== seal.result.status) return fail('activity-binding')
+        || activity.sourceSealHash !== seal.sealHash || activity.resultCategory !== seal.result.status) return fail('activity-projection-invalid', 'activity-binding')
       const priorHeaderCommitment = commitmentsByHeader.get(seal.catalog.headerEventSeq)
-      if (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment) return fail('header-commitment-split')
+      if (priorHeaderCommitment !== undefined && priorHeaderCommitment !== seal.catalog.commitment) return fail('seal-chain-invalid', 'header-commitment-split')
       commitmentsByHeader.set(seal.catalog.headerEventSeq, seal.catalog.commitment)
       const priorEpoch = epochs.get(seal.catalog.epoch)
       const epoch = { epoch: seal.catalog.epoch, headerEventSeq: seal.catalog.headerEventSeq, commitment: seal.catalog.commitment }
-      if (priorEpoch !== undefined && canonicalJson(priorEpoch) !== canonicalJson(epoch)) return fail('epoch-split')
+      if (priorEpoch !== undefined && canonicalJson(priorEpoch) !== canonicalJson(epoch)) return fail('seal-chain-invalid', 'epoch-split')
       epochs.set(epoch.epoch, Object.freeze(epoch))
       parsed.push(Object.freeze({ seal, activity }))
       previousSealHash = seal.sealHash
@@ -444,7 +462,7 @@ export async function readSealedParentSessionFacts(input: {
       processed += 1
     } catch {
       // Malformed disk shapes must never escape as an exception.
-      return fail('parse')
+      return fail('ledger-conflict', 'parse')
     }
   }
   // An over-budget tail is never silently truncated: the caller (WP4-b4) must
@@ -468,7 +486,7 @@ export async function readSealedParentSessionFacts(input: {
   let boundHeaderSeq = -1
   let scanThroughSeq = -1
   for (const { seal, activity } of parsed) {
-    if (input.signal?.aborted) return fail('aborted')
+    if (input.signal?.aborted) return fail('unclassified', 'aborted')
     try {
       const request = eventAt(seal.request.eventSeq)
       const asked = eventAt(seal.approvalAsked.eventSeq)
@@ -481,11 +499,11 @@ export async function readSealedParentSessionFacts(input: {
       // type'). It is not redundant with the wireSchemas comparison.
       if (request?.seq !== seal.sourceSeq || asked?.seq !== seal.approvalAsked.eventSeq || result?.seq !== seal.result.eventSeq || header?.seq !== seal.catalog.headerEventSeq
         || header.type !== 'request/header' || asked.type !== 'approval/asked' || result.type !== (seal.request.eventType === 'tool/call' ? 'tool/result' : 'tool/code-dispatch')
-        || activity.occurredAt !== result.time) return fail('live-rebind')
+        || activity.occurredAt !== result.time) return fail('seal-live-rebind-failed', 'live-rebind')
       const requestData = request.data as Record<string, unknown>
       const askedData = asked.data as Record<string, unknown>
       const resultData = result.data as Record<string, unknown>
-      if (askedData.id !== seal.approvalAsked.requestId || askedData.callId !== seal.request.callId || askedData.toolName !== seal.request.toolName) return fail('live-rebind-asked')
+      if (askedData.id !== seal.approvalAsked.requestId || askedData.callId !== seal.request.callId || askedData.toolName !== seal.request.toolName) return fail('seal-live-rebind-failed', 'live-rebind-asked')
       const fact = await input.executionFacts.get({
         session: { sessionId: bound.identity.sessionId, sessionFormatVersion: bound.identity.sessionFormatVersion, createdAt: bound.identity.createdAt, ...(bound.identity.cwd === undefined ? {} : { cwd: bound.identity.cwd }) },
         callId: seal.request.callId,
@@ -497,7 +515,7 @@ export async function readSealedParentSessionFacts(input: {
         || seal.catalog.commitment !== fact.catalogCommitment.fingerprint
         || validateDurableToolCatalogCommitmentV1(fact.catalogCommitment).kind !== 'ok'
         || canonicalJson(headerData?.header?.tools) !== canonicalJson(fact.catalogCommitment.wireSchemas)
-        || seal.catalog.headerEventSeq >= seal.request.eventSeq) return fail('commitment-binding')
+        || seal.catalog.headerEventSeq >= seal.request.eventSeq) return fail('seal-live-rebind-failed', 'commitment-binding')
       // The bound header must still be in force at the request: a later header at
       // or before it means this record shopped an obsolete catalog. The scan
       // resumes from the previous cursor so one long epoch stays O(rows + span).
@@ -506,33 +524,33 @@ export async function readSealedParentSessionFacts(input: {
         scanThroughSeq = seal.catalog.headerEventSeq
       }
       for (let seq = scanThroughSeq + 1; seq <= seal.request.eventSeq; seq += 1) {
-        if (eventAt(seq)?.type === 'request/header') return fail('intervening-header')
+        if (eventAt(seq)?.type === 'request/header') return fail('seal-live-rebind-failed', 'intervening-header')
       }
       scanThroughSeq = seal.request.eventSeq
       if (seal.request.eventType === 'tool/call') {
         if (request.type !== 'tool/call' || requestData.callId !== seal.request.callId || requestData.name !== seal.request.toolName
-          || !Array.isArray(result.sourceEventSeqs) || result.sourceEventSeqs.length !== 1 || result.sourceEventSeqs[0] !== request.seq) return fail('live-rebind-call')
+          || !Array.isArray(result.sourceEventSeqs) || result.sourceEventSeqs.length !== 1 || result.sourceEventSeqs[0] !== request.seq) return fail('seal-live-rebind-failed', 'live-rebind-call')
         const message = resultData.message as Record<string, unknown> | undefined
         const source = message?.source as Record<string, unknown> | undefined
         const block = Array.isArray(message?.content) ? message?.content[0] as Record<string, unknown> | undefined : undefined
-        if (source?.kind !== 'tool' || source.callId !== seal.request.callId || block?.type !== 'tool-result' || block.toolCallId !== seal.request.callId) return fail('live-rebind-result')
+        if (source?.kind !== 'tool' || source.callId !== seal.request.callId || block?.type !== 'tool-result' || block.toolCallId !== seal.request.callId) return fail('seal-live-rebind-failed', 'live-rebind-result')
       } else if (request.type !== 'tool/code-dispatch-start' || requestData.subCallId !== seal.request.callId || requestData.name !== seal.request.toolName
         || resultData.subCallId !== seal.request.callId || resultData.name !== seal.request.toolName
-        || requestData.rootCallId !== resultData.rootCallId || requestData.parentCallId !== resultData.parentCallId) return fail('live-rebind-dispatch')
+        || requestData.rootCallId !== resultData.rootCallId || requestData.parentCallId !== resultData.parentCallId) return fail('seal-live-rebind-failed', 'live-rebind-dispatch')
       // Derive the classification from the descriptor the capture side sealed
       // with and require a byte-exact match (the descriptor is anchored by the
       // catalog commitment validated above): a recomputed-canonical row is still
       // caught here.
-      if (activity.classification !== activityClassificationFromDescriptorV1(fact.toolClassification.descriptor)) return fail('classification')
+      if (activity.classification !== activityClassificationFromDescriptorV1(fact.toolClassification.descriptor)) return fail('seal-live-rebind-failed', 'classification')
       packetRows.push(Object.freeze({ seal, activity }))
     } catch {
-      return fail('live-events')
+      return fail('seal-live-rebind-failed', 'live-events')
     }
   }
   const current = packetRows.filter(row => row.seal.approvalAsked.requestId === input.approvalRequestId && row.seal.request.callId === input.callId && row.seal.request.toolName === input.toolName)
   // Zero current rows is the normal pending state (asked precedes any result
   // seal); more than one is a conflict and must stay fail-closed, never degrade
   // to an explainable 'missing current' (that would disguise tampering).
-  if (current.length > 1) return fail('current-conflict')
+  if (current.length > 1) return fail('sealed-current-conflict', 'current-conflict')
   return { kind: 'ok', facts: Object.freeze({ version: 1, lifecycleFingerprint, ...(current.length === 0 ? {} : { current: current[0]! }), seals: Object.freeze(packetRows.map(row => row.seal)), activities: Object.freeze(packetRows.map(row => row.activity)), catalogEpochs: Object.freeze([...epochs.values()].sort((a, b) => a.epoch - b.epoch)) }) }
 }
