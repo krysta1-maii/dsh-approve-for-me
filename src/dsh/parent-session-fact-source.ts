@@ -481,7 +481,13 @@ export async function readSealedParentSessionFacts(input: {
   // Live eventAt exact re-binding for every row entering the packet. Session
   // events remain untrusted input too: a malformed (including null) payload
   // must never escape as an exception.
-  const eventAt = bound.session.eventAt!
+  // The method MUST be re-bound to its instance: the real Session.eventAt is a
+  // prototype method reading this.log, so unpacking it off the object (as a
+  // bare `const eventAt = bound.session.eventAt!`) drops `this` and every call
+  // throws a TypeError that the per-row catch swallows into
+  // seal-live-rebind-failed, making a >=1-seal lifecycle permanently
+  // unavailable (WP6-b5).
+  const eventAt = bound.session.eventAt!.bind(bound.session)
   const packetRows: { readonly seal: SealV1; readonly activity: ActivityV1 }[] = []
   let boundHeaderSeq = -1
   let scanThroughSeq = -1

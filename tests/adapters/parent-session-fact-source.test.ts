@@ -805,6 +805,35 @@ describe('readSealedParentSessionFacts', () => {
     const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
     expect(facts.seals).toHaveLength(3)
   })
+
+  it('rebinds a live seal chain against a class-instance session whose eventAt depends on this (WP6-b5 regression)', async () => {
+    // WP6-b5: the reader previously unpacked the real Session prototype method
+    // off its object (`const eventAt = bound.session.eventAt!`), dropping the
+    // instance so the real `eventAt(seq){ return this.log[seq] }` threw a
+    // TypeError on every call; the per-row catch swallowed it into
+    // seal-live-rebind-failed and a >=1-seal lifecycle became permanently
+    // unavailable. Pin that the sealed rebind works against a class instance
+    // whose eventAt genuinely reads `this`.
+    const fixture = buildSealedChain(5)
+    class FakeSession {
+      readonly #log: readonly unknown[]
+      constructor(log: readonly unknown[]) { this.#log = log }
+      get id(): unknown { return 'parent-1' }
+      get header(): { version: number; id: string; createdAt: number } { return { version: 0, id: 'parent-1', createdAt: 100 } }
+      get seq(): number { return this.#log.length - 1 }
+      snapshotEvents(): readonly unknown[] { return this.#log }
+      eventAt(seq: number): unknown { return this.#log[seq] }
+    }
+    const requester = { id: 'parent-1', options: {}, session: new FakeSession(fixture.events) }
+    const facts = okFacts(await readSealedParentSessionFacts({
+      ...fixture.base,
+      agent: requester as never,
+      registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined },
+      ledger: ledger(fixture.rows),
+    }))
+    expect(facts.seals).toHaveLength(5)
+    expect(facts.current?.seal.sourceSeq).toBe(fixture.rows[4]!.seal.sourceSeq)
+  })
 })
 
 describe('activityClassificationFromDescriptorV1', () => {
