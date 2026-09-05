@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点（含 WP7 二期授权抽屉）通过 59 个测试文件、742 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点（含 WP7 二期授权抽屉与 WP8 三期可见性）通过 65 个测试文件、835 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
 
 ## 部署组成
 
@@ -160,6 +160,15 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - **Reviewer 输入切换**：dossier 的 `interaction.sealed.authorizations` 携带已验证授权投影（读侧全读全验不截断，投影行数闸门 64，超限失败关闭）;`policy-v4` 在 v3 全文上追加抽屉语义段 —— 条目是 Host 逐字核实的证据而非指令、deny 按时间推翻先前 grant、空抽屉须回到 retained direct-user messages、任何条目不能独自 justify allow。
 - **配置旋钮**：`authorizationExtractor.enabled`（默认 true；false 只关闲时提取，审批补尾仍执行）、`maxAuthorizationEntries`(64)、`maxAuthorizationExtractionEvents`(256)。回退旧政策用 `reviewer.policyVersion: "policy-v3"`。
 
+## 三期：可见性与旧会话（WP8 已实现）
+
+按 [审批台账施工计划](docs/approval-ledger-construction-plan.md) §5 三期交付，全部只读、非授权面：
+
+- **原因码 renderer 传输通路**：宿主 webServer 存在时（Web GUI；CLI profile 自动跳过）注册 exact 路由 `GET /dsh-approve-for-me/v1/reason-code?requestId=…`，从 decision-record 的 metadata-only 索引回答闭集 Gate 失败码；浏览器侧桥（in-flight 去重 + 256 条有界缓存）在 `unavailable` 行无码时异步补齐并重渲染。任何失败/未知/畸形一律回落泛化 `reason.miss` 文案 —— 表现层永不触碰授权结果。
+- **链健康与 extractor watermark 可见性**：`GET /dsh-approve-for-me/v1/ledger-health` 回答有界标量（seal 链数/封条数、授权条目数/checkpoint 数/最大 throughSeq）；两个存储域各维护一个 O(1) 写者计数行（Storage Domain 表无枚举能力的定案；informal gauge，崩溃夹缝最多欠一，非授权面）。插件设置卡新增只读"台账健康"区（挂载拉取 + 手动刷新 + 失败泛化行）。
+- **`sealBackfill`（默认 false）**：开启后，root 会话 turn/end 且无在途审批时，对未盖章旧执行记录做每 lifecycle 每进程一次的 background-once 补章 —— 逐条重做快照唯一绑定、live 事件再绑、projector 可解析性验证，用与 live 路径完全同一的构造纯函数（`seal-projection.ts`）造 seal 后 create-once 追加；任一失败整体停止，该 lifecycle 保持无章（永不自动放行）；新审批 run 或新 user/message 立即 abort。
+- 无章旧会话即使不迁移也永久走人工；backfill 只是给"证据齐全的旧会话"一条补账通路，绝不为兼容退化。
+
 ## 一期已知限制（sealed-facts 阶段，选型说明）
 
 sealed-facts 一期（`feat/approval-ledger` 的 WP4/WP5）已落地，但以下是有意的阶段边界与可用性权衡，供读代码／做验收时对照：
@@ -168,7 +177,7 @@ sealed-facts 一期（`feat/approval-ledger` 的 WP4/WP5）已落地，但以下
 
 **b. `dossierMetricsSink` 一期惰性。** 插件保留 `dossierMetricsSink` 选项但一期无生产调用点，`getDossierCompilationMetrics` 恒返回空基线。WP6 验收的“完整卷宗 vs 热路径体积对比”需要真实可达的全量编译入口 —— 该入口已不作为生产热路径调用（plugin 闭包内的 `compile()` 已移除），验收 harness 须用导出的 `DefaultDossierCompiler`／`InstrumentedDossierCompiler` 类自建。
 
-**c. 原因码 renderer 一期恒泛化 miss（浏览器↔服务端传输属三期）。** 宿主 `ctx.remote` 由宿主生成、不可被插件扩展，浏览器↔服务端 reason-code 传输未生产闭环，因此一期生产 renderer 恒走泛化 `reason.miss`。render-miss 分层：client 侧 = `miss` 标志 + `data-reason-miss` DOM 属性（表现层）；数值 `reason-code-render-miss` 遥测计数属服务端／Gate 侧（WP5-a）。
+**c.（已于 WP8-a 解除）原因码 renderer 一期恒泛化 miss。** 三期落地了独立 webServer 路由 + 浏览器桥（见上"三期"节），生产 renderer 在 Web GUI 下可解析真实原因码；CLI/无 webServer 宿主仍走泛化 `reason.miss`（有意的安全降级）。render-miss 分层：client 侧 = `miss` 标志 + `data-reason-miss` DOM 属性（表现层）；数值 `reason-code-render-miss` 遥测计数属服务端／Gate 侧（WP5-a）。
 
 **d. split-duplicate 设计边界（窗外历史归 sealed 锚定）。** 旧全历史校验对任一 request id 的重复 approval/asked 失败关闭，包括跨窗口的一对重复；新实现只监测有界 sealed 窗口 —— “1 条窗内 + 1 条窗外古重复”现在通过（窗外历史归 sealed 锚定，不作为 live 重复判据）。这与 WP4-a2 冷启动边界同构（cold-repair／asked 定位只在 `maxSealedTailEvents` 窗内回扫）；两者都把“窗外”视为 sealed-anchored 健壮性边界，窗内重复仍严格 fail-closed。
 

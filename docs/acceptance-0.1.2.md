@@ -49,3 +49,7 @@ policy-v3(commit `3568c94`,artifact lock `9ce7d90`,AFM tarball sha256 `491a9069�
 ## WP7 二期 smoke 复跑(2026-09-05)
 
 WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上复跑:`profile:artifact-smoke`(含冷启动委托到 composed answerer、自动放行副作用落盘、人工兜底拒绝、跨进程冷重启同工具目录)与 `profile:pending-smoke`(SIGKILL pending cold-resume)双双 PASS(59 文件/742 测试同绿)。本轮修掉两个真实运行时缺陷(均已提交):dispose 取消曾被 WP5-a 硬映射为 unavailable——插件树 reload 处置在途审批时 fork 报"无审批渠道",现映射 cancelled 让瀑布继续(`815a021`);审批时同步补尾曾可吃满整个机器决策预算——现切片为剩余预算的 1/4(`cac7603`)。提取器/Reviewer 在 scripted-adapter 环境下的 child 污染旋转与"册上无授权→转人工"路径亦经此验证。
+
+## WP8 三期交付(2026-09-05)
+
+三期(可见性与旧会话)按施工计划 §5 三期全量落地(65 文件/835 测试 + typecheck/build 全绿,提交 `3d843b4`):原因码 renderer 传输通路(webServer exact 路由 + 浏览器去重缓存桥,Web GUI 下解除一期恒泛化 miss,CLI 自动跳过)、链健康/extractor watermark 只读可见性(ledger-health 路由 + 写者维护 O(1) stats 行 + 设置卡健康区)、`sealBackfill` background-once 补盖章(默认 off;idle+无 pending+单写 lane;与 live 路径共享同一构造纯函数;任一失败整体停止,无章 lifecycle 永不自动放行)。**新增待验收项**:Web GUI 下原因码行/台账健康区的浏览器实测(路由传输仅经 stub 级测试)、sealBackfill=true 的真实宿主补章行为;既有 S3b/S3 自动化与 soak 欠账不变。

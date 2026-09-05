@@ -83,7 +83,7 @@ V1 只接受原子 create-once：相同 canonical 重放成功，不同 canonica
 | maxLedgerEntries | 256 | 正安全整数；限制进入 Gate/Reviewer 的台账行数，超限为 ledger-budget-overflow，不能静默截断授权语义。 |
 | maxRecentExcerptBytes | 24000 | 正安全整数；仅供意图理解，确定性摘录并带 seq，不能替代当前动作事实。 |
 | maxHotPacketBytes | 96000 | 不得高于完整卷宗 256000；预构建预算，超限 budget-overflow。 |
-| sealBackfill | off | 一期固定 off；三期才可 background-once，永不令无章会话自动放行。 |
+| sealBackfill | off | background-once；仅 idle、无 pending approval、单 writer lane；永不令无章会话自动放行（三期 WP8-c 已实现）。 |
 
 以上默认值均为**待 53k fixture 与 quality smoke 实测校准**的候选值：以固定动作、授权和 catalog 分布测量 tail/台账条数、packet bytes、Reviewer 延迟和人工下沉率；只在不改变失败关闭语义的前提下按 P95/P99 调整，并把最终基线和回归阈值写入 profile smoke。
 
@@ -124,6 +124,8 @@ V1 只接受原子 create-once：相同 canonical 重放成功，不同 canonica
 ### 三期：可见性与旧会话
 
 完善原因码、链健康、extractor watermark 的只读 UI/remote 可见性，仍只通过既有 Chat node 或单向非授权 API。可选 background-once 补盖章仅可在 idle、无 pending approval、单 writer lane 执行；它逐条重做 wire/catalog/projector 验证，任一失败即停止并标为不可授权。无章旧会话即使不迁移也永久走人工，绝不为兼容退化或强制迁移。
+
+**三期实现状态（2026-09-05，WP8 全包交付）**：原因码传输通路落地为宿主 webServer exact 路由 `GET /dsh-approve-for-me/v1/reason-code`（src/application/reason-code-route.ts 纯 handler：GET-only、requestId 有界校验、GATE_FAILURE_CODES 闭集出闸、内部异常恒 200 miss；src/plugin.ts probe-cast 注册，CLI 无 webServer 自动跳过，注册失败不 fail mount，dispose/rollback 对称）+ 浏览器桥 src/client/reason-code-remote.ts（in-flight 去重、256 条 keep-newest settled 缓存、一切失败 settle null=泛化文案）+ ApprovalFlowItem 拆分为纯视图 ApprovalFlowItemView 与无条件 hooks 包装器（unavailable 且无码时异步补齐重渲染）——一期"恒泛化 miss"在 Web GUI 下解除。链健康/watermark 可见性落地为 `GET /dsh-approve-for-me/v1/ledger-health`（src/application/ledger-health-route.ts，段省略式降级、normalize 闭集双闸、注入时钟）+ 两个存储域的写者维护 O(1) stats 行（Storage Domain 表无枚举能力的定案；sealed-facts 在索引新链环且全链重验后 bump、authorization 仅 committed 路径 bump，重放不重计；informal gauge 崩溃夹缝最多欠一，非授权面）+ 插件设置卡只读"台账健康"区；线形只有计数与 seq 标量，无 ID/hash/内容。sealBackfill 解冻为真 boolean（默认 false）：SealBackfillRunner（src/application/seal-backfill.ts）per-lifecycle 单写 lane + 每进程至多一次 + AbortController 注册表；构造公式抽为共享纯函数 src/application/seal-projection.ts（live bridge 与 backfill 共用，既有 bridge/sealed-facts 测试零改动通过=零漂移证据）；触发=root 会话 turn/end 且无在途审批 run，新审批 run 或新 user/message 立即 abort；任一失败（快照歧义/live 再绑不符/projector 不可解析/append conflict/存储不可用）整体停止，该 lifecycle 保持无章永不自动放行。验证基线 65 个测试文件 835 项测试 + typecheck/build 全绿。
 
 ## 6. 兼容与迁移
 

@@ -1,6 +1,6 @@
 # 实现状态与后续接入
 
-> 当前代码状态（2026-09-04，rc.1 基线）：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），机器决策槽 v3。宿主闭包直接安装 npm 上已发布的 `0.1.2-rc.1` 包；`npm run check` 通过 59 个测试文件、742 项测试（2026-09-05 WP7 二期授权抽屉/提取器合入后）。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 rc.1 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。真实 LLM 判断质量（S1/S2）与 pending cold-resume 已由 `profile:quality-smoke`／`profile:pending-smoke` 验收；policy-v3 已在 live 实例实测 danger 升档自动放行（证据见 `acceptance-0.1.2.md`）。
+> 当前代码状态（2026-09-04，rc.1 基线）：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），机器决策槽 v3。宿主闭包直接安装 npm 上已发布的 `0.1.2-rc.1` 包；`npm run check` 通过 65 个测试文件、835 项测试（2026-09-05 WP8 三期可见性/sealBackfill 合入后）。生产 loader 直接读取 DSH `llm` provider/model catalog，注册机器策略前校验稳定 route 与 reasoning effort，并继续复用 DSH runtime model selection。三原子 demo kit、approval fork、installed target host、package smoke 与 disposable Profile artifact smoke 均可在 rc.1 上验收；Profile smoke 覆盖真实 `dsh plugin add`、Cordis compose、一次真实自动放行 side effect、人工拒绝兜底和全新进程重启后的相同 tool catalog。真实 LLM 判断质量（S1/S2）与 pending cold-resume 已由 `profile:quality-smoke`／`profile:pending-smoke` 验收；policy-v3 已在 live 实例实测 danger 升档自动放行（证据见 `acceptance-0.1.2.md`）。
 >
 > 尚未完成的是"产品级 E2E"的剩余部分：浏览器中官方审批面板的完整点击链、污染/容量/卸载的故障注入、长程 soak，以及 policy-v3 的自动化验收（S3 场景、S3b、v3 下 S1/S2 回归）。当前 automatic allow 必须来自 branded source-verified dossier 上 identity-valid 的 Reviewer allow，并在返回前完成 durable decision record；R4 baseline 作为 Reviewer 输入和 authorization-derived cache/replay fast-path 边界。
 
@@ -99,7 +99,7 @@
 ## 验证
 
 ```bash
-npm run check                       # typecheck + 59 files / 742 tests + build
+npm run check                       # typecheck + 65 files / 835 tests + build
 npm run verify:managed-source       # sibling clean HEAD/remote/tree = reviewed lock
 npm run verify:target-host          # fork tarball + 固定 commit/tag/version
 npm run verify:installed-target-host
