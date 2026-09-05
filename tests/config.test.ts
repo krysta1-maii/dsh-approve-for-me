@@ -4,6 +4,7 @@ import {
   ApproveForMeSettings,
   Config,
   configWithReviewerSettings,
+  DEFAULT_MAX_SEALED_HISTORY_WINDOW,
   fingerprintApprovalToolCatalogV1,
   inject,
   name,
@@ -72,7 +73,7 @@ describe('plugin config', () => {
     expect(normalized.mode).toBe('auto')
     expect(normalized.timeoutMs).toBe(30_000)
     expect(normalized.maxDossierBytes).toBe(256_000)
-    expect(normalized.maxSealedTailEvents).toBe(512)
+    expect(normalized.maxSealedTailEvents).toBe(256)
     expect(normalized.maxLedgerEntries).toBe(256)
     expect(normalized.maxRecentExcerptBytes).toBe(24_000)
     expect(normalized.maxHotPacketBytes).toBe(96_000)
@@ -90,6 +91,16 @@ describe('plugin config', () => {
       toolsetVersion: 1,
     })
     expect(normalized.preset.configurationFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/)
+  })
+
+  it('resolves the sealed tail window and ledger row gate to the same single default (WP6-b4)', () => {
+    // WP6-b1 measured a 512 (tail read window) vs 256 (ledger row gate) default
+    // split that turned a 257..512-row history into a spurious ledger-budget-overflow.
+    // Both knobs must agree on the one shared sealed-history window default.
+    const normalized = normalizeConfig(valid())
+    expect(normalized.maxSealedTailEvents).toBe(DEFAULT_MAX_SEALED_HISTORY_WINDOW)
+    expect(normalized.maxLedgerEntries).toBe(DEFAULT_MAX_SEALED_HISTORY_WINDOW)
+    expect(normalized.maxSealedTailEvents).toBe(normalized.maxLedgerEntries)
   })
 
   it('accepts explicit approval ledger budget knobs', () => {

@@ -1,5 +1,5 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { canonicalJson, createActionSnapshot, createActivityV1, createSealV1, DSH_ALPHA2_SHELL_FAMILY, DSH_ALPHA2_SHELL_PROJECTOR_ID, DshStorageDomainFactRepositories, DshStorageDomainSealedFacts, genesisSealHash, hashAction } from '../../src/index.js'
+import { canonicalJson, createActionSnapshot, createActivityV1, createSealV1, DEFAULT_MAX_SEALED_HISTORY_WINDOW, DSH_ALPHA2_SHELL_FAMILY, DSH_ALPHA2_SHELL_PROJECTOR_ID, DshStorageDomainFactRepositories, DshStorageDomainSealedFacts, genesisSealHash, hashAction } from '../../src/index.js'
 import type { ActivityV1, ApprovalSnapshotRecordV1, SealV1, StorageDomainFacility, ToolExecutionFactRecordV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
@@ -78,7 +78,7 @@ function makeAction(command: string) {
 
 export function buildApprovalE2EFixture(options: ApprovalE2EOptions = {}): ApprovalE2EFixture {
   const pad = options.padEvents ?? 0
-  const maxSealedTailEvents = options.maxSealedTailEvents ?? 512
+  const maxSealedTailEvents = options.maxSealedTailEvents ?? DEFAULT_MAX_SEALED_HISTORY_WINDOW
   const schemas: readonly unknown[] = [approvalE2ESchemas]
   const effective = createDshAlpha2EffectiveCatalog(schemas)
   const dossier = effective.dossier

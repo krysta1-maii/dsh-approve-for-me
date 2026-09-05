@@ -15,6 +15,7 @@ import {
   createDshAlpha2StockToolCatalog,
   ToolFamilyActionProjectorRegistry,
   ApprovalRunLifecycle,
+  DEFAULT_MAX_SEALED_HISTORY_WINDOW,
   DshStorageDomainFactRepositories,
   DshStorageDomainGateDecisionRecordStore,
   DshStorageDomainSealedFacts,
@@ -459,7 +460,7 @@ describe('installApproveForMe composition root', () => {
 
   it('pins the sealed-tail window lower bound: inclusive at lower, strictly exclusive below (WP4-b4-2b S-2)', async () => {
     const seqCount = 20_001
-    const lower = seqCount - 512
+    const lower = seqCount - DEFAULT_MAX_SEALED_HISTORY_WINDOW
     const askEvent = (seq: number) => ({ type: 'approval/asked', data: { id: 'ask-1', callId: 'call-1', toolName: 'bash', turn: 1, step: 0 } })
     const resolveWithAsk = async (match: (seq: number) => unknown): Promise<{ outcome: string; readSeqs: number[] }> => {
       const h = harness()
@@ -931,11 +932,11 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     expect(snapshotEvents).not.toHaveBeenCalled()
 
     // Every decide-path live read is an exact eventAt inside a bounded horizon.
-    // Two bounded windows compose here, both of order maxSealedTailEvents: the
-    // ask-position scan anchors at session.seq, while the recent-excerpt
-    // assembler anchors its own 512-event window at the ask seq (which is
-    // session.seq - 1). Their union is [session.seq - maxSealedTailEvents - 1,
-    // session.seq), still O(maxSealedTailEvents) - never a full-history scan.
+    // Two bounded windows compose here: the ask-position scan anchors at
+    // session.seq and now shares the sealed ledger gate default (256, WP6-b4), while
+    // the recent-excerpt assembler keeps its own independent 512-event window at
+    // the ask seq (which is session.seq - 1). The union is bounded by the wider
+    // excerpt window: [session.seq - 512 - 1, session.seq) - never a full-history scan.
     expect(eventAtCalls.length).toBeGreaterThan(0)
     const lower = Math.max(0, hotSeq - 512 - 1)
     for (const seq of eventAtCalls) {

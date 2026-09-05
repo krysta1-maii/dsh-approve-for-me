@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createSealV1, createSealedDossierCompiler, DEFAULT_MAX_SEALED_HISTORY_WINDOW, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
 import type { ActivityV1, SealV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
@@ -680,6 +680,47 @@ describe('readSealedParentSessionFacts', () => {
     const fixture = buildSealedChain(513)
     const result = await readSealedParentSessionFacts({ ...fixture.base, maxSealedTailEvents: 512, ledger: ledger(fixture.rows) })
     expect(result).toEqual({ kind: 'tail-budget-overflow', sealedCount: 513, maxSealedTailEvents: 512 })
+  })
+
+  it('aligns the default sealed tail window with the compiled ledger row gate (WP6-b4)', async () => {
+    // WP6-b1: the default read window (512) admitted more rows than the default
+    // ledger gate (256), so a 257..512-row history read fine but overflowed the
+    // compiler into a spurious ledger-budget-overflow / human waterfall. With the
+    // single 256 default, a full-window history must READ through the resolver's
+    // sealed reader AND compile without overflow (wiring-level consistency pin).
+    const count = DEFAULT_MAX_SEALED_HISTORY_WINDOW
+    const fixture = buildSealedChain(count)
+    const facts = okFacts(await readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows) }))
+    expect(facts.activities).toHaveLength(DEFAULT_MAX_SEALED_HISTORY_WINDOW)
+    const compile = createSealedDossierCompiler({ maxHotPacketBytes: 256_000 })
+    const result = compile({
+      packet: facts,
+      current: {
+        action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }),
+        classification: 'body-escalation',
+        classificationCatalogFingerprint: catalog.fingerprint,
+        approvalRequestId: 'ask-' + count,
+        callId: 'call-' + count,
+        toolName: 'bash',
+        requestEventSeq: 3 * count - 2,
+        approvalAsked: { seq: 3 * count - 1, type: 'approval/asked', turn: 1, step: 0 },
+        freeze: {
+          parent: { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 100, cwd: '/workspace' },
+          throughSeq: 3 * count,
+          currentTurn: 1,
+          currentStep: 0,
+          frozenAt: 100 + 3 * count,
+        },
+      },
+    })
+    expect(result.kind).toBe('ready')
+
+    // One row past the aligned window is a tail-budget-overflow at the reader
+    // itself (the same 256 bound), so the read window and the ledger gate agree at
+    // the single default and the 257-row legacy case is gone.
+    const over = buildSealedChain(DEFAULT_MAX_SEALED_HISTORY_WINDOW + 1)
+    const overResult = await readSealedParentSessionFacts({ ...over.base, ledger: ledger(over.rows) })
+    expect(overResult).toEqual({ kind: 'tail-budget-overflow', sealedCount: DEFAULT_MAX_SEALED_HISTORY_WINDOW + 1, maxSealedTailEvents: DEFAULT_MAX_SEALED_HISTORY_WINDOW })
   })
 
   it('honours a caller-supplied smaller maxSealedTailEvents budget', async () => {
