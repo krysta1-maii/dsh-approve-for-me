@@ -252,6 +252,16 @@ describe('WP5-c server read channel -> renderer (real decided unavailable row)',
     }
   })
 
+  it('degrades to a miss when the server bridge throws (a failing read never surfaces)', () => {
+    const reader = createServerBackedReasonCodeReader()
+    setApprovalReasonCodeServerReader({ resolve: () => { throw new Error('storage down') } })
+    try {
+      expect(readReasonCodeFrom('ask-1', reader)).toBeUndefined()
+    } finally {
+      setApprovalReasonCodeServerReader(undefined)
+    }
+  })
+
   it('degrades to the generic miss when the server channel returns no code (unchanged safe path)', async () => {
     const store = new DshStorageDomainGateDecisionRecordStore(memoryFacility())
     const code = await store.readReasonCode('no-such-ask')

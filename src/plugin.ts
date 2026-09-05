@@ -601,7 +601,15 @@ export function installApproveForMe(
     getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
     getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
     getGateFailureMetrics: () => gateFailureMetrics.snapshot(),
-    readApprovalReasonCode: requestId => records.readReasonCode(requestId),
+    readApprovalReasonCode: async requestId => {
+      // WP5-c: the reason-code read is presentational and never authorizing. Any
+      // store failure or missing row degrades to `undefined` (renderer safe line).
+      try {
+        return await records.readReasonCode(requestId)
+      } catch {
+        return undefined
+      }
+    },
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal
       // Fence observers and policy first, abort active work, then drain every
