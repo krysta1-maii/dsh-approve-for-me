@@ -10,9 +10,10 @@ import type {
   ParentSessionFactSnapshotV1,
   PrincipalSessionIdentityV1,
   SessionFactEventV1,
-  ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
 } from '../domain/dossier.js'
-import { isApprovalEnvironmentEvidenceV1, validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
+import { isApprovalEnvironmentEvidenceV1, validateDurableCatalogEvidenceV2 } from '../domain/dossier.js'
+import { canonicalSha256 } from '../domain/payload-ref.js'
 import type { LiveAgentRegistry, ParentSessionFactSource } from '../ports/parent-session-facts.js'
 import type { AuthorizationEntryV1 } from '../domain/authorization-ledger.js'
 import { verifyAuthorizationEntryLiveV1 } from '../application/authorization-verification.js'
@@ -222,7 +223,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     // must bind to the exact canonical live events before it can enter the
     // frozen snapshot. A poisoned row that points at a different call or
     // result event is dropped here and makes the dossier incomplete.
-    const executionMatchesLiveEvents = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string } } & ToolExecutionFactRecordV1): boolean => {
+    const executionMatchesLiveEvents = (item: { readonly session: { readonly sessionId: string; readonly sessionFormatVersion: number; readonly createdAt: number; readonly cwd?: string } } & ToolExecutionFactRecordV2): boolean => {
       const requestEvent = events[item.request.eventSeq]
       if (requestEvent === undefined || requestEvent.seq !== item.request.eventSeq) return false
       const requestData = requestEvent.data as Record<string, unknown>
@@ -276,7 +277,7 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       && item.request.callId === input.callId && item.request.toolName === input.toolName)
     if (correlatedExecutions.length !== 1) return fail('correlated-executions', { found: correlatedExecutions.length, total: executions.length })
     const execution = correlatedExecutions[0]!
-    const commitment = execution.catalogCommitment
+    const evidence = execution.catalogEvidence
     // Every execution anchors its own commitment to the exact request/header
     // in force at its root call. A legitimate mid-session catalog change starts
     // a new epoch anchored to the newer header; it never poisons earlier
@@ -288,29 +289,37 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
     let catalogFailure: string | undefined
     const catalogAnchored = (item: typeof execution): boolean => {
       const refuse = (rule: string): boolean => { catalogFailure = rule; return false }
-      const itemCommitment = item.catalogCommitment
-      if (validateDurableToolCatalogCommitmentV1(itemCommitment).kind !== 'ok') return refuse('commitment-invalid')
+      const itemEvidence = item.catalogEvidence
+      if (validateDurableCatalogEvidenceV2(itemEvidence).kind !== 'ok') return refuse('commitment-invalid')
       const itemRootRequestEventSeq = item.request.kind === 'model-tool-call'
         ? item.request.eventSeq
         : item.request.rootRequestEventSeq
-      if (itemCommitment.requestHeaderEventSeq >= itemRootRequestEventSeq
+      if (itemEvidence.requestHeaderEventSeq >= itemRootRequestEventSeq
         || itemRootRequestEventSeq > item.request.eventSeq) return refuse('header-seq-order')
-      if (!headerSeqs.has(itemCommitment.requestHeaderEventSeq)) return refuse('header-missing')
+      if (!headerSeqs.has(itemEvidence.requestHeaderEventSeq)) return refuse('header-missing')
       // The bound header must still be in force at the root call: a later
       // header at or before it means this record shopped an obsolete catalog.
-      const nextHeaderSeq = orderedHeaderSeqs.find(seq => seq > itemCommitment.requestHeaderEventSeq)
+      const nextHeaderSeq = orderedHeaderSeqs.find(seq => seq > itemEvidence.requestHeaderEventSeq)
       if (nextHeaderSeq !== undefined && nextHeaderSeq <= itemRootRequestEventSeq) return refuse('header-superseded')
-      const headerEvent = events[itemCommitment.requestHeaderEventSeq]
+      const headerEvent = events[itemEvidence.requestHeaderEventSeq]
       const header = headerEvent?.type === 'request/header'
         ? (headerEvent.data as Record<string, unknown>).header as Record<string, unknown> | undefined
         : undefined
-      if (header === undefined
-        || canonicalJson((header.tools ?? []) as JsonValue) !== canonicalJson(itemCommitment.wireSchemas as unknown as JsonValue)) return refuse('wire-schemas-mismatch')
+      // WP9-a: the v1 byte-compare of the stored wireSchemas against the live
+      // header.tools is now a sha256-compare against the stored
+      // wireSchemasDigest — byte-for-byte equivalent up to sha256 collision
+      // resistance.
+      if (header === undefined) return refuse('wire-schemas-mismatch')
+      try {
+        if (canonicalSha256((header.tools ?? []) as JsonValue) !== itemEvidence.wireSchemasDigest) return refuse('wire-schemas-mismatch')
+      } catch {
+        return refuse('wire-schemas-mismatch')
+      }
       // One header epoch carries exactly one commitment fingerprint; a second
       // fingerprint under the same header means a record was rewritten.
-      const epochFingerprint = epochFingerprints.get(itemCommitment.requestHeaderEventSeq)
-      if (epochFingerprint !== undefined && epochFingerprint !== itemCommitment.fingerprint) return refuse('epoch-split')
-      epochFingerprints.set(itemCommitment.requestHeaderEventSeq, itemCommitment.fingerprint)
+      const epochFingerprint = epochFingerprints.get(itemEvidence.requestHeaderEventSeq)
+      if (epochFingerprint !== undefined && epochFingerprint !== itemEvidence.commitment) return refuse('epoch-split')
+      epochFingerprints.set(itemEvidence.requestHeaderEventSeq, itemEvidence.commitment)
       return true
     }
     if (executions.some(item => !catalogAnchored(item))) return fail('catalog-commitment', { rule: catalogFailure })
@@ -319,11 +328,11 @@ export class DshParentSessionFactSource implements ParentSessionFactSource {
       || approval.execution.callId !== input.callId || approval.execution.callId !== execution.request.callId
       || approval.execution.toolName !== input.toolName || approval.execution.toolName !== execution.request.toolName
       || approval.execution.actionHash !== execution.projection.actionHash
-      || approval.execution.classificationCatalogFingerprint !== commitment.classificationCatalog.fingerprint
+      || approval.execution.classificationCatalogFingerprint !== evidence.classificationCatalog.fingerprint
       || approval.execution.classificationCatalogFingerprint !== execution.toolClassification.classificationCatalogFingerprint
       || approval.execution.projectorId !== execution.projection.projectorId) return fail('environment-binding')
     const eventSnapshots = snapshotEvents(events.filter(event => event.seq <= throughSeq))
-    const classificationCatalog = frozenSnapshot(commitment.classificationCatalog)
+    const classificationCatalog = frozenSnapshot(evidence.classificationCatalog)
     const executionSnapshots = executions.map(frozenSnapshot)
     const approvalSnapshots = approvals.map(frozenSnapshot)
     if (eventSnapshots === undefined || classificationCatalog === undefined
@@ -522,11 +531,20 @@ export async function readSealedParentSessionFacts(input: {
         requestEventSeq: seal.request.eventSeq,
       })
       const headerData = header.data as { readonly header?: { readonly tools?: unknown } } | null
+      // WP9-a: the wire-schemas byte-compare is a sha256-compare against the
+      // stored wireSchemasDigest (throws on malformed live tools and fails
+      // closed exactly like the v1 canonicalJson throw).
+      let wireSchemasMatch = false
+      try {
+        wireSchemasMatch = canonicalSha256(headerData?.header?.tools) === fact?.catalogEvidence.wireSchemasDigest
+      } catch {
+        wireSchemasMatch = false
+      }
       if (fact === undefined || fact.request.callId !== seal.request.callId || fact.request.eventSeq !== seal.request.eventSeq
-        || fact.catalogCommitment.requestHeaderEventSeq !== seal.catalog.headerEventSeq
-        || seal.catalog.commitment !== fact.catalogCommitment.fingerprint
-        || validateDurableToolCatalogCommitmentV1(fact.catalogCommitment).kind !== 'ok'
-        || canonicalJson(headerData?.header?.tools) !== canonicalJson(fact.catalogCommitment.wireSchemas)
+        || fact.catalogEvidence.requestHeaderEventSeq !== seal.catalog.headerEventSeq
+        || seal.catalog.commitment !== fact.catalogEvidence.commitment
+        || validateDurableCatalogEvidenceV2(fact.catalogEvidence).kind !== 'ok'
+        || !wireSchemasMatch
         || seal.catalog.headerEventSeq >= seal.request.eventSeq) return fail('seal-live-rebind-failed', 'commitment-binding')
       // The bound header must still be in force at the request: a later header at
       // or before it means this record shopped an obsolete catalog. The scan

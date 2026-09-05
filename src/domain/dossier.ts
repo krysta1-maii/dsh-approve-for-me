@@ -3,7 +3,10 @@ import { canonicalJson, snapshotJson } from './json.js'
 import type { JsonValue } from './json.js'
 import { hashGuardianDossier } from './records.js'
 import type { SessionLifecycleIdentityV1 } from './records.js'
-import type { ActionSnapshot } from './protocol.js'
+import type { ActionSnapshot, RequestedPermission } from './protocol.js'
+import { createActionSnapshot, hashAction } from './protocol.js'
+import { canonicalSha256, isPayloadRefV1, payloadRefMatchesLive, toPayloadRef } from './payload-ref.js'
+import type { PayloadRefV1 } from './payload-ref.js'
 import { fingerprintApprovalToolCatalogV1 } from '../approval-gate/catalog.js'
 import type { ApprovalToolCatalog } from '../approval-gate/catalog.js'
 
@@ -599,6 +602,331 @@ export interface DelegationReceiptFactRecordV1 {
   readonly receipt: PrincipalDelegationReceiptV1
 }
 
+/**
+ * WP9-a: slim durable catalog evidence. The v1 commitment embedded the full
+ * wire/callable wire schemas in every execution record (~90KB per record,
+ * repeated for thousands of records in one catalog epoch). V2 keeps the
+ * commitment fingerprint (computed over the full v1 commitment at write time),
+ * digests of the schema bodies, and the two small scalar authorization
+ * catalogs, so every offline cross-check that only needed catalog descriptors
+ * still works unchanged.
+ *
+ * What is deliberately NOT re-validatable from rest (write-time guarantees,
+ * guarded by the row digest and the live header re-bind):
+ * the internal shape of the schema bodies and their exact binding to both
+ * catalogs. `schemasDigest` binds wire+callable jointly; `wireSchemasDigest`
+ * preserves the exact former byte-compare against the live request/header.
+ */
+export interface DurableCatalogEvidenceV2 {
+  readonly version: 2
+  /** The v1 DurableToolCatalogCommitmentV1 fingerprint (hash over the full commitment). */
+  readonly commitment: string
+  readonly presentation: 'native' | 'ptc'
+  readonly requestHeaderEventSeq: number
+  /** sha256 over canonicalJson({wireSchemas, callableSchemas}). */
+  readonly schemasDigest: string
+  /** sha256 over canonicalJson(wireSchemas); compared against live header.tools. */
+  readonly wireSchemasDigest: string
+  /** callableSchemas.length at write time. */
+  readonly schemaCount: number
+  readonly approvalCatalog: ApprovalToolCatalog
+  readonly classificationCatalog: DelegationToolClassificationCatalogV1
+}
+
+/** WP9-a: action snapshot with the unbounded arguments payload referenced. */
+export interface ActionSnapshotV2 {
+  readonly version: 2
+  readonly kind: 'tool-call'
+  readonly toolName: string
+  readonly arguments: PayloadRefV1
+  readonly requestedPermissions: readonly RequestedPermission[]
+  readonly projectorId: string
+  readonly semantics: { readonly family: string; readonly value: JsonValue }
+}
+
+/**
+ * WP9-a: slim execution fact record. Arguments travel as PayloadRefV1 and the
+ * catalog commitment is reduced to DurableCatalogEvidenceV2; actionHash,
+ * toolName, callId, eventSeq, fingerprints and all correlation scalars stay
+ * inline. The full action snapshot is re-derived from live event arguments at
+ * consumption time via resolveStoredActionV2 and verified against actionHash,
+ * which is byte-for-byte equivalent to the v1 stored-action comparison.
+ */
+export interface ToolExecutionFactRecordV2 {
+  readonly version: 2
+  readonly session: SessionLifecycleIdentityV1
+  readonly request:
+    | {
+        readonly kind: 'model-tool-call'
+        readonly eventSeq: number
+        readonly eventType: 'tool/call'
+        readonly callId: string
+        readonly toolName: string
+      }
+    | {
+        readonly kind: 'code-dispatch'
+        readonly eventSeq: number
+        readonly eventType: 'tool/code-dispatch-start'
+        readonly rootCallId: string
+        readonly rootRequestEventSeq: number
+        readonly parentCallId: string
+        readonly parentRequestEventSeq: number
+        readonly callId: string
+        readonly toolName: string
+        readonly arguments: PayloadRefV1
+      }
+  /** Slim per-execution catalog evidence (replaces the inline v1 commitment). */
+  readonly catalogEvidence: DurableCatalogEvidenceV2
+  readonly toolClassification: {
+    readonly classificationCatalogFingerprint: string
+    readonly descriptor: DelegationToolDescriptorV1
+  }
+  readonly projection: {
+    readonly projectorId: string
+    readonly action: ActionSnapshotV2
+    readonly actionHash: string
+    readonly observedAt: number
+  }
+  /**
+   * Content-free pre-commit evidence persisted by the post-execute wrapper
+   * before DSH can append the terminal Session event. It never proves
+   * settlement by itself; cold repair admits it only when the canonical result
+   * event independently confirms the same error category.
+   */
+  readonly terminalEvidence?: {
+    /** Canonical ToolExecutionResult discriminator used to authenticate cold repair. */
+    readonly isError: boolean
+    readonly outcome: Extract<ToolAttemptOutcomeV1,
+      { readonly kind: 'completed' } | { readonly kind: 'tool-error' } | { readonly kind: 'sandbox-denied' }>
+    readonly receipt?: PrincipalDelegationReceiptV1
+  }
+  readonly result?: {
+    readonly eventSeq: number
+    readonly eventType: 'tool/result' | 'tool/code-dispatch'
+    /** Only a safe terminal category; never tool output or failure text. */
+    readonly outcome: Extract<ToolAttemptOutcomeV1,
+      { readonly kind: 'completed' } | { readonly kind: 'tool-error' } | { readonly kind: 'sandbox-denied' }>
+  }
+  readonly delegationReceipt?: DelegationReceiptFactRecordV1
+}
+
+/** The semantic projection value stays inline and bounded; a larger value fails closed at write time. */
+export const MAX_STORED_ACTION_SEMANTICS_BYTES = 262_144
+
+/** Convert a validated live catalog commitment into its slim durable evidence form. */
+export function createDurableCatalogEvidenceV2(commitment: DurableToolCatalogCommitmentV1): DurableCatalogEvidenceV2 {
+  if (validateDurableToolCatalogCommitmentV1(commitment).kind !== 'ok') {
+    throw new TypeError('durable catalog commitment is invalid')
+  }
+  return Object.freeze({
+    version: 2,
+    commitment: commitment.fingerprint,
+    presentation: commitment.presentation,
+    requestHeaderEventSeq: commitment.requestHeaderEventSeq,
+    schemasDigest: canonicalSha256({ wireSchemas: commitment.wireSchemas, callableSchemas: commitment.callableSchemas }),
+    wireSchemasDigest: canonicalSha256(commitment.wireSchemas),
+    schemaCount: commitment.callableSchemas.length,
+    approvalCatalog: commitment.approvalCatalog,
+    classificationCatalog: commitment.classificationCatalog,
+  })
+}
+
+/** Validate the slim catalog evidence without consulting live host state. */
+export function validateDurableCatalogEvidenceV2(evidence: DurableCatalogEvidenceV2): DelegationCatalogValidationV1 {
+  if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)
+    || evidence.version !== 2
+    || typeof evidence.commitment !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(evidence.commitment)
+    || (evidence.presentation !== 'native' && evidence.presentation !== 'ptc')
+    || !Number.isSafeInteger(evidence.requestHeaderEventSeq) || evidence.requestHeaderEventSeq < 0
+    || typeof evidence.schemasDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(evidence.schemasDigest)
+    || typeof evidence.wireSchemasDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(evidence.wireSchemasDigest)
+    || !Number.isSafeInteger(evidence.schemaCount) || evidence.schemaCount < 0
+    || evidence.approvalCatalog === null || typeof evidence.approvalCatalog !== 'object'
+    || !Array.isArray(evidence.approvalCatalog.descriptors)
+    || evidence.classificationCatalog === null || typeof evidence.classificationCatalog !== 'object'
+    || !Array.isArray(evidence.classificationCatalog.descriptors)) {
+    return { kind: 'invalid', reason: 'catalog evidence envelope is invalid' }
+  }
+  try {
+    if (new TextEncoder().encode(canonicalJson(evidence as unknown as JsonValue)).byteLength
+      > MAX_DURABLE_TOOL_CATALOG_COMMITMENT_BYTES) {
+      return { kind: 'invalid', reason: 'catalog evidence exceeds its durable budget' }
+    }
+  } catch {
+    return { kind: 'invalid', reason: 'catalog evidence is not strict JSON' }
+  }
+  if (evidence.approvalCatalog.fingerprint !== fingerprintApprovalToolCatalogV1(evidence.approvalCatalog)
+    || evidence.classificationCatalog.fingerprint !== fingerprintDelegationToolCatalogV1(evidence.classificationCatalog)
+    || evidence.approvalCatalog.argumentSemanticsId !== evidence.classificationCatalog.argumentSemanticsId) {
+    return { kind: 'invalid', reason: 'catalog evidence fingerprints are invalid or unbound' }
+  }
+  return { kind: 'ok' }
+}
+
+/** Convert a live v1 action snapshot into its slim stored form (arguments referenced). */
+export function createStoredActionSnapshotV2(action: ActionSnapshot): ActionSnapshotV2 {
+  let semanticsValue: JsonValue
+  try {
+    semanticsValue = snapshotJson(action.semantics.value)
+    if (Buffer.byteLength(canonicalJson(semanticsValue), 'utf8') > MAX_STORED_ACTION_SEMANTICS_BYTES) {
+      throw new TypeError('stored action semantics exceed the inline budget')
+    }
+  } catch (cause: unknown) {
+    if (cause instanceof TypeError && (cause as Error).message === 'stored action semantics exceed the inline budget') throw cause
+    throw new TypeError('stored action semantics are not strict JSON')
+  }
+  const semantics = Object.freeze({ family: action.semantics.family, value: semanticsValue })
+  return Object.freeze({
+    version: 2,
+    kind: 'tool-call',
+    toolName: action.toolName,
+    arguments: toPayloadRef(action.arguments),
+    requestedPermissions: action.requestedPermissions,
+    projectorId: action.projectorId,
+    semantics,
+  })
+}
+
+/** Strict closed-set parse of a stored v2 action snapshot; throws on any violation. */
+export function parseStoredActionSnapshotV2(input: unknown): ActionSnapshotV2 {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('action must be an object')
+  const value = input as Record<string, unknown>
+  if (value.version !== 2) throw new TypeError('action.version must be 2')
+  if (value.kind !== 'tool-call') throw new TypeError('action.kind must be "tool-call"')
+  if (typeof value.toolName !== 'string' || value.toolName.length === 0) throw new TypeError('action.toolName must be a non-empty string')
+  if (typeof value.projectorId !== 'string' || value.projectorId.length === 0) throw new TypeError('action.projectorId must be a non-empty string')
+  if (!isPayloadRefV1(value.arguments)) throw new TypeError('action.arguments must be a payload reference')
+  if (value.semantics === null || typeof value.semantics !== 'object' || Array.isArray(value.semantics)) {
+    throw new TypeError('action.semantics must be an object')
+  }
+  const semantics = value.semantics as Record<string, unknown>
+  if (typeof semantics.family !== 'string' || semantics.family.length === 0) throw new TypeError('action.semantics.family must be a non-empty string')
+  let semanticsValue: { readonly family: string; readonly value: JsonValue }
+  try {
+    semanticsValue = Object.freeze({ family: semantics.family, value: snapshotJson(semantics.value) })
+  } catch {
+    throw new TypeError('action.semantics.value must be strict JSON')
+  }
+  // Deep-validate requestedPermissions exactly as the v1 action parser did, by
+  // running them through the shared action construction rules.
+  if (!Array.isArray(value.requestedPermissions)) throw new TypeError('action.requestedPermissions must be an array')
+  createActionSnapshot({
+    toolName: value.toolName,
+    arguments: {},
+    projectorId: value.projectorId,
+    semantics: { family: semantics.family, value: semantics.value },
+    requestedPermissions: value.requestedPermissions as RequestedPermission[],
+  })
+  return Object.freeze({
+    version: 2,
+    kind: 'tool-call',
+    toolName: value.toolName,
+    arguments: value.arguments,
+    requestedPermissions: value.requestedPermissions as readonly RequestedPermission[],
+    projectorId: value.projectorId,
+    semantics: semanticsValue,
+  })
+}
+
+export function isActionSnapshotV2(value: unknown): value is ActionSnapshotV2 {
+  try {
+    parseStoredActionSnapshotV2(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Single write-side constructor for v2 execution fact records. Takes the same
+ * live values as the v1 writer (full arguments, full catalog commitment, full
+ * action snapshot) and produces the slim durable form. Throws on invalid
+ * input; writers treat a throw as a projection failure (non-authorizing).
+ */
+export function createToolExecutionFactRecordV2(input: {
+  readonly session: SessionLifecycleIdentityV1
+  readonly request:
+    | {
+        readonly kind: 'model-tool-call'
+        readonly eventSeq: number
+        readonly eventType: 'tool/call'
+        readonly callId: string
+        readonly toolName: string
+      }
+    | {
+        readonly kind: 'code-dispatch'
+        readonly eventSeq: number
+        readonly eventType: 'tool/code-dispatch-start'
+        readonly rootCallId: string
+        readonly rootRequestEventSeq: number
+        readonly parentCallId: string
+        readonly parentRequestEventSeq: number
+        readonly callId: string
+        readonly toolName: string
+        readonly arguments: JsonValue
+      }
+  readonly catalogCommitment: DurableToolCatalogCommitmentV1
+  readonly toolClassification: {
+    readonly classificationCatalogFingerprint: string
+    readonly descriptor: DelegationToolDescriptorV1
+  }
+  readonly projection: {
+    readonly projectorId: string
+    readonly action: ActionSnapshot
+    readonly observedAt: number
+  }
+  readonly terminalEvidence?: ToolExecutionFactRecordV2['terminalEvidence']
+  readonly result?: ToolExecutionFactRecordV2['result']
+  readonly delegationReceipt?: DelegationReceiptFactRecordV1
+}): ToolExecutionFactRecordV2 {
+  const action = createStoredActionSnapshotV2(input.projection.action)
+  if (input.projection.projectorId !== action.projectorId) {
+    throw new TypeError('projection.projectorId does not match the action projector')
+  }
+  const actionHash = hashAction(input.projection.action)
+  const record: ToolExecutionFactRecordV2 = {
+    version: 2,
+    session: input.session,
+    request: input.request.kind === 'model-tool-call'
+      ? input.request
+      : Object.freeze({ ...input.request, arguments: toPayloadRef(input.request.arguments) }),
+    catalogEvidence: createDurableCatalogEvidenceV2(input.catalogCommitment),
+    toolClassification: input.toolClassification,
+    projection: Object.freeze({
+      projectorId: input.projection.projectorId,
+      action,
+      actionHash,
+      observedAt: input.projection.observedAt,
+    }),
+    ...input.terminalEvidence === undefined ? {} : { terminalEvidence: input.terminalEvidence },
+    ...input.result === undefined ? {} : { result: input.result },
+    ...input.delegationReceipt === undefined ? {} : { delegationReceipt: input.delegationReceipt },
+  }
+  return Object.freeze(record)
+}
+
+/**
+ * Re-derive the full v1 action snapshot from a stored v2 action and LIVE event
+ * arguments, requiring the stored payload reference to match the live value
+ * (sha256-compare equivalence with the v1 byte-for-byte stored/live compare).
+ * Returns undefined on any mismatch or malformed live value (fail closed).
+ */
+export function resolveStoredActionV2(stored: ActionSnapshotV2, liveArguments: unknown): ActionSnapshot | undefined {
+  if (!payloadRefMatchesLive(stored.arguments, liveArguments)) return undefined
+  try {
+    return createActionSnapshot({
+      toolName: stored.toolName,
+      arguments: liveArguments,
+      projectorId: stored.projectorId,
+      semantics: stored.semantics,
+      requestedPermissions: stored.requestedPermissions as RequestedPermission[],
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/** Legacy v1 execution fact shape (WP9-a: no longer written; v1 storage rows read as absent). */
 export interface ToolExecutionFactRecordV1 {
   readonly version: 1
   readonly session: SessionLifecycleIdentityV1
@@ -710,7 +1038,7 @@ export interface ParentSessionFactSnapshotV1 {
   readonly throughSeq: number
   readonly events: readonly SessionFactEventV1[]
   readonly delegationReceipts: readonly DelegationReceiptFactRecordV1[]
-  readonly executionFacts: readonly ToolExecutionFactRecordV1[]
+  readonly executionFacts: readonly ToolExecutionFactRecordV2[]
   readonly approvalSnapshots: readonly ApprovalSnapshotRecordV1[]
 }
 

@@ -5,7 +5,7 @@ import {
   genesisSealHash,
 } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealResultStatusV1, SealV1 } from '../domain/sealed-facts.js'
-import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
+import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
 
 /**
  * WP8-c step 1: the single seal/activity construction formula shared by the
@@ -29,7 +29,7 @@ import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../dom
  * is ambiguity and must never be resolved by picking one.
  */
 export function matchApprovalSnapshotsForExecutionV1(
-  record: ToolExecutionFactRecordV1,
+  record: ToolExecutionFactRecordV2,
   snapshots: readonly ApprovalSnapshotRecordV1[],
 ): readonly ApprovalSnapshotRecordV1[] {
   return Object.freeze(snapshots.filter(snapshot =>
@@ -50,7 +50,7 @@ export interface SealProjectionInputV1 {
   /** Canonical lifecycle fingerprint the chain is keyed under. */
   readonly lifecycleFingerprint: string
   /** Strictly parsed (shape V1) execution fact with its durable result attached. */
-  readonly record: ToolExecutionFactRecordV1
+  readonly record: ToolExecutionFactRecordV2
   /** Every approval snapshot for this lifecycle; uniqueness is enforced here. */
   readonly approvals: readonly ApprovalSnapshotRecordV1[]
   /** Previous chain-tip seal; undefined starts a new chain at genesis. */
@@ -75,7 +75,7 @@ export function projectSealForResultV1(input: SealProjectionInputV1): SealProjec
     // An approval snapshot is the only binding authority. No ask, ambiguity, or
     // capture/catalog mismatch can be promoted into the execution ledger.
     if (asked.length !== 1 || asked[0] === undefined) return undefined
-    const sameEpoch = prior?.catalog.commitment === record.catalogCommitment.fingerprint
+    const sameEpoch = prior?.catalog.commitment === record.catalogEvidence.commitment
     const epoch = prior === undefined ? 0 : sameEpoch ? prior.catalog.epoch : prior.catalog.epoch + 1
     const classification = activityClassificationFromDescriptorV1(record.toolClassification.descriptor)
     const status: SealResultStatusV1 = record.result.outcome.kind === 'sandbox-denied'
@@ -95,8 +95,8 @@ export function projectSealForResultV1(input: SealProjectionInputV1): SealProjec
       projectorId: record.projection.projectorId,
       catalog: {
         epoch,
-        headerEventSeq: record.catalogCommitment.requestHeaderEventSeq,
-        commitment: record.catalogCommitment.fingerprint,
+        headerEventSeq: record.catalogEvidence.requestHeaderEventSeq,
+        commitment: record.catalogEvidence.commitment,
       },
       wireSchemaFingerprint: record.toolClassification.descriptor.toolSchemaFingerprint,
       result: { eventSeq: record.result.eventSeq, status },

@@ -1,7 +1,7 @@
 import { SerialLanes } from './serial-lanes.js'
 import { projectSealForResultV1, matchApprovalSnapshotsForExecutionV1 } from './seal-projection.js'
-import { isApprovalSnapshotRecordV1, isToolExecutionFactRecordV1 } from '../dsh/storage-domain-fact-repositories.js'
-import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
+import { isApprovalSnapshotRecordV1, isToolExecutionFactRecordV2 } from '../dsh/storage-domain-fact-repositories.js'
+import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
 
@@ -201,10 +201,10 @@ export class SealBackfillRunner {
       }
       // Strict parse first, then strict ascending request-eventSeq order; the
       // ledger append requires chain-internal monotonic sourceSeq.
-      const records: ToolExecutionFactRecordV1[] = []
+      const records: ToolExecutionFactRecordV2[] = []
       for (const raw of rawExecutions) {
         signal.throwIfAborted()
-        if (!isToolExecutionFactRecordV1(raw)) return stopped('record-invalid')
+        if (!isToolExecutionFactRecordV2(raw)) return stopped('record-invalid')
         records.push(raw)
       }
       records.sort((left, right) => left.request.eventSeq - right.request.eventSeq)

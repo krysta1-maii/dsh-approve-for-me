@@ -46,14 +46,36 @@ export type {
 } from './domain/records.js'
 export {
   assertDossierShape,
+  createDurableCatalogEvidenceV2,
+  createStoredActionSnapshotV2,
+  createToolExecutionFactRecordV2,
   effectiveToolBindingFromSchemaV1,
   effectiveToolBindingsFromRequestHeaderV1,
   fingerprintDelegationToolCatalogV1,
+  isActionSnapshotV2,
   isApprovalEnvironmentEvidenceV1,
+  parseStoredActionSnapshotV2,
   recomputeDossierHash,
+  resolveStoredActionV2,
   validateDelegationToolCatalog,
+  validateDurableCatalogEvidenceV2,
   validateToolTrajectorySection,
+  MAX_STORED_ACTION_SEMANTICS_BYTES,
 } from './domain/dossier.js'
+export {
+  canonicalSha256,
+  isPayloadRefV1,
+  payloadRefMatchesLive,
+  toPayloadRef,
+  PAYLOAD_REF_INLINE_MAX_BYTES,
+  PAYLOAD_REF_PREVIEW_MAX_BYTES,
+} from './domain/payload-ref.js'
+export type {
+  PayloadRefDigestV1,
+  PayloadRefInlineV1,
+  PayloadRefOptions,
+  PayloadRefV1,
+} from './domain/payload-ref.js'
 export type {
   AgentDeliveryV1,
   ApprovalEnvironmentEvidenceV1,
@@ -98,7 +120,10 @@ export type {
   SourceVerifiedDossierV1,
   ToolAttemptOutcomeV1,
   ToolAttemptV1,
+  ActionSnapshotV2,
+  DurableCatalogEvidenceV2,
   ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
   ToolRequestKeyV1,
   ToolRequestRefV1,
   ToolTrajectorySectionV1,
@@ -300,6 +325,7 @@ export {
   DshStorageDomainApprovalSnapshotRepository,
   DshStorageDomainExecutionFactRepository,
   DshStorageDomainFactRepositories,
+  isToolExecutionFactRecordV2,
 } from './dsh/storage-domain-fact-repositories.js'
 export type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './dsh/storage-domain-decision-record.js'
 export type {

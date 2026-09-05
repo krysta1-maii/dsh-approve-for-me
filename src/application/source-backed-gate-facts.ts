@@ -7,13 +7,14 @@ import type {
   EventRefV1,
   PendingApprovalSectionV1,
   SourceVerifiedDossierV1,
-  ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
   ApprovalSnapshotRecordV1,
   DossierFreezeV1,
   ConfinementProjectionV1,
 } from '../domain/dossier.js'
 import type { ActionSnapshot } from '../domain/protocol.js'
-import { validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
+import { validateDurableCatalogEvidenceV2 } from '../domain/dossier.js'
+import { canonicalSha256 } from '../domain/payload-ref.js'
 import type { GateActionFactResolver, GateActionFacts } from './gate-pipeline.js'
 import { GateFailure } from './gate-failure.js'
 import type { GateFailureCode, GateFailureCorrelationV1 } from './gate-failure.js'
@@ -61,7 +62,14 @@ export interface SealedAskFactsInputV1 {
   readonly callId: string
   readonly toolName: string
   /** Capture-frozen execution fact for the exact current ask. */
-  readonly executionFact: ToolExecutionFactRecordV1
+  readonly executionFact: ToolExecutionFactRecordV2
+  /**
+   * Full v1 action snapshot re-derived from the live source-call arguments
+   * and verified against the stored actionHash (WP9-a: the stored record
+   * carries a payload reference, so the dossier-facing full action travels
+   * through this live-verified channel instead of the storage row).
+   */
+  readonly resolvedAction: ActionSnapshot
   /** Approval snapshot sidecar binding the ask to that execution fact. */
   readonly approvalSnapshot: ApprovalSnapshotRecordV1
   /** Ask-time approval/asked event ref (seq/type/turn/step). */
@@ -282,7 +290,8 @@ function classifySealed(value: unknown): ToolApprovalClassificationResult | unde
 export interface CurrentCatalogInForceInput {
   readonly recordedHeaderEventSeq: number
   readonly requestEventSeq: number
-  readonly wireSchemas: readonly unknown[]
+  /** WP9-a: sha256 over the canonical wire schemas stored on the fact record. */
+  readonly wireSchemasDigest: string
   readonly eventAt: (seq: number) => { readonly type: string; readonly data: unknown } | undefined
 }
 
@@ -294,15 +303,17 @@ export type CurrentCatalogInForceResult =
   | { readonly kind: 'intervening-header'; readonly seq: number }
 
 export function sealedCurrentCatalogInForce(input: CurrentCatalogInForceInput): CurrentCatalogInForceResult {
-  const { recordedHeaderEventSeq, requestEventSeq, wireSchemas, eventAt } = input
+  const { recordedHeaderEventSeq, requestEventSeq, wireSchemasDigest, eventAt } = input
   if (!Number.isSafeInteger(recordedHeaderEventSeq) || !Number.isSafeInteger(requestEventSeq)
     || recordedHeaderEventSeq < 0 || requestEventSeq < 0 || recordedHeaderEventSeq >= requestEventSeq) return { kind: 'invalid-range' }
   const header = eventAt(recordedHeaderEventSeq)
   if (header === undefined || header.type !== 'request/header') return { kind: 'header-missing' }
   const data = header.data as { header?: { tools?: unknown } } | undefined
   if (data === undefined || data.header === undefined) return { kind: 'header-missing' }
+  // WP9-a: sha256-compare equivalence with the v1 canonical byte-compare of the
+  // live header.tools against the stored wire schemas.
   try {
-    if (canonicalJson(data.header.tools) !== canonicalJson(wireSchemas)) return { kind: 'wire-schemas-mismatch' }
+    if (canonicalSha256(data.header.tools) !== wireSchemasDigest) return { kind: 'wire-schemas-mismatch' }
   } catch {
     return { kind: 'wire-schemas-mismatch' }
   }
@@ -441,8 +452,8 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     // WP4-b4-1a 审查 B1 (rule 6): the current action's frozen commitment must agree
     // with the sealed packet's catalogEpochs entry for the same header.
     const epochMatch = sealedCurrentCatalogEpochMatch({
-      recordedHeaderEventSeq: input.executionFact.catalogCommitment.requestHeaderEventSeq,
-      catalogCommitmentFingerprint: input.executionFact.catalogCommitment.fingerprint,
+      recordedHeaderEventSeq: input.executionFact.catalogEvidence.requestHeaderEventSeq,
+      catalogCommitmentFingerprint: input.executionFact.catalogEvidence.commitment,
       packetEpochs: read.facts.catalogEpochs,
     })
     if (epochMatch.kind !== 'ok') return debug('epoch-split-current', epochMatch)
@@ -491,7 +502,7 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     // than throw a secondary TypeError.
     const lifecycle = input.freeze?.parent
     const executionFact = input.executionFact
-    const catalogCommitment = executionFact?.catalogCommitment
+    const catalogCommitment = executionFact?.catalogEvidence
     const action = executionFact?.projection
     if (lifecycle === undefined || executionFact === undefined || catalogCommitment === undefined || action === undefined) return undefined
     const parentLifecycleFingerprint = canonicalJson({
@@ -502,7 +513,7 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     })
     const configurationFingerprint = fingerprintGateConfigurationV1(
       this.deps.reviewerConfigurationFingerprint ?? '',
-      catalogCommitment.fingerprint,
+      catalogCommitment.commitment,
     )
     if (this.deps.generation === undefined || this.deps.policyVersion === undefined || configurationFingerprint === undefined) return undefined
     return Object.freeze({
@@ -527,16 +538,22 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
       || approvalSnapshot.execution.actionHash !== executionFact.projection.actionHash
       || approvalSnapshot.execution.projectorId !== executionFact.projection.projectorId
       || approvalSnapshot.approvalAskedSeq !== input.approvalAsked.seq) return undefined
-    if (validateDurableToolCatalogCommitmentV1(executionFact.catalogCommitment).kind !== 'ok') return undefined
-    const descriptor = executionFact.catalogCommitment.approvalCatalog.descriptors.find(item => item.toolName === input.toolName)
+    if (validateDurableCatalogEvidenceV2(executionFact.catalogEvidence).kind !== 'ok') return undefined
+    // WP9-a: the full dossier-facing action arrives live-verified; bind it to
+    // the stored record by the actionHash commitment (equivalent to the v1
+    // stored-action usage, with storage tamper caught by the row digest).
+    if (hashAction(input.resolvedAction) !== executionFact.projection.actionHash
+      || input.resolvedAction.projectorId !== executionFact.projection.projectorId
+      || input.resolvedAction.toolName !== input.toolName) return undefined
+    const descriptor = executionFact.catalogEvidence.approvalCatalog.descriptors.find(item => item.toolName === input.toolName)
     if (descriptor === undefined) return undefined
     const classification = descriptor.classification
-    const sandbox = executionFact.projection.action.requestedPermissions.find(permission => permission.kind === 'sandbox')
+    const sandbox = input.resolvedAction.requestedPermissions.find(permission => permission.kind === 'sandbox')
     const requestedSandboxMode = sandbox?.scope === 'workspace-write' || sandbox?.scope === 'danger-full-access'
       ? sandbox.scope
       : undefined
     return Object.freeze({
-      action: executionFact.projection.action,
+      action: input.resolvedAction,
       classification,
       classificationCatalogFingerprint: executionFact.toolClassification.classificationCatalogFingerprint,
       approvalRequestId: input.approvalRequestId,
@@ -559,7 +576,7 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
   private carrier(input: SealedAskFactsInputV1): SealedCurrentCarrierV1 | undefined {
     const toolSchemaFingerprint = input.executionFact.toolClassification.descriptor.toolSchemaFingerprint
     if (typeof toolSchemaFingerprint !== 'string' || toolSchemaFingerprint.length === 0) return undefined
-    const catalogCommitmentFingerprint = input.executionFact.catalogCommitment.fingerprint
+    const catalogCommitmentFingerprint = input.executionFact.catalogEvidence.commitment
     if (typeof catalogCommitmentFingerprint !== 'string' || catalogCommitmentFingerprint.length === 0) return undefined
     if (!Number.isSafeInteger(input.freeze.throughSeq) || input.freeze.throughSeq < 0) return undefined
     return Object.freeze({

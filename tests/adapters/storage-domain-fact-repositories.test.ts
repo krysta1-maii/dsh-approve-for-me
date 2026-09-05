@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  canonicalJson,
+  canonicalSha256,
+  createActionSnapshot,
+  createToolExecutionFactRecordV2,
   DshStorageDomainApprovalSnapshotRepository,
   DshStorageDomainExecutionFactRepository,
   DshStorageDomainFactRepositories,
-  canonicalJson,
-  createActionSnapshot,
   hashAction,
 } from '../../src/index.js'
-import type { ApprovalSnapshotRecordV1, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV1 } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, JsonValue, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 const session: SessionLifecycleIdentityV1 = { sessionId: 'parent-1', sessionFormatVersion: 1, createdAt: 1_000, cwd: '/workspace' }
@@ -21,13 +23,14 @@ const executionAction = createActionSnapshot({
 })
 const executionActionHash = hashAction(executionAction)
 
-function execution(callId = 'call-1', eventSeq = 5): ToolExecutionFactRecordV1 {
-  return {
-    version: 1, session, catalogCommitment: commitment,
+function execution(callId = 'call-1', eventSeq = 5): ToolExecutionFactRecordV2 {
+  return createToolExecutionFactRecordV2({
+    session,
+    catalogCommitment: commitment,
     request: { kind: 'model-tool-call', eventSeq, eventType: 'tool/call', callId, toolName: 'bash' },
     toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0]! },
-    projection: { projectorId: effective.approval.descriptors[0]!.actionProjectorId, action: executionAction, actionHash: executionActionHash, observedAt: 1 },
-  }
+    projection: { projectorId: effective.approval.descriptors[0]!.actionProjectorId, action: executionAction, observedAt: 1 },
+  })
 }
 
 function approval(): ApprovalSnapshotRecordV1 {
@@ -55,6 +58,11 @@ function facility() {
 function repositories(storage: StorageDomainFacility) {
   const shared = new DshStorageDomainFactRepositories(storage)
   return { shared, executions: new DshStorageDomainExecutionFactRepository(shared), approvals: new DshStorageDomainApprovalSnapshotRepository(shared) }
+}
+
+/** Wrap a record exactly as the WP9-a row format v2 does. */
+function rowV2(record: unknown): unknown {
+  return { version: 2, digest: canonicalSha256(record), record }
 }
 
 describe('DshStorageDomainFactRepositories', () => {
@@ -94,17 +102,18 @@ describe('DshStorageDomainFactRepositories', () => {
   it('rejects incomplete execution snapshots before durable admission', async () => {
     const fake = facility()
     const { shared, executions } = repositories(fake.facility)
-    await expect(executions.create({ ...execution(), projection: { ...execution().projection, action: null } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), projection: { ...execution().projection, action: null } } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
     await expect(executions.create({ ...execution(), projection: { ...execution().projection, actionHash: `sha256:${'b'.repeat(64)}` } })).resolves.toBe('conflict')
     await expect(executions.create({
       ...execution(),
       request: { kind: 'code-dispatch', eventSeq: 5, eventType: 'tool/code-dispatch-start', callId: 'call-1', toolName: 'bash' },
-    } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
-    await expect(executions.create({ ...execution(), toolClassification: null } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
-    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'unknown' } } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), toolClassification: null } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), catalogEvidence: {} } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'unknown' } } } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
     await expect(executions.create({ ...execution(), result: { eventSeq: 5, eventType: 'tool/result', outcome: { kind: 'completed' } } })).resolves.toBe('conflict')
-    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'sandbox-denied', mode: 'invalid' } } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
-    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'sandbox-denied', mode: 'read-only', stderr: 'secret' } } } as unknown as ToolExecutionFactRecordV1)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'sandbox-denied', mode: 'invalid' } } } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
+    await expect(executions.create({ ...execution(), result: { eventSeq: 7, eventType: 'tool/result', outcome: { kind: 'sandbox-denied', mode: 'read-only', stderr: 'secret' } } } as unknown as ToolExecutionFactRecordV2)).resolves.toBe('conflict')
     await expect(executions.list(session)).resolves.toEqual([])
     await shared.drain()
   })
@@ -179,19 +188,15 @@ describe('DshStorageDomainFactRepositories', () => {
     const executionRows = fake.tables.get('executions')!
     const executionKey = [...executionRows.keys()].find(key => key.startsWith('e1_'))!
     const poisonedExecution = { ...execution(), request: null }
-    executionRows.set(executionKey, { version: 1, canonical: canonicalJson(poisonedExecution), record: poisonedExecution })
+    executionRows.set(executionKey, rowV2(poisonedExecution))
     const approvalRows = fake.tables.get('approval_snapshots')!
     const approvalKey = [...approvalRows.keys()].find(key => key.startsWith('a1_'))!
     const poisonedApproval = { ...approval(), environment: { version: 1, kind: 'native-header-only', unsupported: true } }
-    approvalRows.set(approvalKey, { version: 1, canonical: canonicalJson(poisonedApproval), record: poisonedApproval })
+    approvalRows.set(approvalKey, rowV2(poisonedApproval))
     await expect(executions.list(session)).resolves.toEqual([])
     await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
-    const malformedCommitmentExecution = { ...execution(), catalogCommitment: {} }
-    executionRows.set(executionKey, {
-      version: 1,
-      canonical: canonicalJson(malformedCommitmentExecution),
-      record: malformedCommitmentExecution,
-    })
+    const malformedEvidenceExecution = { ...execution(), catalogEvidence: {} }
+    executionRows.set(executionKey, rowV2(malformedEvidenceExecution))
     await expect(executions.list(session)).resolves.toEqual([])
     await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
     await expect(executions.create(execution())).resolves.toBe('conflict')
@@ -225,5 +230,102 @@ describe('DshStorageDomainFactRepositories', () => {
     await expect(unavailable.executions.list(session)).rejects.toMatchObject({ code: 'retryable-capability' })
     await unavailable.shared.drain()
     await expect(unavailable.approvals.create(approval())).resolves.toBe('conflict')
+  })
+})
+
+describe('WP9-a fact row v2 integrity', () => {
+  it('reads any tampered record field as absent (digest mismatch)', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    await executions.create(execution())
+    const rows = fake.tables.get('executions')!
+    const key = [...rows.keys()].find(k => k.startsWith('e1_'))!
+    const stored = rows.get(key) as { record: ToolExecutionFactRecordV2 }
+    // actionHash is bound at rest whenever the arguments ref is inline (the
+    // validator recomputes hashAction over the recovered full action), so a
+    // rewritten actionHash with a recomputed row digest still reads absent.
+    const tampered = {
+      ...stored.record,
+      projection: { ...stored.record.projection, actionHash: `sha256:${'d'.repeat(64)}` },
+    }
+    rows.set(key, rowV2(tampered))
+    await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).resolves.toBeUndefined()
+    await expect(executions.list(session)).resolves.toEqual([])
+    await shared.drain()
+  })
+
+  it('reads a row with a rewritten digest as absent (integrity failure)', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    await executions.create(execution())
+    const rows = fake.tables.get('executions')!
+    const key = [...rows.keys()].find(k => k.startsWith('e1_'))!
+    const stored = rows.get(key) as { version: 2; digest: string; record: unknown }
+    rows.set(key, { ...stored, digest: `sha256:${'c'.repeat(64)}` })
+    await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).rejects.toMatchObject({ code: 'integrity' })
+    await expect(executions.list(session)).rejects.toMatchObject({ code: 'integrity' })
+    await shared.drain()
+  })
+
+  it('never accepts legacy v1 rows (foreign version reads as absent)', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    await executions.create(execution())
+    const rows = fake.tables.get('executions')!
+    const key = [...rows.keys()].find(k => k.startsWith('e1_'))!
+    const v1Record = {
+      version: 1,
+      session,
+      catalogCommitment: commitment,
+      request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+      toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0]! },
+      projection: { projectorId: effective.approval.descriptors[0]!.actionProjectorId, action: executionAction, actionHash: executionActionHash, observedAt: 1 },
+    }
+    rows.set(key, { version: 1, canonical: canonicalJson(v1Record), record: v1Record })
+    await expect(executions.get({ session, callId: 'call-1', requestEventSeq: 5 })).rejects.toMatchObject({ code: 'integrity' })
+    await expect(executions.list(session)).rejects.toMatchObject({ code: 'integrity' })
+    // admission over a foreign row never succeeds or silently replaces it
+    await expect(executions.create(execution())).resolves.toBe('conflict')
+    await shared.drain()
+  })
+
+  it('bounds one 5MB-arguments execution record to a small durable row (size regression)', async () => {
+    const fake = facility()
+    const { shared, executions } = repositories(fake.facility)
+    const hugeArguments = { command: 'x'.repeat(5 * 1024 * 1024) } as JsonValue
+    const hugeAction = createActionSnapshot({
+      toolName: 'bash',
+      arguments: hugeArguments,
+      projectorId: effective.approval.descriptors[0]!.actionProjectorId,
+      semantics: { family: 'shell-process-v1', value: { operation: 'bash' } },
+    })
+    const record = createToolExecutionFactRecordV2({
+      session,
+      catalogCommitment: commitment,
+      request: {
+        kind: 'code-dispatch', eventSeq: 5, eventType: 'tool/code-dispatch-start',
+        rootCallId: 'root-1', rootRequestEventSeq: 1, parentCallId: 'root-1', parentRequestEventSeq: 2,
+        callId: 'call-1', toolName: 'bash', arguments: hugeArguments,
+      },
+      toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors[0]! },
+      projection: { projectorId: effective.approval.descriptors[0]!.actionProjectorId, action: hugeAction, observedAt: 1 },
+    })
+    await expect(executions.create(record)).resolves.toBe('created')
+    const rows = fake.tables.get('executions')!
+    const key = [...rows.keys()].find(k => k.startsWith('e1_'))!
+    const storedRow = rows.get(key)!
+    const storedBytes = Buffer.byteLength(JSON.stringify(storedRow), 'utf8')
+    expect(storedBytes).toBeLessThan(16 * 1024)
+    const persisted = await executions.get({ session, callId: 'call-1', requestEventSeq: 5 })
+    expect(persisted).toEqual(record)
+    expect(persisted!.request.kind).toBe('code-dispatch')
+    if (persisted!.request.kind === 'code-dispatch') {
+      expect(persisted!.request.arguments.kind).toBe('digest')
+      if (persisted!.request.arguments.kind === 'digest') {
+        expect(persisted!.request.arguments.bytes).toBeGreaterThan(5 * 1024 * 1024)
+      }
+    }
+    expect(persisted!.projection.action.arguments.kind).toBe('digest')
+    await shared.drain()
   })
 })

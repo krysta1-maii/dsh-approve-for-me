@@ -169,6 +169,10 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - **`sealBackfill`（默认 false）**：开启后，root 会话 turn/end 且无在途审批时，对未盖章旧执行记录做每 lifecycle 每进程一次的 background-once 补章 —— 逐条重做快照唯一绑定、live 事件再绑、projector 可解析性验证，用与 live 路径完全同一的构造纯函数（`seal-projection.ts`）造 seal 后 create-once 追加；任一失败整体停止，该 lifecycle 保持无章（永不自动放行）；新审批 run 或新 user/message 立即 abort。
 - 无章旧会话即使不迁移也永久走人工；backfill 只是给"证据齐全的旧会话"一条补账通路，绝不为兼容退化。
 
+## 四期：fact 记录格式 v2 瘦身（WP9-a 已实现）
+
+OOM 根治第一步：执行记录从 v1（全量 arguments + 每记录内嵌 catalog commitment + canonical 全文自校验的 2 倍冗余）瘦身为 v2 —— arguments/语义投影改内容寻址 `PayloadRefV1`（inline 有界预览或 sha256 digest）、catalog commitment 缩为 `DurableCatalogEvidenceV2`（分类/审批 catalog 指纹 + wireSchemasDigest）、行壳由 `{version, canonical, record}` 改为 `{version:2, digest, record}`（digest 取代 canonical 全文）。实测行体积（10 工具 catalog）：小参数 24.2KB→6.4KB（3.8x）；RCA 均值 150KB 参数 331KB→8.5KB（38.8x）；5MB 参数 10.5MB→8.5KB（1231x）。语义投影值仍内联但有界（>256KB 写入时 fail-closed），动作真实性在消费时由 live 事件参数经 payload-ref 校验重派生并与 actionHash 比对 —— 与 v1 逐字节比较在 sha256 碰撞 resistance 意义下等价。存储域中遗留的 v1 行**有意读作缺席**（fail-closed，行版本不符即整行拒读/拒写覆盖），不做迁移；旧数据已由 WP8 前的归档处置（`approve_for_me.retired-20260906`）。
+
 ## 一期已知限制（sealed-facts 阶段，选型说明）
 
 sealed-facts 一期（`feat/approval-ledger` 的 WP4/WP5）已落地，但以下是有意的阶段边界与可用性权衡，供读代码／做验收时对照：

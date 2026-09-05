@@ -3,6 +3,9 @@ import {
   DefaultDossierCompiler,
   DefaultPrincipalDelegationProjector,
   createActionSnapshot,
+  toPayloadRef,
+  createDurableCatalogEvidenceV2,
+  createStoredActionSnapshotV2,
   effectiveToolBindingFromSchemaV1,
   fingerprintApprovalToolCatalogV1,
   fingerprintDelegationToolCatalogV1,
@@ -78,15 +81,15 @@ function facts(overrides: Partial<ParentSessionFactSnapshotV1> = {}): ParentSess
     events: [],
     delegationReceipts: [],
     executionFacts: [{
-      version: 1,
-      catalogCommitment: commitment(),
+      version: 2,
+      catalogEvidence: createDurableCatalogEvidenceV2(commitment()),
       session,
       request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
       toolClassification: {
         classificationCatalogFingerprint: catalog().fingerprint,
         descriptor: { classification: 'ordinary', toolName: 'bash', toolSchemaFingerprint: bashToolSchemaFingerprint, classificationId: 'class-1' },
       },
-      projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action, actionHash: hashAction(action), observedAt: 1 },
+      projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: createStoredActionSnapshotV2(action), actionHash: hashAction(action), observedAt: 1 },
     }],
     approvalSnapshots: [{
       version: 1,
@@ -193,27 +196,27 @@ function multiEpochFacts(options: { historicalClassificationCatalogFingerprint?:
     delegationReceipts: [],
     executionFacts: [
       {
-        version: 1,
-        catalogCommitment: commitment(),
+        version: 2,
+        catalogEvidence: createDurableCatalogEvidenceV2(commitment()),
         session,
         request: { kind: 'model-tool-call', eventSeq: 7, eventType: 'tool/call', callId: 'call-0', toolName: 'bash' },
         toolClassification: {
           classificationCatalogFingerprint: options.historicalClassificationCatalogFingerprint ?? epochCatalogA.fingerprint,
           descriptor: epochCatalogA.descriptors[0]!,
         },
-        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: priorAction, actionHash: hashAction(priorAction), observedAt: 8 },
+        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: createStoredActionSnapshotV2(priorAction), actionHash: hashAction(priorAction), observedAt: 8 },
         result: { eventSeq: 8, eventType: 'tool/result', outcome: { kind: 'completed' } },
       },
       {
-        version: 1,
-        catalogCommitment: commitmentWithRead(),
+        version: 2,
+        catalogEvidence: createDurableCatalogEvidenceV2(commitmentWithRead()),
         session,
         request: { kind: 'model-tool-call', eventSeq: 21, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
         toolClassification: {
           classificationCatalogFingerprint: epochCatalogB.fingerprint,
           descriptor: epochCatalogB.descriptors[0]!,
         },
-        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: pendingAction, actionHash: hashAction(pendingAction), observedAt: 22 },
+        projection: { projectorId: 'dsh-approve-for-me/generic-raw-v1', action: createStoredActionSnapshotV2(pendingAction), actionHash: hashAction(pendingAction), observedAt: 22 },
       },
     ],
     approvalSnapshots: [{
@@ -374,7 +377,7 @@ describe('DefaultDossierCompiler', () => {
         {
           ...complete.executionFacts[0]!,
           request: { ...complete.executionFacts[0]!.request, eventSeq: 7, callId: 'call-0' },
-          projection: { ...complete.executionFacts[0]!.projection, action: priorAction, actionHash: hashAction(priorAction), observedAt: 8 },
+          projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(priorAction), actionHash: hashAction(priorAction), observedAt: 8 },
           result: { eventSeq: 8, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } },
         },
         { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 23 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 24 } },
@@ -420,12 +423,12 @@ describe('DefaultDossierCompiler', () => {
       executionFacts: [
         {
           ...multiTurn.executionFacts[0]!,
-          projection: { ...multiTurn.executionFacts[0]!.projection, action: deniedAction, actionHash: hashAction(deniedAction) },
+          projection: { ...multiTurn.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(deniedAction), actionHash: hashAction(deniedAction) },
           result: { eventSeq: 8, eventType: 'tool/result' as const, outcome: { kind: 'sandbox-denied' as const, mode: 'read-only' as const } },
         },
         {
           ...multiTurn.executionFacts[1]!,
-          projection: { ...multiTurn.executionFacts[1]!.projection, action: escalationAction, actionHash: hashAction(escalationAction) },
+          projection: { ...multiTurn.executionFacts[1]!.projection, action: createStoredActionSnapshotV2(escalationAction), actionHash: hashAction(escalationAction) },
         },
       ],
       approvalSnapshots: [{
@@ -467,13 +470,13 @@ describe('DefaultDossierCompiler', () => {
         {
           ...complete.executionFacts[0]!,
           request: { ...complete.executionFacts[0]!.request, eventSeq: 6, callId: 'call-denied' },
-          projection: { ...complete.executionFacts[0]!.projection, action: differentDeniedAction, actionHash: hashAction(differentDeniedAction), observedAt: 7 },
+          projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(differentDeniedAction), actionHash: hashAction(differentDeniedAction), observedAt: 7 },
           result: { eventSeq: 7, eventType: 'tool/result' as const, outcome: { kind: 'sandbox-denied' as const, mode: 'read-only' as const } },
         },
         {
           ...complete.executionFacts[0]!,
           request: { ...complete.executionFacts[0]!.request, eventSeq: 13 },
-          projection: { ...complete.executionFacts[0]!.projection, action: escalationAction, actionHash: hashAction(escalationAction), observedAt: 14 },
+          projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(escalationAction), actionHash: hashAction(escalationAction), observedAt: 14 },
         },
       ],
       approvalSnapshots: [{
@@ -496,7 +499,7 @@ describe('DefaultDossierCompiler', () => {
           ? { ...event, data: { ...(event.data as object), arguments: JSON.stringify(ordinaryPendingAction.arguments) } }
           : event),
       executionFacts: currentTurnDenial.executionFacts.map((fact, index) => index === 1
-        ? { ...fact, projection: { ...fact.projection, action: ordinaryPendingAction, actionHash: hashAction(ordinaryPendingAction) } }
+        ? { ...fact, projection: { ...fact.projection, action: createStoredActionSnapshotV2(ordinaryPendingAction), actionHash: hashAction(ordinaryPendingAction) } }
         : fact),
       approvalSnapshots: currentTurnDenial.approvalSnapshots.map(snapshot => ({
         ...snapshot, execution: { ...snapshot.execution, actionHash: hashAction(ordinaryPendingAction) },
@@ -519,7 +522,7 @@ describe('DefaultDossierCompiler', () => {
         return event
       }),
       executionFacts: denialHistory.executionFacts.map((fact, index) => index === 0
-        ? { ...fact, projection: { ...fact.projection, action: differentDeniedAction, actionHash: hashAction(differentDeniedAction) } }
+        ? { ...fact, projection: { ...fact.projection, action: createStoredActionSnapshotV2(differentDeniedAction), actionHash: hashAction(differentDeniedAction) } }
         : fact),
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: unrelatedDenial })).toMatchObject({
@@ -583,15 +586,15 @@ describe('DefaultDossierCompiler', () => {
       executionFacts: [
         {
           ...multiTurn.executionFacts[0]!,
-          catalogCommitment: delegationCommitment,
+          catalogEvidence: createDurableCatalogEvidenceV2(delegationCommitment),
           request: { ...multiTurn.executionFacts[0]!.request, toolName: 'subagent' },
           toolClassification: { classificationCatalogFingerprint: delegationCatalog.fingerprint, descriptor: delegationDescriptor },
-          projection: { ...multiTurn.executionFacts[0]!.projection, projectorId: delegatedAction.projectorId, action: delegatedAction, actionHash: hashAction(delegatedAction) },
+          projection: { ...multiTurn.executionFacts[0]!.projection, projectorId: delegatedAction.projectorId, action: createStoredActionSnapshotV2(delegatedAction), actionHash: hashAction(delegatedAction) },
           delegationReceipt: receipt,
         },
         {
           ...multiTurn.executionFacts[1]!,
-          catalogCommitment: delegationCommitment,
+          catalogEvidence: createDurableCatalogEvidenceV2(delegationCommitment),
           toolClassification: { classificationCatalogFingerprint: delegationCatalog.fingerprint, descriptor: delegationCatalog.descriptors[0]! },
         },
       ],
@@ -801,7 +804,7 @@ describe('DefaultDossierCompiler', () => {
         return event
       }).concat([{ seq: 9, time: 10, type: 'approval/asked' as const, retention: 'included' as const, data: { id: 'ask-1', callId: 'call-1', toolName: 'bash' } }]),
       executionFacts: [
-        { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 7, callId: 'call-0' }, projection: { ...complete.executionFacts[0]!.projection, action: firstAction, actionHash: hashAction(firstAction), observedAt: 8 } },
+        { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 7, callId: 'call-0' }, projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(firstAction), actionHash: hashAction(firstAction), observedAt: 8 } },
         { ...complete.executionFacts[0]!, request: { ...complete.executionFacts[0]!.request, eventSeq: 8 }, projection: { ...complete.executionFacts[0]!.projection, observedAt: 9 } },
       ],
       approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, approvalAskedSeq: 9, execution: { ...complete.approvalSnapshots[0]!.execution, requestEventSeq: 8 } }],
@@ -829,7 +832,7 @@ describe('DefaultDossierCompiler', () => {
       ],
       executionFacts: [
         twoPending.executionFacts[0]!,
-        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, eventSeq: 8 }, projection: { ...twoPending.executionFacts[0]!.projection, action: secondFirstAction, actionHash: hashAction(secondFirstAction), observedAt: 9 } },
+        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, eventSeq: 8 }, projection: { ...twoPending.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(secondFirstAction), actionHash: hashAction(secondFirstAction), observedAt: 9 } },
         { ...twoPending.executionFacts[1]!, request: { ...twoPending.executionFacts[1]!.request, eventSeq: 9 }, projection: { ...twoPending.executionFacts[1]!.projection, observedAt: 10 } },
       ],
       approvalSnapshots: [{ ...twoPending.approvalSnapshots[0]!, approvalAskedSeq: 10, execution: { ...twoPending.approvalSnapshots[0]!.execution, requestEventSeq: 9 } }],
@@ -883,7 +886,7 @@ describe('DefaultDossierCompiler', () => {
         return event
       }),
       executionFacts: [
-        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, callId: 'call-1', toolName: 'read' }, toolClassification: { classificationCatalogFingerprint: hash('d'), descriptor: readDescriptor }, projection: { ...twoPending.executionFacts[0]!.projection, action: firstReadAction, actionHash: hashAction(firstReadAction) } },
+        { ...twoPending.executionFacts[0]!, request: { ...twoPending.executionFacts[0]!.request, callId: 'call-1', toolName: 'read' }, toolClassification: { classificationCatalogFingerprint: hash('d'), descriptor: readDescriptor }, projection: { ...twoPending.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(firstReadAction), actionHash: hashAction(firstReadAction) } },
         { ...twoPending.executionFacts[1]!, toolClassification: { ...twoPending.executionFacts[1]!.toolClassification, classificationCatalogFingerprint: hash('d') } },
       ],
     }
@@ -1043,13 +1046,13 @@ describe('DefaultDossierCompiler', () => {
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const unsupportedExecutionVersion = {
       ...complete,
-      executionFacts: [{ ...complete.executionFacts[0]!, version: 2 }],
+      executionFacts: [{ ...complete.executionFacts[0]!, version: 3 }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: unsupportedExecutionVersion as ParentSessionFactSnapshotV1 }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
     const unsupportedApprovalSnapshotVersion = {
       ...complete,
-      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, version: 2 }],
+      approvalSnapshots: [{ ...complete.approvalSnapshots[0]!, version: 3 }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: unsupportedApprovalSnapshotVersion as ParentSessionFactSnapshotV1 }))
       .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
@@ -1069,14 +1072,16 @@ describe('DefaultDossierCompiler', () => {
       ...complete,
       executionFacts: [{ ...complete.executionFacts[0]!, projection: { ...complete.executionFacts[0]!.projection, actionHash: hash('f') } }],
     }
+    // WP9-a: a tampered actionHash fails v2 rest-validation, so the poisoned
+    // execution fact reads as absent — still fail-closed, reason updated.
     expect(new DefaultDossierCompiler(deps).compile({ facts: corruptedActionHash }))
-      .toEqual({ kind: 'incomplete', reason: 'missing-required-execution-fact' })
+      .toEqual({ kind: 'incomplete', reason: 'missing-required-projection' })
     const mismatchedActionTool = createActionSnapshot({ toolName: 'read', arguments: { command: 'pwd' } })
     const crossToolProjection = {
       ...complete,
       executionFacts: [{
         ...complete.executionFacts[0]!,
-        projection: { ...complete.executionFacts[0]!.projection, action: mismatchedActionTool, actionHash: hashAction(mismatchedActionTool) },
+        projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(mismatchedActionTool), actionHash: hashAction(mismatchedActionTool) },
       }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: crossToolProjection }))
@@ -1086,7 +1091,7 @@ describe('DefaultDossierCompiler', () => {
       ...complete,
       executionFacts: [{
         ...complete.executionFacts[0]!,
-        projection: { ...complete.executionFacts[0]!.projection, action: mismatchedActionArguments, actionHash: hashAction(mismatchedActionArguments) },
+        projection: { ...complete.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(mismatchedActionArguments), actionHash: hashAction(mismatchedActionArguments) },
       }],
     }
     expect(new DefaultDossierCompiler(deps).compile({ facts: crossArgumentsProjection }))
@@ -1153,7 +1158,7 @@ describe('DefaultDossierCompiler', () => {
         ...priorClosedStep.events.slice(5).map(event => ({ ...event, seq: event.seq + 4, time: event.time + 4, data: event.type === 'assistant/chunk' || event.type === 'assistant/message' || event.type === 'tool/call' ? { ...(event.data as object), turn: 1, step: 1 } : event.data })),
       ],
       executionFacts: [
-        { ...priorClosedStep.executionFacts[0]!, request: { ...priorClosedStep.executionFacts[0]!.request, eventSeq: 5, callId: 'call-0' }, projection: { ...priorClosedStep.executionFacts[0]!.projection, action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } }), actionHash: hashAction(createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })), observedAt: 6 }, result: { eventSeq: 6, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } } },
+        { ...priorClosedStep.executionFacts[0]!, request: { ...priorClosedStep.executionFacts[0]!.request, eventSeq: 5, callId: 'call-0' }, projection: { ...priorClosedStep.executionFacts[0]!.projection, action: createStoredActionSnapshotV2(createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })), actionHash: hashAction(createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } })), observedAt: 6 }, result: { eventSeq: 6, eventType: 'tool/result' as const, outcome: { kind: 'completed' as const } } },
         { ...priorClosedStep.executionFacts[0]!, request: { ...priorClosedStep.executionFacts[0]!.request, eventSeq: 13 }, projection: { ...priorClosedStep.executionFacts[0]!.projection, observedAt: 14 } },
       ],
       approvalSnapshots: [{ ...priorClosedStep.approvalSnapshots[0]!, approvalAskedSeq: 14, execution: { ...priorClosedStep.approvalSnapshots[0]!.execution, requestEventSeq: 13 } }],
@@ -1259,20 +1264,20 @@ describe('DefaultDossierCompiler', () => {
       delegationReceipts: [],
       executionFacts: [
         {
-          version: 1,
-          catalogCommitment: ptcCommitment,
+          version: 2,
+          catalogEvidence: createDurableCatalogEvidenceV2(ptcCommitment),
           session,
           request: { kind: 'model-tool-call', eventSeq: 6, eventType: 'tool/call', callId: 'root-1', toolName: 'run_code' },
           toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[0]! },
-          projection: { projectorId: rootAction.projectorId, action: rootAction, actionHash: hashAction(rootAction), observedAt: 7 },
+          projection: { projectorId: rootAction.projectorId, action: createStoredActionSnapshotV2(rootAction), actionHash: hashAction(rootAction), observedAt: 7 },
         },
         {
-          version: 1,
-          catalogCommitment: ptcCommitment,
+          version: 2,
+          catalogEvidence: createDurableCatalogEvidenceV2(ptcCommitment),
           session,
-          request: { kind: 'code-dispatch', eventSeq: 7, eventType: 'tool/code-dispatch-start', rootCallId: 'root-1', rootRequestEventSeq: 6, parentCallId: 'root-1', parentRequestEventSeq: 6, callId: 'root-1:code:1', toolName: 'bash', arguments: subArguments },
+          request: { kind: 'code-dispatch', eventSeq: 7, eventType: 'tool/code-dispatch-start', rootCallId: 'root-1', rootRequestEventSeq: 6, parentCallId: 'root-1', parentRequestEventSeq: 6, callId: 'root-1:code:1', toolName: 'bash', arguments: toPayloadRef(subArguments) },
           toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[1]! },
-          projection: { projectorId: subAction.projectorId, action: subAction, actionHash: hashAction(subAction), observedAt: 8 },
+          projection: { projectorId: subAction.projectorId, action: createStoredActionSnapshotV2(subAction), actionHash: hashAction(subAction), observedAt: 8 },
         },
       ],
       approvalSnapshots: [{
@@ -1332,12 +1337,12 @@ describe('DefaultDossierCompiler', () => {
         { ...ptcFacts.executionFacts[0]!, result: { eventSeq: 9, eventType: 'tool/result', outcome: { kind: 'completed' } } },
         { ...ptcFacts.executionFacts[1]!, result: { eventSeq: 8, eventType: 'tool/code-dispatch', outcome: { kind: 'tool-error' } } },
         {
-          version: 1,
-          catalogCommitment: ptcCommitment,
+          version: 2,
+          catalogEvidence: createDurableCatalogEvidenceV2(ptcCommitment),
           session,
           request: { kind: 'model-tool-call', eventSeq: 18, eventType: 'tool/call', callId: 'native-2', toolName: 'bash' },
           toolClassification: { classificationCatalogFingerprint: codeCatalog.fingerprint, descriptor: codeCatalog.descriptors[1]! },
-          projection: { projectorId: targetAction.projectorId, action: targetAction, actionHash: hashAction(targetAction), observedAt: 19 },
+          projection: { projectorId: targetAction.projectorId, action: createStoredActionSnapshotV2(targetAction), actionHash: hashAction(targetAction), observedAt: 19 },
         },
       ],
       approvalSnapshots: [{

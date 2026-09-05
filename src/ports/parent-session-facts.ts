@@ -2,7 +2,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {
   ApprovalSnapshotRecordV1,
   ParentSessionFactSnapshotV1,
-  ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
 } from '../domain/dossier.js'
 
 /**
@@ -20,7 +20,7 @@ export interface ParentSessionFactSource {
     readonly approvalRequestId: string
     readonly callId: string
     readonly toolName: string
-    readonly executionFacts: readonly ToolExecutionFactRecordV1[]
+    readonly executionFacts: readonly ToolExecutionFactRecordV2[]
     readonly approvalSnapshots: readonly ApprovalSnapshotRecordV1[]
     readonly signal?: AbortSignal
   }): ParentSessionFactSnapshotV1 | undefined

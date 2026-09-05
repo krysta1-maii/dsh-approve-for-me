@@ -14,6 +14,9 @@ import { InMemoryExactDenialBreaker } from '../../src/index.js'
 import { createSealedDossierCompiler } from '../../src/application/sealed-dossier-compiler.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { createActionSnapshot, hashAction } from '../../src/domain/protocol.js'
+import { createToolExecutionFactRecordV2 } from '../../src/domain/dossier.js'
+import type { ToolExecutionFactRecordV2 } from '../../src/domain/dossier.js'
+import { canonicalSha256 } from '../../src/domain/payload-ref.js'
 import type { SealedDossierCurrentFactsV1, CompileSealed } from '../../src/application/sealed-dossier-compiler.js'
 import type { SealedAskFactsInputV1 } from '../../src/application/source-backed-gate-facts.js'
 import type { SealedParentSessionFactsV1, SealedFactsReadResult } from '../../src/dsh/parent-session-fact-source.js'
@@ -100,14 +103,13 @@ function validAskInput(userAgent: Agent = agent, overrides: Partial<SealedAskFac
   const effective = createDshAlpha2EffectiveCatalog(schemas)
   const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
   const session = { sessionId: 'session-1', sessionFormatVersion: 0, createdAt: 1_000, cwd: '/workspace' }
-  const executionFact = {
-    version: 1 as const,
+  const executionFact: ToolExecutionFactRecordV2 = createToolExecutionFactRecordV2({
     catalogCommitment: commitment,
     session,
-    request: { kind: 'model-tool-call' as const, eventSeq: 5, eventType: 'tool/call' as const, callId: 'call-1', toolName: 'bash' },
+    request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
     toolClassification: { classificationCatalogFingerprint, descriptor: effective.dossier.descriptors[0]! },
-    projection: { projectorId: action.projectorId, action, actionHash: hashAction(action), observedAt: 1_000 },
-  }
+    projection: { projectorId: action.projectorId, action, observedAt: 1_000 },
+  })
   const approvalSnapshot = {
     version: 1 as const,
     session,
@@ -123,7 +125,7 @@ function validAskInput(userAgent: Agent = agent, overrides: Partial<SealedAskFac
     currentStep: 0,
     frozenAt: 1_007,
   }
-  return { agent: userAgent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', executionFact, approvalSnapshot, approvalAsked: { seq: 6, type: 'approval/asked', turn: 1, step: 0 }, freeze, requester: { effectiveDelegationDepth: 0 }, ...overrides }
+  return { agent: userAgent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', executionFact, approvalSnapshot, resolvedAction: action, approvalAsked: { seq: 6, type: 'approval/asked', turn: 1, step: 0 }, freeze, requester: { effectiveDelegationDepth: 0 }, ...overrides }
 }
 
 function resolver() {
@@ -379,13 +381,15 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
   })
 })
 
-describe('sealedCurrentCatalogInForce (WP4-b4-1a 审查 B1/S-1)', () => {
+describe('sealedCurrentCatalogInForce (WP4-b4-1a 审查 B1/S-1, WP9-a digest compare)', () => {
   const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
   const header = { type: 'request/header' as const, data: { header: { tools: schemas } } }
   const base = {
     recordedHeaderEventSeq: 0,
     requestEventSeq: 5,
-    wireSchemas: schemas,
+    // WP9-a: the live wire schemas compare as a sha256 digest against the value
+    // stored on the fact record (canonicalSha256 of the exact same array).
+    wireSchemasDigest: canonicalSha256(schemas),
   }
 
   it('passes when the bound header is in force and no later header intervenes', () => {

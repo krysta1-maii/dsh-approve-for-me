@@ -16,11 +16,13 @@ import type {
 import {
   effectiveToolBindingsFromRequestHeaderV1,
   isApprovalEnvironmentEvidenceV1,
+  resolveStoredActionV2,
   sealSourceVerifiedDossier,
   validateDelegationToolCatalog,
-  validateDurableToolCatalogCommitmentV1,
+  validateDurableCatalogEvidenceV2,
   validateToolTrajectorySection,
 } from '../domain/dossier.js'
+import { payloadRefMatchesLive } from '../domain/payload-ref.js'
 import { hashAction } from '../domain/protocol.js'
 import type { ActionSnapshot } from '../domain/protocol.js'
 
@@ -57,12 +59,17 @@ function validPrincipalSession(session: ParentSessionFactSnapshotV1['session']):
     && (session.parentSessionId === undefined || (typeof session.parentSessionId === 'string' && session.parentSessionId.length > 0))
 }
 
-function actionArgumentsMatchCall(actionArguments: JsonValue, rawArguments: unknown): boolean {
+/**
+ * Normalize raw live call arguments (a JSON string for tool/call, an object
+ * for code-dispatch) into strict JSON. Undefined on any parse failure.
+ * WP9-a: this replaces the v1 actionArgumentsMatchCall helper; the stored v2
+ * payload reference is compared against the normalized live value instead.
+ */
+function normalizedArguments(rawArguments: unknown): JsonValue | undefined {
   try {
-    const parsed = typeof rawArguments === 'string' ? parseUniqueJson(rawArguments) : snapshotJson(rawArguments)
-    return canonicalJson(parsed) === canonicalJson(actionArguments)
+    return typeof rawArguments === 'string' ? parseUniqueJson(rawArguments) : snapshotJson(rawArguments)
   } catch {
-    return false
+    return undefined
   }
 }
 
@@ -427,13 +434,12 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       && item.request.toolName === facts.approvalBinding.toolName)
     if (executions.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     const execution = executions[0]!
-    if (execution.version !== 1
-      || validateDurableToolCatalogCommitmentV1(execution.catalogCommitment).kind !== 'ok'
-      || canonicalJson(execution.catalogCommitment.classificationCatalog) !== canonicalJson(facts.eventProjection.classificationCatalog)
+    if (execution.version !== 2
+      || validateDurableCatalogEvidenceV2(execution.catalogEvidence).kind !== 'ok'
+      || canonicalJson(execution.catalogEvidence.classificationCatalog) !== canonicalJson(facts.eventProjection.classificationCatalog)
       || !sameLifecycle(execution.session, facts.session)
       || execution.projection.action.toolName !== execution.request.toolName
-      || execution.projection.projectorId !== execution.projection.action.projectorId
-      || execution.projection.actionHash !== hashAction(execution.projection.action)) {
+      || execution.projection.projectorId !== execution.projection.action.projectorId) {
       return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
     }
     if (this.deps.semanticActionBindings !== undefined) {
@@ -498,10 +504,19 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       }
       nativeRootByEventSeq.set(event.seq, event)
     }
+    // WP9-a: the stored action carries a payload reference. The full action is
+    // re-derived from the LIVE call arguments and must hash to the stored
+    // actionHash — equivalent to the v1 checks (stored-action hash recompute +
+    // stored-vs-live arguments byte compare), because a payload-ref match is
+    // sha256(canonicalJson(live)) equality with the write-time canonical bytes.
+    const currentLiveArguments = callData === undefined ? undefined : normalizedArguments(callData.arguments)
+    const resolvedAction = currentLiveArguments === undefined
+      ? undefined
+      : resolveStoredActionV2(execution.projection.action, currentLiveArguments)
     let currentPositionEvent = callEvent
     if (execution.request.kind === 'model-tool-call') {
       if (callData?.callId !== execution.request.callId || callData.name !== execution.request.toolName
-        || !actionArgumentsMatchCall(execution.projection.action.arguments, callData.arguments)) {
+        || resolvedAction === undefined || hashAction(resolvedAction) !== execution.projection.actionHash) {
         return { kind: 'incomplete', reason: 'missing-required-execution-event' }
       }
     } else {
@@ -514,8 +529,9 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         || rootData?.callId !== execution.request.rootCallId || rootData.name !== 'run_code'
         || parent === undefined || (parent.type === 'tool/call' ? parentData?.callId : parentData?.subCallId) !== execution.request.parentCallId
         || root === undefined || root.seq >= callEvent.seq || parent.seq >= callEvent.seq
-        || !actionArgumentsMatchCall(execution.projection.action.arguments, callData.arguments)
-        || canonicalJson(execution.request.arguments) !== canonicalJson(callData.arguments)) {
+        || resolvedAction === undefined || hashAction(resolvedAction) !== execution.projection.actionHash
+        || currentLiveArguments === undefined
+        || !payloadRefMatchesLive(execution.request.arguments, currentLiveArguments)) {
         return { kind: 'incomplete', reason: 'missing-required-execution-event' }
       }
       currentPositionEvent = root
@@ -608,24 +624,31 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
       }
       // A historical call keeps the classification of its own catalog epoch;
       // it is never reinterpreted through the catalog of the pending call.
-      const descriptors = candidate.catalogCommitment.classificationCatalog.descriptors.filter(item => item.toolName === toolName)
+      const descriptors = candidate.catalogEvidence.classificationCatalog.descriptors.filter(item => item.toolName === toolName)
       if (descriptors.length !== 1) return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       const descriptor = descriptors[0]!
+      // WP9-a: full action re-derived from this call's live arguments; a
+      // payload-ref match plus the actionHash recompute is equivalent to the
+      // v1 stored-action hash check plus the stored-vs-live arguments compare.
+      const candidateLiveArguments = normalizedArguments(data?.arguments)
+      const candidateAction = candidateLiveArguments === undefined
+        ? undefined
+        : resolveStoredActionV2(candidate.projection.action, candidateLiveArguments)
       const requestMatches = requestKind === 'model-tool-call'
         ? candidate.request.kind === 'model-tool-call' && candidate.request.eventType === 'tool/call'
         : candidate.request.kind === 'code-dispatch' && candidate.request.eventType === 'tool/code-dispatch-start'
           && candidate.request.rootCallId === data?.rootCallId && candidate.request.parentCallId === data.parentCallId
           && candidate.request.rootRequestEventSeq === assistantRootEventSeq
-          && canonicalJson(candidate.request.arguments) === canonicalJson(data.arguments)
-      if (candidate.version !== 1 || !requestMatches
-        || validateDurableToolCatalogCommitmentV1(candidate.catalogCommitment).kind !== 'ok'
+          && candidateLiveArguments !== undefined
+          && payloadRefMatchesLive(candidate.request.arguments, candidateLiveArguments)
+      if (candidate.version !== 2 || !requestMatches
+        || validateDurableCatalogEvidenceV2(candidate.catalogEvidence).kind !== 'ok'
         || !sameLifecycle(candidate.session, facts.session) || candidate.projection.action.toolName !== toolName
         || candidate.projection.projectorId !== candidate.projection.action.projectorId
-        || candidate.projection.actionHash !== hashAction(candidate.projection.action)
+        || candidateAction === undefined || hashAction(candidateAction) !== candidate.projection.actionHash
         || candidate.projection.observedAt !== event.time
-        || candidate.toolClassification.classificationCatalogFingerprint !== candidate.catalogCommitment.classificationCatalog.fingerprint
-        || canonicalJson(candidate.toolClassification.descriptor) !== canonicalJson(descriptor)
-        || !actionArgumentsMatchCall(candidate.projection.action.arguments, data?.arguments)) {
+        || candidate.toolClassification.classificationCatalogFingerprint !== candidate.catalogEvidence.classificationCatalog.fingerprint
+        || canonicalJson(candidate.toolClassification.descriptor) !== canonicalJson(descriptor)) {
         return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
       }
       const outcome: ToolAttemptV1['outcome'] | undefined = candidate.result === undefined
@@ -650,7 +673,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         const key = canonicalJson(receipt as unknown as JsonValue)
         if (descriptor.classification !== 'delegation' || !receiptKeys.includes(key) || usedReceiptKeys.has(key)
           || !sameLifecycle(receipt.session, facts.session) || receipt.requestEventSeq !== event.seq
-          || receipt.callId !== callId || receipt.classificationCatalogFingerprint !== candidate.catalogCommitment.classificationCatalog.fingerprint
+          || receipt.callId !== callId || receipt.classificationCatalogFingerprint !== candidate.catalogEvidence.classificationCatalog.fingerprint
           || receipt.projectorId !== descriptor.projectorId || receipt.resultEvent.seq !== candidate.result?.eventSeq
           || receipt.resultEvent.type !== candidate.result?.eventType) {
           return { kind: 'incomplete', reason: 'missing-required-execution-fact' }
@@ -791,7 +814,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
     // carried on a validated execution fact; a legitimate mid-session catalog
     // change adds an epoch instead of invalidating the catalogs before it.
     const epochCatalogs = [...new Map(facts.executionFacts.map(item =>
-      [item.catalogCommitment.classificationCatalog.fingerprint, item.catalogCommitment.classificationCatalog] as const,
+      [item.catalogEvidence.classificationCatalog.fingerprint, item.catalogEvidence.classificationCatalog] as const,
     )).values()]
     if (requestHeaders?.some(header => {
       const historicalTools = effectiveToolBindingsFromRequestHeaderV1(header)
@@ -860,10 +883,10 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
           // trajectory, so reviewers can see exactly where the tool catalog
           // evolved and which classification governed each historical attempt.
           catalogEpochs: Object.freeze([...new Map(projected.map(item =>
-            [item.candidate.catalogCommitment.fingerprint, Object.freeze({
-              requestHeaderEventSeq: item.candidate.catalogCommitment.requestHeaderEventSeq,
-              commitmentFingerprint: item.candidate.catalogCommitment.fingerprint,
-              classificationCatalogFingerprint: item.candidate.catalogCommitment.classificationCatalog.fingerprint,
+            [item.candidate.catalogEvidence.commitment, Object.freeze({
+              requestHeaderEventSeq: item.candidate.catalogEvidence.requestHeaderEventSeq,
+              commitmentFingerprint: item.candidate.catalogEvidence.commitment,
+              classificationCatalogFingerprint: item.candidate.catalogEvidence.classificationCatalog.fingerprint,
             })] as const,
           )).values()].sort((left, right) => left.requestHeaderEventSeq - right.requestHeaderEventSeq)),
         }),
@@ -882,7 +905,7 @@ export class DefaultDossierCompiler implements GuardianDossierCompiler {
         approvalRequestId: facts.approvalBinding.approvalRequestId,
         callId: execution.request.callId,
         toolName: execution.request.toolName,
-        action: execution.projection.action,
+        action: resolvedAction,
         actionHash: execution.projection.actionHash,
         projectorId: execution.projection.projectorId,
         confinement: { kind: 'unconfined-composition' },

@@ -3,7 +3,8 @@ import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionRes
 import { createActionSnapshot, hashAction } from '../domain/protocol.js'
 import { canonicalJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
-import type { ApprovalSnapshotRecordV1, DelegationReceiptFactRecordV1, PrincipalDelegationReceiptV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
+import { createToolExecutionFactRecordV2 } from '../domain/dossier.js'
+import type { ApprovalSnapshotRecordV1, DelegationReceiptFactRecordV1, PrincipalDelegationReceiptV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
 import type { DshAlpha2EffectiveCatalog } from './effective-tool-catalog.js'
 import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -60,7 +61,7 @@ function codeDispatchSignature(event: EventLike): string | undefined {
   }
 }
 
-type SandboxDenialOutcome = Extract<NonNullable<ToolExecutionFactRecordV1['result']>['outcome'], { readonly kind: 'sandbox-denied' }>
+type SandboxDenialOutcome = Extract<NonNullable<ToolExecutionFactRecordV2['result']>['outcome'], { readonly kind: 'sandbox-denied' }>
 
 function sandboxMode(value: unknown): SandboxDenialOutcome['mode'] | undefined {
   return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access' ? value : undefined
@@ -114,7 +115,7 @@ function sandboxDenialOutcome(
 
 interface TerminalEvidence {
   readonly isError: boolean
-  readonly outcome: NonNullable<ToolExecutionFactRecordV1['result']>['outcome']
+  readonly outcome: NonNullable<ToolExecutionFactRecordV2['result']>['outcome']
   readonly receipt?: PrincipalDelegationReceiptV1
 }
 
@@ -245,46 +246,54 @@ export class DshExecutionFactProjectionBridge {
         return
       }
     }
-    const record: ToolExecutionFactRecordV1 = Object.freeze({
-      version: 1,
-      session: Object.freeze({
-        sessionId,
-        sessionFormatVersion: version as number,
-        createdAt: createdAt as number,
-        ...(cwd === undefined ? {} : { cwd }),
-      }),
-      request: event.type === 'tool/call'
-        ? Object.freeze({
-            kind: 'model-tool-call' as const,
-            eventSeq: event.seq,
-            eventType: 'tool/call' as const,
-            callId,
-            toolName: exec.name,
-          })
-        : Object.freeze({
-            kind: 'code-dispatch' as const,
-            eventSeq: event.seq,
-            eventType: 'tool/code-dispatch-start' as const,
-            rootCallId: rootCallId!,
-            rootRequestEventSeq: effective.execution.rootRequestEventSeq,
-            parentCallId: parentCallId!,
-            parentRequestEventSeq: effective.execution.parentRequestEventSeq,
-            callId,
-            toolName: exec.name,
-            arguments: eventData.arguments as JsonValue,
-          }),
-      catalogCommitment: effective.commitment,
-      toolClassification: Object.freeze({
-        classificationCatalogFingerprint: catalog.fingerprint,
-        descriptor,
-      }),
-      projection: Object.freeze({
-        projectorId: action.projectorId,
-        action,
-        actionHash: hashAction(action),
-        observedAt: event.time,
-      }),
-    })
+    // WP9-a: the record is stored slim (payload refs + catalog digests). A
+    // build failure (non-JSON arguments, oversize semantics) is a projection
+    // failure: no record is created and the execution stays non-authorizing,
+    // exactly like a projector throw.
+    let record: ToolExecutionFactRecordV2
+    try {
+      record = createToolExecutionFactRecordV2({
+        session: Object.freeze({
+          sessionId,
+          sessionFormatVersion: version as number,
+          createdAt: createdAt as number,
+          ...(cwd === undefined ? {} : { cwd }),
+        }),
+        request: event.type === 'tool/call'
+          ? Object.freeze({
+              kind: 'model-tool-call' as const,
+              eventSeq: event.seq,
+              eventType: 'tool/call' as const,
+              callId,
+              toolName: exec.name,
+            })
+          : Object.freeze({
+              kind: 'code-dispatch' as const,
+              eventSeq: event.seq,
+              eventType: 'tool/code-dispatch-start' as const,
+              rootCallId: rootCallId!,
+              rootRequestEventSeq: effective.execution.rootRequestEventSeq,
+              parentCallId: parentCallId!,
+              parentRequestEventSeq: effective.execution.parentRequestEventSeq,
+              callId,
+              toolName: exec.name,
+              arguments: eventData.arguments as JsonValue,
+            }),
+        catalogCommitment: effective.commitment,
+        toolClassification: Object.freeze({
+          classificationCatalogFingerprint: catalog.fingerprint,
+          descriptor,
+        }),
+        projection: Object.freeze({
+          projectorId: action.projectorId,
+          action,
+          observedAt: event.time,
+        }),
+      })
+    } catch (error: unknown) {
+      dbg('record-build', String(error))
+      return
+    }
     const created = await this.repository.create(record)
     dbg('record-create', { outcome: created, callId, eventSeq: event.seq })
     this.requestEventByToken.set(exec.token, event.seq)
@@ -552,7 +561,7 @@ export class DshExecutionFactProjectionBridge {
     agent: Agent,
     event: EventLike,
     start: EventLike,
-    known: ToolExecutionFactRecordV1,
+    known: ToolExecutionFactRecordV2,
   ): Promise<boolean> {
     const lifecycle = this.lifecycle(agent)
     const data = event.data as Record<string, unknown>
@@ -636,7 +645,7 @@ export class DshExecutionFactProjectionBridge {
   }
 
   private receiptRecord(
-    record: ToolExecutionFactRecordV1,
+    record: ToolExecutionFactRecordV2,
     terminal: TerminalEvidence,
     resultEvent: EventLike,
   ): DelegationReceiptFactRecordV1 | undefined {
@@ -739,7 +748,7 @@ export class DshExecutionFactProjectionBridge {
    */
   async repairHistoricalResults(
     agent: Agent,
-    records: readonly ToolExecutionFactRecordV1[],
+    records: readonly ToolExecutionFactRecordV2[],
     throughSeq: number,
     signal?: AbortSignal,
     excludeRequestEventSeq?: number,
@@ -747,7 +756,7 @@ export class DshExecutionFactProjectionBridge {
     if (signal?.aborted || !Number.isSafeInteger(throughSeq) || throughSeq < 0) return 0
     const session = agent.session as unknown as SessionLike
     if (typeof session.eventAt !== 'function') return 0
-    const missingBySeq = new Map<number, ToolExecutionFactRecordV1>()
+    const missingBySeq = new Map<number, ToolExecutionFactRecordV2>()
     for (const record of records) {
       if (record.result === undefined && record.request.eventSeq < throughSeq
         && record.request.eventSeq !== excludeRequestEventSeq) {

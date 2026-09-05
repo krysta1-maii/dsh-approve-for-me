@@ -3,6 +3,8 @@ import {
   activityClassificationFromDescriptorV1,
   canonicalJson,
   createActionSnapshot,
+  createDurableCatalogEvidenceV2,
+  createToolExecutionFactRecordV2,
   DSH_ALPHA2_SHELL_FAMILY,
   DSH_ALPHA2_SHELL_PROJECTOR_ID,
   genesisSealHash,
@@ -10,7 +12,7 @@ import {
   matchApprovalSnapshotsForExecutionV1,
   projectSealForResultV1,
 } from '../../src/index.js'
-import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import { approvalE2ESchemas } from '../helpers/approval-e2e.js'
 
@@ -40,15 +42,14 @@ function buildFixture(command = 'ls') {
     },
     requestedPermissions: [],
   })
-  const record: ToolExecutionFactRecordV1 = {
-    version: 1,
+  const record: ToolExecutionFactRecordV2 = createToolExecutionFactRecordV2({
     session: lifecycle,
     request: { kind: 'model-tool-call', eventSeq: 2, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
     catalogCommitment: commitment,
     toolClassification: { classificationCatalogFingerprint: dossier.fingerprint, descriptor },
-    projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, actionHash: hashAction(action), observedAt: 12 },
+    projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, observedAt: 12 },
     result: { eventSeq: 4, eventType: 'tool/result', outcome: { kind: 'completed' } },
-  }
+  })
   const approval = (requestId: string, askedSeq = 3): ApprovalSnapshotRecordV1 => Object.freeze({
     version: 1,
     session: lifecycle,
@@ -124,7 +125,7 @@ describe('projectSealForResultV1 (WP8-c shared formula)', () => {
       prior: undefined,
       occurredAt: 104,
     })!
-    const secondRecord: ToolExecutionFactRecordV1 = Object.freeze({
+    const secondRecord: ToolExecutionFactRecordV2 = Object.freeze({
       ...f.record,
       request: Object.freeze({ kind: 'model-tool-call', eventSeq: 6, eventType: 'tool/call', callId: 'call-2', toolName: 'bash' }),
       projection: Object.freeze({ ...f.record.projection, observedAt: 16 }),
@@ -146,9 +147,9 @@ describe('projectSealForResultV1 (WP8-c shared formula)', () => {
     expect(sameEpochSeal.seal.previousSealHash).toBe(first.seal.sealHash)
 
     // A different catalog commitment advances the epoch and records the boundary.
-    const changedCommitmentRecord: ToolExecutionFactRecordV1 = Object.freeze({
+    const changedCommitmentRecord: ToolExecutionFactRecordV2 = Object.freeze({
       ...secondRecord,
-      catalogCommitment: f.nextCommitment,
+      catalogEvidence: createDurableCatalogEvidenceV2(f.nextCommitment),
       result: Object.freeze({ eventSeq: 9, eventType: 'tool/result', outcome: Object.freeze({ kind: 'completed' }) }),
     })
     const epochSeal = projectSealForResultV1({
@@ -169,7 +170,7 @@ describe('projectSealForResultV1 (WP8-c shared formula)', () => {
     ['sandbox-denied', Object.freeze({ kind: 'sandbox-denied', mode: 'read-only' }), 'sandbox-denied'],
   ] as const)('maps the %s outcome category onto seal and activity', (_name, outcome, status) => {
     const f = buildFixture()
-    const record: ToolExecutionFactRecordV1 = Object.freeze({
+    const record: ToolExecutionFactRecordV2 = Object.freeze({
       ...f.record,
       result: Object.freeze({ eventSeq: 4, eventType: 'tool/result', outcome }),
     })
@@ -201,7 +202,7 @@ describe('projectSealForResultV1 (WP8-c shared formula)', () => {
     const f = buildFixture()
     const { result: _ignoredResult, ...resultLessRest } = f.record
     void _ignoredResult
-    const resultLess: ToolExecutionFactRecordV1 = resultLessRest
+    const resultLess: ToolExecutionFactRecordV2 = resultLessRest
     expect(projectSealForResultV1({
       lifecycleFingerprint: f.lifecycleFingerprint,
       record: resultLess,

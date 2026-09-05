@@ -4,6 +4,7 @@ import {
   createActionSnapshot,
   DSH_ALPHA2_SHELL_FAMILY,
   DSH_ALPHA2_SHELL_PROJECTOR_ID,
+  createToolExecutionFactRecordV2,
   DshStorageDomainFactRepositories,
   DshStorageDomainSealedFacts,
   hashAction,
@@ -14,7 +15,7 @@ import type {
   ApprovalSnapshotRecordV1,
   SealBackfillDependencies,
   SealBackfillLiveEventView,
-  ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type { StorageDomainFacility } from '../../src/dsh/storage-domain-decision-record.js'
@@ -45,7 +46,7 @@ function memoryStorageDomain(): StorageDomainFacility {
 }
 
 interface FixtureRecord {
-  readonly record: ToolExecutionFactRecordV1
+  readonly record: ToolExecutionFactRecordV2
   readonly approval: ApprovalSnapshotRecordV1
   readonly live: ReadonlyMap<number, SealBackfillLiveEventView>
 }
@@ -76,13 +77,12 @@ function buildScenario() {
       },
       requestedPermissions: [],
     })
-    const record: ToolExecutionFactRecordV1 = Object.freeze({
-      version: 1,
+    const record: ToolExecutionFactRecordV2 = createToolExecutionFactRecordV2({
+      catalogCommitment: commitment,
       session: lifecycle,
       request: Object.freeze({ kind: 'model-tool-call', eventSeq: requestEventSeq, eventType: 'tool/call', callId, toolName: 'bash' }),
-      catalogCommitment: commitment,
       toolClassification: Object.freeze({ classificationCatalogFingerprint: fingerprint, descriptor }),
-      projection: Object.freeze({ projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, actionHash: hashAction(action), observedAt: 100 + requestEventSeq }),
+      projection: Object.freeze({ projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, observedAt: 100 + requestEventSeq }),
       result: Object.freeze({ eventSeq: resultEventSeq, eventType: 'tool/result', outcome: Object.freeze({ kind: 'completed' }) }),
     })
     const approval: ApprovalSnapshotRecordV1 = Object.freeze({
@@ -253,16 +253,16 @@ describe('SealBackfillRunner (WP8-c)', () => {
   })
 
   it.each([
-    ['request event type mismatch', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV1) => {
+    ['request event type mismatch', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV2) => {
       live.set(record.request.eventSeq, Object.freeze({ seq: record.request.eventSeq, type: 'user/message', time: 1, data: {} }))
     }],
-    ['result event absent', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV1) => {
+    ['result event absent', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV2) => {
       live.delete(record.result!.eventSeq)
     }],
-    ['result event type mismatch', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV1) => {
+    ['result event type mismatch', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV2) => {
       live.set(record.result!.eventSeq, Object.freeze({ seq: record.result!.eventSeq, type: 'tool/call', time: 1, data: {} }))
     }],
-    ['result event time invalid', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV1) => {
+    ['result event time invalid', (live: Map<number, SealBackfillLiveEventView>, record: ToolExecutionFactRecordV2) => {
       live.set(record.result!.eventSeq, Object.freeze({ seq: record.result!.eventSeq, type: 'tool/result', time: -5, data: {} }))
     }],
   ] as const)('stops on live re-bind failure: %s', async (_name, breakLive) => {

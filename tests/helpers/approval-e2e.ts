@@ -1,6 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { canonicalJson, createActionSnapshot, createActivityV1, createSealV1, DEFAULT_MAX_SEALED_HISTORY_WINDOW, DSH_ALPHA2_SHELL_FAMILY, DSH_ALPHA2_SHELL_PROJECTOR_ID, DshStorageDomainFactRepositories, DshStorageDomainSealedFacts, genesisSealHash, hashAction } from '../../src/index.js'
-import type { ActivityV1, ApprovalSnapshotRecordV1, SealV1, StorageDomainFacility, ToolExecutionFactRecordV1 } from '../../src/index.js'
+import { canonicalJson, createActionSnapshot, createActivityV1, createSealV1, createToolExecutionFactRecordV2, DEFAULT_MAX_SEALED_HISTORY_WINDOW, DSH_ALPHA2_SHELL_FAMILY, DSH_ALPHA2_SHELL_PROJECTOR_ID, DshStorageDomainFactRepositories, DshStorageDomainSealedFacts, genesisSealHash, hashAction } from '../../src/index.js'
+import type { ActivityV1, ApprovalSnapshotRecordV1, SealV1, StorageDomainFacility, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 /*
@@ -121,15 +121,14 @@ export function buildApprovalE2EFixture(options: ApprovalE2EOptions = {}): Appro
   const storage = memoryStorageDomain()
 
   const pastAction = makeAction('ls')
-  const pastExecution: ToolExecutionFactRecordV1 = {
-    version: 1,
+  const pastExecution: ToolExecutionFactRecordV2 = createToolExecutionFactRecordV2({
     catalogCommitment: commitment,
     session: lifecycle,
     request: { kind: 'model-tool-call', eventSeq: pastCallSeq, eventType: 'tool/call', callId: 'call-past', toolName: 'bash' },
     toolClassification: { classificationCatalogFingerprint: dossier.fingerprint, descriptor: dossier.descriptors.find(item => item.toolName === 'bash')! },
-    projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action: pastAction, actionHash: hashAction(pastAction), observedAt: 100 + pastCallSeq },
+    projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action: pastAction, observedAt: 100 + pastCallSeq },
     result: { eventSeq: pastResultSeq, eventType: 'tool/result', outcome: { kind: 'completed' } },
-  }
+  })
 
   let seeded: DshStorageDomainSealedFacts | undefined
 

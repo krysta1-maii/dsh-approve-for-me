@@ -3,11 +3,13 @@ import {
   InMemoryApprovalSnapshotRepository,
   InMemoryExecutionFactRepository,
   createActionSnapshot,
+  createToolExecutionFactRecordV2,
+  hashAction,
 } from '../../src/index.js'
 import type {
   ApprovalSnapshotRecordV1,
   SessionLifecycleIdentityV1,
-  ToolExecutionFactRecordV1,
+  ToolExecutionFactRecordV2,
 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
@@ -17,9 +19,11 @@ const schemas = [{ name: 'bash', description: 'shell', parameters: { type: 'obje
 const effective = createDshAlpha2EffectiveCatalog(schemas)
 const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas)
 
-function executionFact(): ToolExecutionFactRecordV1 {
-  return {
-    version: 1,
+const projectedAction = createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'default-v1' })
+const projectedActionHash = hashAction(projectedAction)
+
+function executionFact(): ToolExecutionFactRecordV2 {
+  return createToolExecutionFactRecordV2({
     catalogCommitment: commitment,
     session,
     request: { kind: 'model-tool-call', eventSeq: 5, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
@@ -29,11 +33,10 @@ function executionFact(): ToolExecutionFactRecordV1 {
     },
     projection: {
       projectorId: 'default-v1',
-      action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }),
-      actionHash: hash('a'),
+      action: projectedAction,
       observedAt: 1,
     },
-  }
+  })
 }
 
 function approvalSnapshot(): ApprovalSnapshotRecordV1 {
@@ -42,7 +45,7 @@ function approvalSnapshot(): ApprovalSnapshotRecordV1 {
     session,
     approvalRequestId: 'ask-1',
     approvalAskedSeq: 5,
-    execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId: 'default-v1' },
+    execution: { requestEventSeq: 5, callId: 'call-1', toolName: 'bash', actionHash: projectedActionHash, classificationCatalogFingerprint: effective.dossier.fingerprint, projectorId: 'default-v1' },
     environment: { version: 1, kind: 'native-header-only' },
   }
 }

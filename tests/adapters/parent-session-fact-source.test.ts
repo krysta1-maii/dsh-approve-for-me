@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createAuthorizationEntryV1, createSealV1, createSealedDossierCompiler, DEFAULT_MAX_SEALED_HISTORY_WINDOW, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
+import { createDurableCatalogEvidenceV2, createStoredActionSnapshotV2, deriveRequesterDepthV1, DshParentSessionFactSource, activityClassificationFromDescriptorV1, canonicalJson, createActionSnapshot, createActivityV1, createAuthorizationEntryV1, createSealV1, createSealedDossierCompiler, DEFAULT_MAX_SEALED_HISTORY_WINDOW, fingerprintDelegationToolCatalogV1, genesisSealHash, readSealedParentSessionFacts } from '../../src/index.js'
 import type { ActivityV1, SealV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import type {
+  ActionSnapshot,
   ApprovalSnapshotRecordV1,
   DelegationToolClassificationCatalogV1,
-  ToolExecutionFactRecordV1,
+  DelegationToolDescriptorV1,
+  ToolExecutionFactRecordV2,
 } from '../../src/index.js'
+import type { DurableToolCatalogCommitmentV1 } from '../../src/domain/dossier.js'
 
 const hash = (char: string) => `sha256:${char.repeat(64)}`
 const schemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
@@ -14,14 +17,45 @@ const effective = createDshAlpha2EffectiveCatalog(schemas)
 const catalog: DelegationToolClassificationCatalogV1 = effective.dossier
 const lifecycle = { sessionId: 'parent-1', sessionFormatVersion: 0, createdAt: 100 }
 const descriptor = catalog.descriptors[0]!
-const execution: ToolExecutionFactRecordV1 = {
-  version: 1,
-  catalogCommitment: createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas),
-  session: lifecycle,
-  request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
-  toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
-  projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: hash('a'), observedAt: 101 },
+
+/** WP9-a: build the slim v2 record directly (payload ref + catalog evidence). */
+function factRecord(input: {
+  readonly commitment: DurableToolCatalogCommitmentV1
+  readonly request: ToolExecutionFactRecordV2['request']
+  readonly classificationCatalogFingerprint: string
+  readonly descriptor: DelegationToolDescriptorV1
+  readonly action: ActionSnapshot
+  readonly projectorId: string
+  readonly actionHash: string
+  readonly observedAt: number
+  readonly result?: ToolExecutionFactRecordV2['result']
+}): ToolExecutionFactRecordV2 {
+  return Object.freeze({
+    version: 2,
+    session: lifecycle,
+    request: input.request,
+    catalogEvidence: createDurableCatalogEvidenceV2(input.commitment),
+    toolClassification: Object.freeze({ classificationCatalogFingerprint: input.classificationCatalogFingerprint, descriptor: input.descriptor }),
+    projection: Object.freeze({
+      projectorId: input.projectorId,
+      action: createStoredActionSnapshotV2(input.action),
+      actionHash: input.actionHash,
+      observedAt: input.observedAt,
+    }),
+    ...input.result === undefined ? {} : { result: input.result },
+  })
 }
+
+const execution: ToolExecutionFactRecordV2 = factRecord({
+  commitment: createDshAlpha2CatalogCommitment(effective, 'native', 0, schemas),
+  request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+  classificationCatalogFingerprint: catalog.fingerprint,
+  descriptor,
+  action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }),
+  projectorId: 'default-v1',
+  actionHash: hash('a'),
+  observedAt: 101,
+})
 const approval: ApprovalSnapshotRecordV1 = {
   version: 1, session: lifecycle, approvalRequestId: 'ask-1', approvalAskedSeq: 4,
   execution: { requestEventSeq: 3, callId: 'call-1', toolName: 'bash', actionHash: hash('a'), classificationCatalogFingerprint: catalog.fingerprint, projectorId: 'default-v1' },
@@ -73,23 +107,27 @@ const epochEvents = [
   { seq: 7, time: 107, type: 'tool/call', data: { turn: 2, step: 0, callId: 'call-new', name: 'bash', arguments: '{"command":"pwd"}' } },
   { seq: 8, time: 108, type: 'approval/asked', data: { id: 'ask-2', callId: 'call-new', toolName: 'bash', turn: 2, step: 0 } },
 ]
-const epochOldExecution: ToolExecutionFactRecordV1 = {
-  version: 1,
-  catalogCommitment: epochCommitmentA,
-  session: lifecycle,
+const epochOldExecution: ToolExecutionFactRecordV2 = factRecord({
+  commitment: epochCommitmentA,
   request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-old', toolName: 'bash' },
-  toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
-  projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } }), actionHash: hash('b'), observedAt: 103 },
+  classificationCatalogFingerprint: catalog.fingerprint,
+  descriptor,
+  action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'ls' } }),
+  projectorId: 'default-v1',
+  actionHash: hash('b'),
+  observedAt: 103,
   result: { eventSeq: 4, eventType: 'tool/result', outcome: { kind: 'completed' } },
-}
-const epochNewExecution: ToolExecutionFactRecordV1 = {
-  version: 1,
-  catalogCommitment: epochCommitmentB,
-  session: lifecycle,
+})
+const epochNewExecution: ToolExecutionFactRecordV2 = factRecord({
+  commitment: epochCommitmentB,
   request: { kind: 'model-tool-call', eventSeq: 7, eventType: 'tool/call', callId: 'call-new', toolName: 'bash' },
-  toolClassification: { classificationCatalogFingerprint: epochCatalogB.fingerprint, descriptor: epochCatalogB.descriptors.find(item => item.toolName === 'bash')! },
-  projection: { projectorId: 'default-v1', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: hash('c'), observedAt: 107 },
-}
+  classificationCatalogFingerprint: epochCatalogB.fingerprint,
+  descriptor: epochCatalogB.descriptors.find(item => item.toolName === 'bash')!,
+  action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }),
+  projectorId: 'default-v1',
+  actionHash: hash('c'),
+  observedAt: 107,
+})
 const epochApproval: ApprovalSnapshotRecordV1 = {
   version: 1, session: lifecycle, approvalRequestId: 'ask-2', approvalAskedSeq: 8,
   execution: { requestEventSeq: 7, callId: 'call-new', toolName: 'bash', actionHash: hash('c'), classificationCatalogFingerprint: epochCatalogB.fingerprint, projectorId: 'default-v1' },
@@ -206,7 +244,7 @@ describe('DshParentSessionFactSource', () => {
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, approvalRequestId: 'other' }] }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, execution: { ...approval.execution, actionHash: hash('b') } }] }))).toBeUndefined()
     expect(source.snapshot(input({ agent: requester as never, approvalSnapshots: [{ ...approval, environment: { version: 1, kind: 'native-header-only', sandbox: { enabled: true } } }] as never }))).toBeUndefined()
-    expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, session: { ...lifecycle, cwd: '/other-project' } } as ToolExecutionFactRecordV1] }))).toBeUndefined()
+    expect(source.snapshot(input({ agent: requester as never, executionFacts: [{ ...execution, session: { ...lifecycle, cwd: '/other-project' } } as ToolExecutionFactRecordV2] }))).toBeUndefined()
     const regressive = agent()
     ;(regressive.session.snapshotEvents() as unknown as Array<{ time: number }>)[2]!.time = 99
     expect(source.snapshot(input({ agent: regressive as never }))).toBeUndefined()
@@ -234,9 +272,9 @@ describe('DshParentSessionFactSource', () => {
   it('refuses an execution that shops an obsolete catalog header', () => {
     // The pending call binds the retired epoch-A header even though epoch B
     // was already in force before its root call event.
-    const staleExecution: ToolExecutionFactRecordV1 = {
+    const staleExecution: ToolExecutionFactRecordV2 = {
       ...epochNewExecution,
-      catalogCommitment: epochCommitmentA,
+      catalogEvidence: createDurableCatalogEvidenceV2(epochCommitmentA),
       toolClassification: { classificationCatalogFingerprint: catalog.fingerprint, descriptor },
     }
     const staleApproval: ApprovalSnapshotRecordV1 = {
@@ -266,9 +304,9 @@ describe('DshParentSessionFactSource', () => {
     )
     const singleHeaderEvents = epochEvents.filter((_, index) => index !== 5)
       .map((event, seq) => ({ ...event, seq }))
-    const splitExecution: ToolExecutionFactRecordV1 = {
+    const splitExecution: ToolExecutionFactRecordV2 = {
       ...epochNewExecution,
-      catalogCommitment: shiftedCommitment,
+      catalogEvidence: createDurableCatalogEvidenceV2(shiftedCommitment),
       toolClassification: { classificationCatalogFingerprint: shiftedCatalog.fingerprint, descriptor: shiftedCatalog.descriptors[0]! },
       request: { kind: 'model-tool-call', eventSeq: 6, eventType: 'tool/call', callId: 'call-new', toolName: 'bash' },
     }
@@ -332,7 +370,7 @@ function sealedReaderFixture() {
     const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
     if (row === undefined) return undefined
     const seal = row.seal
-    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call', eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitments.get(seal.catalog.headerEventSeq)! } as ToolExecutionFactRecordV1
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call', eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogEvidence: createDurableCatalogEvidenceV2(commitments.get(seal.catalog.headerEventSeq)!) } as ToolExecutionFactRecordV2
   } }
   const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' }
   return { events, rows, base }
@@ -376,7 +414,7 @@ function buildSealedChain(count: number) {
     const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
     if (row === undefined) return undefined
     const seal = row.seal
-    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitment } as ToolExecutionFactRecordV1
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogEvidence: createDurableCatalogEvidenceV2(commitment) } as ToolExecutionFactRecordV2
   } }
   const last = rows[count - 1]!.seal
   const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: last.approvalAsked.requestId, callId: last.request.callId, toolName: last.request.toolName }
@@ -443,7 +481,7 @@ function buildSpoofChain(seals: Array<{ sourceSeq: number; askedSeq: number; res
     const row = rows.find(candidate => candidate.seal.request.callId === input.callId && candidate.seal.request.eventSeq === input.requestEventSeq)
     if (row === undefined) return undefined
     const seal = row.seal
-    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogCommitment: commitmentFor(seal.catalog.headerEventSeq) } as ToolExecutionFactRecordV1
+    return { ...execution, session: lifecycle, request: { kind: 'model-tool-call' as const, eventSeq: seal.request.eventSeq, eventType: seal.request.eventType, callId: seal.request.callId, toolName: seal.request.toolName }, catalogEvidence: createDurableCatalogEvidenceV2(commitmentFor(seal.catalog.headerEventSeq)) } as ToolExecutionFactRecordV2
   } }
   const last = rows[rows.length - 1]!.seal
   const base = { agent: requester as never, registry: { get: (id: string) => id === 'parent-1' ? requester as never : undefined }, executionFacts, approvalRequestId: last.approvalAsked.requestId, callId: last.request.callId, toolName: last.request.toolName }
@@ -535,7 +573,7 @@ describe('readSealedParentSessionFacts', () => {
     fixture.rows[2] = { seal, activity: reactivate(seal, old.activity) }
     const executionFacts = { async get(input: { callId: string; requestEventSeq: number }) {
       const fact = await fixture.base.executionFacts.get(input)
-      return fact === undefined ? undefined : { ...fact, catalogCommitment: { ...fact.catalogCommitment, fingerprint: invalidFingerprint } }
+      return fact === undefined ? undefined : { ...fact, catalogEvidence: { ...fact.catalogEvidence, commitment: invalidFingerprint } }
     } }
     await expect(readSealedParentSessionFacts({ ...fixture.base, executionFacts, ledger: ledger(fixture.rows) })).resolves.toMatchObject({ kind: 'unavailable' })
   })

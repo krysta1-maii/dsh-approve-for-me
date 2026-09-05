@@ -68,9 +68,10 @@ import { createTrustEnvelopeEvaluator } from './application/trust-envelope.js'
 import { createReviewerProvider } from './reviewer/provider.js'
 import { dangerFullAccessRiskForPolicy } from './reviewer/policy.js'
 import { hashAction, REVIEWER_PROVIDER } from './domain/protocol.js'
-import { canonicalJson } from './domain/json.js'
-import type { ToolExecutionFactRecordV1 } from './domain/dossier.js'
-import type { RequestedPermission } from './domain/protocol.js'
+import { canonicalJson, parseUniqueJson, snapshotJson } from './domain/json.js'
+import type { JsonValue } from './domain/json.js'
+import { resolveStoredActionV2 } from './domain/dossier.js'
+import type { ActionSnapshot, RequestedPermission } from './domain/protocol.js'
 import type { ParentAuthority } from './ports/managed-reviewer.js'
 import type { GateMachinePolicyV1 } from './approval-gate/machine-policy.js'
 import { resolveReviewerModelRouteFromDshCatalog } from './dsh/reviewer-model-catalog.js'
@@ -555,12 +556,34 @@ export function installApproveForMe(
       // schemas match the bound header, and no later header supersedes it),
       // exactly as the full-history catalogAnchored path enforced.
       const inForce = sealedCurrentCatalogInForce({
-        recordedHeaderEventSeq: executionFact.catalogCommitment.requestHeaderEventSeq,
+        recordedHeaderEventSeq: executionFact.catalogEvidence.requestHeaderEventSeq,
         requestEventSeq: executionFact.request.eventSeq,
-        wireSchemas: executionFact.catalogCommitment.wireSchemas,
+        wireSchemasDigest: executionFact.catalogEvidence.wireSchemasDigest,
         eventAt: seq => session.eventAt?.(seq) as { readonly type: string; readonly data: unknown } | undefined,
       })
       if (inForce.kind !== 'ok') return undefined
+      // WP9-a: the stored execution fact references its action arguments by
+      // digest. Re-derive the full action from the live source-call arguments
+      // and bind it to the stored actionHash commitment; this live-verified
+      // action is what the sealed dossier/compiler consume (byte-identical to
+      // the v1 stored action for honest data, fail-closed on any mismatch).
+      let resolvedAction: ActionSnapshot | undefined
+      {
+        const sourceEvent = session.eventAt?.(approvalSnapshot.execution.requestEventSeq)
+        const sourceData = sourceEvent?.data as Record<string, unknown> | undefined
+        let liveArguments: JsonValue | undefined
+        try {
+          const raw = sourceData?.arguments
+          liveArguments = typeof raw === 'string' ? parseUniqueJson(raw) : snapshotJson(raw)
+        } catch {
+          liveArguments = undefined
+        }
+        if (sourceEvent !== undefined && liveArguments !== undefined) {
+          const action = resolveStoredActionV2(executionFact.projection.action, liveArguments)
+          resolvedAction = action !== undefined && hashAction(action) === executionFact.projection.actionHash ? action : undefined
+        }
+      }
+      if (resolvedAction === undefined) return undefined
       const asked = askRef(approvalAskedSeq, session)
       if (asked === undefined || asked.ref === undefined || asked.frozenAt === undefined) return undefined
       const freeze = {
@@ -614,6 +637,7 @@ export function installApproveForMe(
         toolName: pending.toolName,
         executionFact,
         approvalSnapshot,
+        resolvedAction,
         approvalAsked: asked.ref,
         freeze,
         requester: { effectiveDelegationDepth, ...(parentSessionId === undefined ? {} : { parentSessionId }) },

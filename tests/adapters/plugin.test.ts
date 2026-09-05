@@ -31,6 +31,7 @@ import {
   SerialLanes,
   canonicalJson,
   createActionSnapshot,
+  createToolExecutionFactRecordV2,
   hashAction,
   DSH_ALPHA2_SHELL_FAMILY,
   DSH_ALPHA2_SHELL_PROJECTOR_ID,
@@ -40,7 +41,7 @@ import {
   parseApprovalReviewPacketV2,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
-import type { ApprovalSnapshotRecordV1, Config, ToolExecutionFactRecordV1 } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, Config, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import * as approveForMe from '../../src/index.js'
 import { approvalE2ESchemas, buildApprovalE2EFixture, seedApprovalE2E } from '../helpers/approval-e2e.js'
@@ -1330,15 +1331,14 @@ describe('WP8-c seal backfill wiring', () => {
     const requestEventSeq = fixture.requestEventSeq
     const askedSeq = fixture.askedSeq
     const resultEventSeq = askedSeq + 1
-    const record: ToolExecutionFactRecordV1 = {
-      version: 1,
+    const record: ToolExecutionFactRecordV2 = createToolExecutionFactRecordV2({
       session: fixture.lifecycle,
       request: { kind: 'model-tool-call', eventSeq: requestEventSeq, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
       catalogCommitment: commitment,
       toolClassification: { classificationCatalogFingerprint: dossier.fingerprint, descriptor },
-      projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, actionHash: hashAction(action), observedAt: 100 + requestEventSeq },
+      projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, observedAt: 100 + requestEventSeq },
       result: { eventSeq: resultEventSeq, eventType: 'tool/result', outcome: { kind: 'completed' } },
-    }
+    })
     const snapshot: ApprovalSnapshotRecordV1 = {
       version: 1,
       session: fixture.lifecycle,

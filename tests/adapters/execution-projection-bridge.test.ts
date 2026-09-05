@@ -6,8 +6,9 @@ import type { SealedFactsLedger } from '../../src/dsh/execution-projection-bridg
 import { createActionSnapshot } from '../../src/domain/protocol.js'
 import { InMemoryApprovalSnapshotRepository, InMemoryExecutionFactRepository } from '../../src/application/fact-repositories.js'
 import { DefaultActionCapture } from '../../src/ports/action-projector.js'
-import { createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
-import { fingerprintDurableToolCatalogCommitmentV1 } from '../../src/domain/dossier.js'
+import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
+import { createToolExecutionFactRecordV2, fingerprintDurableToolCatalogCommitmentV1 } from '../../src/domain/dossier.js'
+import { payloadRefMatchesLive } from '../../src/domain/payload-ref.js'
 
 const bashSchema = { name: 'bash', description: 'shell', parameters: { type: 'object', properties: { command: { type: 'string' } } } }
 const runCodeSchema = { name: 'run_code', description: 'dispatch', parameters: { type: 'object', properties: { code: { type: 'string' } } } }
@@ -88,7 +89,16 @@ describe('DshExecutionFactProjectionBridge', () => {
     await bridge.project(execution(owner))
     const records = await repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })
     expect(records).toHaveLength(1)
-    expect(records[0]!.projection.action).toBe(captured)
+    // WP9-a: the stored action is the slim v2 form; the capture projection is
+    // preserved exactly through the payload reference (sha256-compare equality
+    // with the captured arguments, identical scalars and semantics).
+    const stored = records[0]!.projection.action
+    expect(stored.version).toBe(2)
+    expect(stored.toolName).toBe(captured.toolName)
+    expect(stored.projectorId).toBe(captured.projectorId)
+    expect(stored.semantics).toEqual(captured.semantics)
+    expect(stored.requestedPermissions).toEqual(captured.requestedPermissions)
+    expect(payloadRefMatchesLive(stored.arguments, captured.arguments)).toBe(true)
   })
 
   it('does not re-project or persist when an authoritative capture is missing', async () => {
@@ -541,8 +551,8 @@ describe('DshExecutionFactProjectionBridge', () => {
       { seq: 2, time: 22, type: 'tool/result', data: { turn: 1, step: 0, message: { content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
     ])
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, effectiveCatalog, repository)
-    await repository.create({ version: 1, catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 0, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: 'irrelevant', observedAt: 20 } })
-    await repository.create({ version: 1, catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' } }), actionHash: 'irrelevant', observedAt: 21 } })
+    await repository.create(createToolExecutionFactRecordV2({ catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 0, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'test' }), observedAt: 20 } }))
+    await repository.create(createToolExecutionFactRecordV2({ catalogCommitment: effectiveCatalog(execution(owner)).commitment, session: { sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 }, request: { kind: 'model-tool-call', eventSeq: 1, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' }, toolClassification: { classificationCatalogFingerprint: 'catalog-1', descriptor: catalog.descriptors[0]! }, projection: { projectorId: 'test', action: createActionSnapshot({ toolName: 'bash', arguments: { command: 'pwd' }, projectorId: 'test' }), observedAt: 21 } }))
     await bridge.observeSessionEvent(owner, (owner.session as unknown as { snapshotEvents: () => readonly { readonly seq: number; readonly time: number; readonly type: string; readonly data: unknown }[] }).snapshotEvents()[2]!)
     await expect(repository.list({ sessionId: 'session-1', sessionFormatVersion: 1, createdAt: 10 })).resolves.toEqual(expect.not.arrayContaining([expect.objectContaining({ result: expect.anything() })]))
   })
@@ -626,7 +636,11 @@ describe('DshExecutionFactProjectionBridge', () => {
       { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } }, { seq: 1, time: 21, type: 'approval/asked', data: { id: 'a1', callId: 'call-1', toolName: 'bash' } }, { seq: 2, time: 22, type: 'tool/result', sourceEventSeqs: [0], data: { turn: 1, step: 0, message: { source: { kind: 'tool', callId: 'call-1' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: false, content: [] }] } } },
       { seq: 3, time: 23, type: 'tool/call', data: { turn: 1, step: 1, callId: 'call-2', name: 'bash' } }, { seq: 4, time: 24, type: 'approval/asked', data: { id: 'a2', callId: 'call-2', toolName: 'bash' } }, { seq: 5, time: 25, type: 'tool/result', sourceEventSeqs: [3], data: { turn: 1, step: 1, message: { source: { kind: 'tool', callId: 'call-2' }, content: [{ type: 'tool-result', toolCallId: 'call-2', isError: false, content: [] }] } } },
     ]
-    const owner = agent(events); const source = (exec: ToolExecution) => ({ ...effectiveCatalog(exec), commitment: { ...effectiveCatalog(exec).commitment, fingerprint: exec.callId === 'call-2' ? 'sha256:' + 'c'.repeat(64) : effectiveCatalog(exec).commitment.fingerprint } })
+    // WP9-a: the second epoch must be a genuinely valid commitment (write-side
+    // evidence conversion re-validates it), so build a real one at a different
+    // header seq instead of rewriting the fingerprint field.
+    const altCommitment = createDshAlpha2CatalogCommitment(createDshAlpha2EffectiveCatalog([bashSchema, runCodeSchema]), 'native', 1, [bashSchema, runCodeSchema])
+    const owner = agent(events); const source = (exec: ToolExecution) => ({ ...effectiveCatalog(exec), commitment: exec.callId === 'call-2' ? altCommitment : effectiveCatalog(exec).commitment })
     const bridge = new DshExecutionFactProjectionBridge({ project: e => ({ toolName: e.name, arguments: e.arguments }) }, source, repository, approvals, undefined, ledger)
     for (const [ask, result, callId] of [[1, 2, 'call-1'], [4, 5, 'call-2']] as const) { const exec = { ...execution(owner), callId, rootCallId: callId } as ToolExecution; await bridge.project(exec); await bridge.observeSessionEvent(owner, events[ask]!); bridge.observeResult(exec, { isError: false, value: null, content: [] }); await bridge.observeSessionEvent(owner, events[result]!) }
     expect(rows[1].seal).toMatchObject({ catalog: { epoch: 1 }, epochBoundary: { previousEpoch: 0, changed: true }, previousSealHash: rows[0].seal.sealHash })

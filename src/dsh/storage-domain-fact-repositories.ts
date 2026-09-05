@@ -2,14 +2,29 @@ import { createHash } from 'node:crypto'
 import { canonicalJson, snapshotJson } from '../domain/json.js'
 import { hashAction, parseActionSnapshot } from '../domain/protocol.js'
 import type { ActionSnapshot } from '../domain/protocol.js'
-import { isApprovalEnvironmentEvidenceV1, validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
-import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1 } from '../domain/dossier.js'
+import {
+  isApprovalEnvironmentEvidenceV1,
+  parseStoredActionSnapshotV2,
+  resolveStoredActionV2,
+  validateDurableCatalogEvidenceV2,
+  validateDurableToolCatalogCommitmentV1,
+} from '../domain/dossier.js'
+import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
+import { canonicalSha256, isPayloadRefV1 } from '../domain/payload-ref.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
 import { GateFailure } from '../application/gate-failure.js'
 import type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './storage-domain-decision-record.js'
 
-type StoredRow = { readonly version: 1; readonly canonical: string; readonly record: unknown }
+/**
+ * WP9-a fact row v2: the record is bound to its row by
+ * digest = 'sha256:'+sha256hex(canonicalJson(record)) instead of a second
+ * full canonical string copy. Read = recompute and compare; any mismatch or
+ * foreign shape reads as absent (fail closed). Legacy v1 rows
+ * ({version:1, canonical, record}) are deliberately NEVER accepted: they are
+ * a foreign version and would silently re-authorize pre-slim payloads.
+ */
+type StoredRow = { readonly version: 2; readonly digest: string; readonly record: unknown }
 type StoredIndex = { readonly version: 1; readonly canonical: string; readonly session: SessionLifecycleIdentityV1; readonly keys: readonly string[] }
 
 const factDomainSpec = Object.freeze({
@@ -80,13 +95,17 @@ function validToolOutcome(value: unknown): boolean {
     && keys.every(key => key === 'kind' || key === 'mode' || key === 'enforcement')
 }
 
+const ROW_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/
+
 function parseRow(value: unknown): StoredRow {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('invalid dossier fact row')
   const row = value as Partial<StoredRow>
-  if (row.version !== 1 || typeof row.canonical !== 'string' || row.record === undefined || row.canonical !== canonicalJson(row.record)) {
+  // v1 rows (and every other foreign version) read as absent by design.
+  if (row.version !== 2 || typeof row.digest !== 'string' || !ROW_DIGEST_PATTERN.test(row.digest)
+    || row.record === undefined || row.digest !== canonicalSha256(row.record)) {
     throw new TypeError('invalid dossier fact row')
   }
-  return Object.freeze({ version: 1, canonical: row.canonical, record: row.record })
+  return Object.freeze({ version: 2, digest: row.digest, record: row.record })
 }
 
 function parseFactValue(value: unknown): StoredRow | StoredIndex {
@@ -199,6 +218,112 @@ function parseIndex(value: unknown): StoredIndex {
       return false
     }
   }
+
+  /**
+   * WP9-a strict shape-V2 guard. Same fail-closed discipline as the V1 guard:
+   * every cross-field binding that does not need unbounded payload bodies is
+   * re-derived here (catalog fingerprints, descriptor byte-match, projector
+   * binding, receipt correlation, terminal-evidence consistency). The two
+   * payload-deferring bindings v1 enforced at rest — hashAction(action) ===
+   * actionHash and the schema-body shape/binding checks — are covered jointly
+   * by (a) the row digest (any stored-record tamper reads as absent), (b) the
+   * stored actionHash being a sha256 commitment re-verified against live event
+   * arguments at every consumption point (resolveStoredActionV2), and (c) the
+   * live request/header re-bind through wireSchemasDigest.
+   */
+  export function isToolExecutionFactRecordV2(value: unknown): value is ToolExecutionFactRecordV2 {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    const record = value as Partial<ToolExecutionFactRecordV2>
+    if (record.version !== 2 || !validSession(record.session)
+      || record.request === null || typeof record.request !== 'object' || Array.isArray(record.request)
+      || record.catalogEvidence === null || typeof record.catalogEvidence !== 'object' || Array.isArray(record.catalogEvidence)
+      || record.toolClassification === null || typeof record.toolClassification !== 'object' || Array.isArray(record.toolClassification)
+      || record.toolClassification.descriptor === null || typeof record.toolClassification.descriptor !== 'object' || Array.isArray(record.toolClassification.descriptor)
+      || record.projection === null || typeof record.projection !== 'object' || Array.isArray(record.projection)
+      || record.projection.action === null || typeof record.projection.action !== 'object' || Array.isArray(record.projection.action)
+      || !['model-tool-call', 'code-dispatch'].includes(record.request.kind)
+      || !['tool/call', 'tool/code-dispatch-start'].includes(record.request.eventType)
+      || (record.request.kind === 'model-tool-call' && record.request.eventType !== 'tool/call')
+      || (record.request.kind === 'code-dispatch' && (
+        record.request.eventType !== 'tool/code-dispatch-start'
+        || typeof record.request.rootCallId !== 'string' || record.request.rootCallId.length === 0
+        || typeof record.request.parentCallId !== 'string' || record.request.parentCallId.length === 0
+        || !Number.isSafeInteger(record.request.rootRequestEventSeq) || (record.request.rootRequestEventSeq as number) < 0
+        || !Number.isSafeInteger(record.request.parentRequestEventSeq) || (record.request.parentRequestEventSeq as number) < 0
+        || !isPayloadRefV1(record.request.arguments)))
+      || typeof record.request.callId !== 'string' || record.request.callId.length === 0
+      || typeof record.request.toolName !== 'string' || record.request.toolName.length === 0
+      || !Number.isSafeInteger(record.request.eventSeq) || (record.request.eventSeq as number) < 0
+      || typeof record.toolClassification.classificationCatalogFingerprint !== 'string' || record.toolClassification.classificationCatalogFingerprint.length === 0
+      || typeof record.projection.projectorId !== 'string' || record.projection.projectorId.length === 0
+      || typeof record.projection.actionHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.projection.actionHash)
+      || !Number.isSafeInteger(record.projection.observedAt) || (record.projection.observedAt as number) < 0
+      || (record.terminalEvidence !== undefined && (record.terminalEvidence === null
+        || typeof record.terminalEvidence !== 'object' || Array.isArray(record.terminalEvidence)
+        || Object.keys(record.terminalEvidence).some(key => key !== 'isError' && key !== 'outcome' && key !== 'receipt')
+        || typeof record.terminalEvidence.isError !== 'boolean'
+        || !validToolOutcome(record.terminalEvidence.outcome)
+        || (record.terminalEvidence.outcome.kind === 'completed' && record.terminalEvidence.isError)
+        || (record.terminalEvidence.outcome.kind === 'tool-error' && !record.terminalEvidence.isError)
+        || (record.terminalEvidence.receipt !== undefined
+          && (record.toolClassification.descriptor.classification !== 'delegation'
+            || record.terminalEvidence.outcome.kind !== 'completed'
+            || !validReceipt(record.terminalEvidence.receipt)))))
+      || (record.result !== undefined && (record.result === null || typeof record.result !== 'object' || Array.isArray(record.result)
+        || Object.keys(record.result).some(key => key !== 'eventSeq' && key !== 'eventType' && key !== 'outcome')
+        || !Number.isSafeInteger(record.result.eventSeq) || (record.result.eventSeq as number) <= record.request.eventSeq
+        || (record.request.kind === 'model-tool-call' ? record.result.eventType !== 'tool/result' : record.result.eventType !== 'tool/code-dispatch')
+        || !validToolOutcome(record.result.outcome)))
+      || (record.delegationReceipt !== undefined && (record.result === undefined
+        || record.delegationReceipt === null || typeof record.delegationReceipt !== 'object' || Array.isArray(record.delegationReceipt)
+        || !sameLifecycle(record.delegationReceipt.session, record.session)
+        || record.delegationReceipt.requestEventSeq !== record.request.eventSeq
+        || record.delegationReceipt.callId !== record.request.callId
+        || record.delegationReceipt.resultEvent?.seq !== record.result.eventSeq
+        || record.delegationReceipt.resultEvent?.type !== record.result.eventType
+        || record.delegationReceipt.classificationCatalogFingerprint !== record.toolClassification.classificationCatalogFingerprint
+        || record.toolClassification.descriptor.classification !== 'delegation'
+        || record.delegationReceipt.projectorId !== record.toolClassification.descriptor.projectorId
+        || !validReceipt(record.delegationReceipt.receipt)))) return false
+    let action: ReturnType<typeof parseStoredActionSnapshotV2>
+    try {
+      action = parseStoredActionSnapshotV2(record.projection.action)
+    } catch {
+      return false
+    }
+    if (action.toolName !== record.request.toolName || action.projectorId !== record.projection.projectorId) return false
+    // When the arguments payload is inline the full action is recoverable at
+    // rest, so the v1 actionHash recompute is preserved verbatim. For digest
+    // refs the hash is an opaque commitment verified at consumption time
+    // against live event arguments (every reader does resolveStoredActionV2
+    // before authorizing anything).
+    if (action.arguments.kind === 'inline') {
+      const resolved = resolveStoredActionV2(action, action.arguments.value)
+      if (resolved === undefined || hashAction(resolved) !== record.projection.actionHash) return false
+    }
+    const evidence = record.catalogEvidence
+    if (validateDurableCatalogEvidenceV2(evidence).kind !== 'ok') return false
+    const dossierDescriptor = evidence.classificationCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
+    const approvalDescriptor = evidence.approvalCatalog.descriptors.find(item => item.toolName === record.request!.toolName)
+    const rootEventSeq = record.request.kind === 'model-tool-call' ? record.request.eventSeq : record.request.rootRequestEventSeq
+    if (evidence.requestHeaderEventSeq >= rootEventSeq || rootEventSeq > record.request.eventSeq
+      || (record.request.kind === 'code-dispatch'
+        && (!Number.isSafeInteger(record.request.parentRequestEventSeq)
+          || record.request.parentRequestEventSeq < rootEventSeq
+          || record.request.parentRequestEventSeq >= record.request.eventSeq))
+      || evidence.classificationCatalog.fingerprint !== record.toolClassification.classificationCatalogFingerprint
+      || dossierDescriptor === undefined || approvalDescriptor === undefined
+      || canonicalJson(dossierDescriptor) !== canonicalJson(record.toolClassification.descriptor)
+      || dossierDescriptor.toolSchemaFingerprint !== approvalDescriptor.toolSchemaFingerprint
+      || record.projection.projectorId !== approvalDescriptor.actionProjectorId) return false
+    try {
+      if (record.terminalEvidence !== undefined) snapshotJson(record.terminalEvidence)
+      if (record.delegationReceipt !== undefined) snapshotJson(record.delegationReceipt)
+      return true
+    } catch {
+      return false
+    }
+  }
   export function isApprovalSnapshotRecordV1(value: unknown): value is ApprovalSnapshotRecordV1 {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
     const record = value as Partial<ApprovalSnapshotRecordV1>
@@ -236,12 +361,12 @@ export class DshStorageDomainFactRepositories {
     if (domain !== undefined) await domain.close()
   }
 
-  async create(record: ToolExecutionFactRecordV1): Promise<'created' | 'identical' | 'conflict'> {
+  async create(record: ToolExecutionFactRecordV2): Promise<'created' | 'identical' | 'conflict'> {
     if (!this.validExecution(record)) return 'conflict'
     return this.createOnce('executions', 'executions', record.session, this.executionKey(record.session, record.request.callId, record.request.eventSeq), record)
   }
 
-  async list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ToolExecutionFactRecordV1[]> {
+  async list(session: SessionLifecycleIdentityV1, signal?: AbortSignal): Promise<readonly ToolExecutionFactRecordV2[]> {
     const rows = await this.listRows(
       'executions',
       'executions',
@@ -249,23 +374,23 @@ export class DshStorageDomainFactRepositories {
       row => this.validExecution(row) && sameLifecycle(row.session, session),
       signal,
     )
-    return Object.freeze(rows === undefined ? [] : rows as ToolExecutionFactRecordV1[])
+    return Object.freeze(rows === undefined ? [] : rows as ToolExecutionFactRecordV2[])
   }
 
-  async get(input: { session: SessionLifecycleIdentityV1; callId: string; requestEventSeq: number }): Promise<ToolExecutionFactRecordV1 | undefined> {
+  async get(input: { session: SessionLifecycleIdentityV1; callId: string; requestEventSeq: number }): Promise<ToolExecutionFactRecordV2 | undefined> {
     const row = await this.readRow('executions', this.executionKey(input.session, input.callId, input.requestEventSeq))
     if (!this.validExecution(row) || !sameLifecycle(row.session, input.session)
       || row.request.callId !== input.callId || row.request.eventSeq !== input.requestEventSeq) return undefined
     return row
   }
 
-  async stageTerminal(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly terminalEvidence: NonNullable<ToolExecutionFactRecordV1['terminalEvidence']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+  async stageTerminal(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly terminalEvidence: NonNullable<ToolExecutionFactRecordV2['terminalEvidence']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
     const key = this.executionKey(input.session, input.callId, input.requestEventSeq)
     return this.serial(input.session, async () => {
       const existing = await this.readRow('executions', key)
       if (!this.validExecution(existing) || !sameLifecycle(existing.session, input.session)
         || existing.request.callId !== input.callId || existing.request.eventSeq !== input.requestEventSeq) return 'missing'
-      const updated: ToolExecutionFactRecordV1 = Object.freeze({
+      const updated: ToolExecutionFactRecordV2 = Object.freeze({
         ...existing,
         terminalEvidence: Object.freeze({
           isError: input.terminalEvidence.isError,
@@ -283,13 +408,13 @@ export class DshStorageDomainFactRepositories {
     })
   }
 
-  async attachResult(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly result: NonNullable<ToolExecutionFactRecordV1['result']>; readonly delegationReceipt?: NonNullable<ToolExecutionFactRecordV1['delegationReceipt']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
+  async attachResult(input: { readonly session: SessionLifecycleIdentityV1; readonly callId: string; readonly requestEventSeq: number; readonly result: NonNullable<ToolExecutionFactRecordV2['result']>; readonly delegationReceipt?: NonNullable<ToolExecutionFactRecordV2['delegationReceipt']> }): Promise<'updated' | 'identical' | 'missing' | 'conflict'> {
     const key = this.executionKey(input.session, input.callId, input.requestEventSeq)
     return this.serial(input.session, async () => {
       const existing = await this.readRow('executions', key)
       if (!this.validExecution(existing) || !sameLifecycle(existing.session, input.session)
         || existing.request.callId !== input.callId || existing.request.eventSeq !== input.requestEventSeq) return 'missing'
-      const updated: ToolExecutionFactRecordV1 = Object.freeze({
+      const updated: ToolExecutionFactRecordV2 = Object.freeze({
         ...existing,
         result: Object.freeze({ ...input.result }),
         ...input.delegationReceipt === undefined ? {} : { delegationReceipt: Object.freeze({ ...input.delegationReceipt }) },
@@ -342,10 +467,10 @@ export class DshStorageDomainFactRepositories {
         const existing = table.get(key)
         if (existing !== undefined) {
           const row = parseRow(existing)
-          if (row.canonical !== canonical) return 'conflict'
+          if (canonicalJson(row.record) !== canonical) return 'conflict'
           return await this.index(indexName, session, key) ? 'identical' : 'conflict'
         }
-        await table.put(key, Object.freeze({ version: 1, canonical, record: Object.freeze({ ...(record as object) }) }))
+        await table.put(key, Object.freeze({ version: 2, digest: canonicalSha256(record), record: Object.freeze({ ...(record as object) }) }))
         const confirmed = await this.readRow(tableName, key)
         if (confirmed === undefined || canonicalJson(confirmed) !== canonical) return 'conflict'
         if (!await this.index(indexName, session, key)) return 'conflict'
@@ -363,7 +488,7 @@ export class DshStorageDomainFactRepositories {
     if (domain === undefined) return false
     try {
       const canonical = canonicalJson(record)
-      await domain.table(tableName).put(key, Object.freeze({ version: 1, canonical, record: Object.freeze({ ...(record as object) }) }))
+      await domain.table(tableName).put(key, Object.freeze({ version: 2, digest: canonicalSha256(record), record: Object.freeze({ ...(record as object) }) }))
       const confirmed = await this.readRow(tableName, key)
       return confirmed !== undefined && canonicalJson(confirmed) === canonical
     } catch { return false }
@@ -462,7 +587,7 @@ export class DshStorageDomainFactRepositories {
   private executionKey(session: SessionLifecycleIdentityV1, callId: string, seq: number): string { return storageKey('e1_', [...lifecycleIdentity(session), callId, seq]) }
   private approvalKey(session: SessionLifecycleIdentityV1, requestId: string, seq: number): string { return storageKey('a1_', [...lifecycleIdentity(session), requestId, seq]) }
 
-  private validExecution(value: unknown): value is ToolExecutionFactRecordV1 { return isToolExecutionFactRecordV1(value) }
+  private validExecution(value: unknown): value is ToolExecutionFactRecordV2 { return isToolExecutionFactRecordV2(value) }
 
   private validApproval(value: unknown): value is ApprovalSnapshotRecordV1 { return isApprovalSnapshotRecordV1(value) }
 }
@@ -471,7 +596,7 @@ export class DshStorageDomainFactRepositories {
 export class DshStorageDomainExecutionFactRepository implements ExecutionFactRepository {
   constructor(private readonly shared: DshStorageDomainFactRepositories) {}
   list(session: SessionLifecycleIdentityV1, signal?: AbortSignal) { return this.shared.list(session, signal) }
-  create(record: ToolExecutionFactRecordV1) { return this.shared.create(record) }
+  create(record: ToolExecutionFactRecordV2) { return this.shared.create(record) }
   stageTerminal(input: Parameters<ExecutionFactRepository['stageTerminal']>[0]) { return this.shared.stageTerminal(input) }
   attachResult(input: Parameters<ExecutionFactRepository['attachResult']>[0]) { return this.shared.attachResult(input) }
   get(input: Parameters<ExecutionFactRepository['get']>[0]) { return this.shared.get(input) }
