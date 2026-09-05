@@ -90,7 +90,7 @@ R4 是提供给 Reviewer 并约束 authorization-derived cache/replay fast path 
 
 第一版 approval barrier 会在进程重启后的首次审批中重放全部历史 `tool/result`，而每条 native result 又全表读取 execution sidecar，形成 O(R×E) 放大；长 Session 会耗尽事件循环，使 Web Stop、审批持久化和 timer 都得不到调度。当前实现改为利用 `sourceEventSeqs` 和 approval 前最后一条 exact request 做 `repository.get()`，只等待本进程已经在写的结果，不再全历史重放。
 
-sealed-facts 一期把 `maxSourceEvents` 移除：含该旧字段的配置拒绝启动并给出升级错误（热路径改由 sealed-tail／ledger 预算保护）。审批热路径从不调用全量 `snapshotEvents`，事实输入 = 当前冻结动作 + 有界 sealed tail（`maxSealedTailEvents` 默认 `512`）+ 有界台账（`maxLedgerEntries` 默认 `256`）+ 有界近期摘录（`maxRecentExcerptBytes` 默认 `24000`），并预构建 branded hot packet（`maxHotPacketBytes` 默认 `96000 ≤ 256000`）。超预算以显式原因码分流：`tail-budget-overflow`／`ledger-budget-overflow`／hot-packet `budget-overflow`（路由 `retryable-capability`）在 `auto-then-user` 下 delegate 人工、`auto` 下保持 unavailable；篡改／存储／投影失败与 `seal-chain-invalid` 类为 unavailable 且不 delegate。`timeoutMs` 仍覆盖从 machine-policy 入口开始的事实读取、dossier、Reviewer 与确认全链；用户 Stop 或 deadline 会立即结束当前审批等待，底层协作任务仍由 lifecycle 持有并排空，迟到工作不能产生授权。
+sealed-facts 一期把 `maxSourceEvents` 移除：含该旧字段的配置拒绝启动并给出升级错误（热路径改由 sealed-tail／ledger 预算保护）。审批热路径从不调用全量 `snapshotEvents`，事实输入 = 当前冻结动作 + 有界 sealed tail（`maxSealedTailEvents` 与台账 `maxLedgerEntries` 共享同一默认 `256`，WP6-b1 实测发现默认 512/256 不一致已对齐）+ 有界近期摘录（`maxRecentExcerptBytes` 默认 `24000`），并预构建 branded hot packet（`maxHotPacketBytes` 默认 `96000 ≤ 256000`）。超预算以显式原因码分流：`tail-budget-overflow`／`ledger-budget-overflow`／hot-packet `budget-overflow`（路由 `retryable-capability`）在 `auto-then-user` 下 delegate 人工、`auto` 下保持 unavailable；篡改／存储／投影失败与 `seal-chain-invalid` 类为 unavailable 且不 delegate。`timeoutMs` 仍覆盖从 machine-policy 入口开始的事实读取、dossier、Reviewer 与确认全链；用户 Stop 或 deadline 会立即结束当前审批等待，底层协作任务仍由 lifecycle 持有并排空，迟到工作不能产生授权。
 
 ## Reviewer 容量与 deadline
 

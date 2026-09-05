@@ -79,7 +79,7 @@ V1 只接受原子 create-once：相同 canonical 重放成功，不同 canonica
 
 | 名称 | 默认 | 边界／语义 |
 |---|---:|---|
-| maxSealedTailEvents | 512 | 正安全整数；限制审批时未稳定锚定的 seal tail，超限为 tail-budget-overflow。 |
+| maxSealedTailEvents | 256 | 正安全整数；限制审批时未稳定锚定的 seal tail，超限为 tail-budget-overflow。与台账行数门共享同一默认（WP6-b1 实测发现默认 512/256 不一致，已对齐，WP6-b4）。 |
 | maxLedgerEntries | 256 | 正安全整数；限制进入 Gate/Reviewer 的台账行数，超限为 ledger-budget-overflow，不能静默截断授权语义。 |
 | maxRecentExcerptBytes | 24000 | 正安全整数；仅供意图理解，确定性摘录并带 seq，不能替代当前动作事实。 |
 | maxHotPacketBytes | 96000 | 不得高于完整卷宗 256000；预构建预算，超限 budget-overflow。 |
