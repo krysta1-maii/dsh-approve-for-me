@@ -98,6 +98,7 @@ function makePipeline(overrides: {
   records?: GateDecisionRecordStore
   now?: () => number
   reviewerTelemetry?: GatePipelineDependencies['reviewerTelemetry']
+  gateFailureMetrics?: GatePipelineDependencies['gateFailureMetrics']
 } = {}) {
   const defaultSeals = new InMemorySealedDispositionRegistry()
   const seals = overrides.seals ?? defaultSeals
@@ -133,6 +134,7 @@ function makePipeline(overrides: {
     mode: overrides.mode ?? 'auto',
     ...overrides.now === undefined ? {} : { now: overrides.now },
     ...overrides.reviewerTelemetry === undefined ? {} : { reviewerTelemetry: overrides.reviewerTelemetry },
+    ...overrides.gateFailureMetrics === undefined ? {} : { gateFailureMetrics: overrides.gateFailureMetrics },
   }
   return { pipeline: new DefaultGatePipeline(deps), seals: defaultSeals, records, preReview, factsResolver, deps }
 }
@@ -462,5 +464,63 @@ describe('DefaultGatePipeline', () => {
     const abort = new AbortController()
     abort.abort()
     await expect(integrity.pipeline.decide({ ...request('auto-then-user'), signal: abort.signal })).resolves.toBe('cancelled')
+  })
+
+  it('records a metadata-only row and counts a source-backed tamper failure without delegating (WP5-a)', async () => {
+    const records = recordsStub()
+    const observe = vi.fn()
+    const correlation = { parentSessionId: 'parent-1', parentLifecycleFingerprint: 'life-1', requestId: 'ask-1', callId: 'call-1', actionHash: hash('a'), generation: 'generation-1', policyVersion: 'policy-v2', configurationFingerprint: hash('cfg') }
+    const { pipeline, factsResolver } = makePipeline({ mode: 'auto-then-user', records, gateFailureMetrics: { observe } })
+    factsResolver.resolve.mockRejectedValue(new GateFailure('seal-chain-invalid', 'tamper', { correlation }))
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+    expect(observe).toHaveBeenCalledWith({ code: 'seal-chain-invalid', outcome: 'unavailable' })
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({
+      route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'unavailable', disposition: 'no-decision',
+      failureStage: 'verified-dossier', failureCode: 'seal-chain-invalid',
+      parentLifecycleFingerprint: 'life-1', requestId: 'ask-1', callId: 'call-1', actionHash: hash('a'),
+      generation: 'generation-1', policyVersion: 'policy-v2', configurationFingerprint: hash('cfg'),
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }))
+  })
+
+  it('records + counts a delegate-able capacity failure only in user-fallback mode (WP5-a)', async () => {
+    const records = recordsStub()
+    const observe = vi.fn()
+    const correlation = { parentSessionId: 'parent-1', parentLifecycleFingerprint: 'life-1', requestId: 'ask-1', callId: 'call-1', actionHash: hash('a'), generation: 'generation-1', policyVersion: 'policy-v2', configurationFingerprint: hash('cfg') }
+    const user = makePipeline({ mode: 'auto-then-user', records, gateFailureMetrics: { observe } })
+    user.factsResolver.resolve.mockRejectedValue(new GateFailure('tail-budget-overflow', 'overflow', { correlation }))
+    await expect(user.pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+    expect(observe).toHaveBeenCalledWith({ code: 'tail-budget-overflow', outcome: 'delegate' })
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({ pluginDisposition: 'delegate', failureCode: 'tail-budget-overflow' }))
+    const auto = makePipeline({ mode: 'auto', records: recordsStub(), gateFailureMetrics: { observe } })
+    auto.factsResolver.resolve.mockRejectedValue(new GateFailure('tail-budget-overflow', 'overflow', { correlation }))
+    await expect(auto.pipeline.decide(request())).resolves.toBe('unavailable')
+  })
+
+  it('counts but never records a GateFailure without correlation metadata (WP5-a)', async () => {
+    const records = recordsStub()
+    const observe = vi.fn()
+    const { pipeline, factsResolver } = makePipeline({ mode: 'auto-then-user', records, gateFailureMetrics: { observe } })
+    factsResolver.resolve.mockRejectedValue(new GateFailure('seal-live-rebind-failed', 'no correlation'))
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('unavailable')
+    expect(observe).toHaveBeenCalledWith({ code: 'seal-live-rebind-failed', outcome: 'unavailable' })
+    expect(records.recordBestEffort).not.toHaveBeenCalled()
+  })
+
+  it('records the reason code for a pre-review failure and counts it (WP5-a)', async () => {
+    const records = recordsStub()
+    const observe = vi.fn()
+    const preReview = { preReview: vi.fn(async () => { throw new GateFailure('retryable-capability', 'reviewer down') }) }
+    const { pipeline } = makePipeline({ mode: 'auto-then-user', records, gateFailureMetrics: { observe }, preReview })
+    await expect(pipeline.decide(request('auto-then-user'))).resolves.toBe('delegate')
+    expect(observe).toHaveBeenCalledWith({ code: 'retryable-capability', outcome: 'delegate' })
+    expect(records.recordBestEffort).toHaveBeenCalledWith(expect.objectContaining({ failureStage: 'pre-review', failureCode: 'retryable-capability', pluginDisposition: 'delegate' }))
+  })
+
+  it('never lets a throwing gate-failure metric sink change the authorization outcome (WP5-a)', async () => {
+    const correlation = { parentSessionId: 'parent-1', parentLifecycleFingerprint: 'life-1', requestId: 'ask-1', callId: 'call-1', actionHash: hash('a'), generation: 'generation-1', policyVersion: 'policy-v2', configurationFingerprint: hash('cfg') }
+    const { pipeline, factsResolver } = makePipeline({ mode: 'auto', gateFailureMetrics: { observe: () => { throw new Error('metrics down') } } })
+    factsResolver.resolve.mockRejectedValue(new GateFailure('ledger-storage-unavailable', 'storage down', { correlation }))
+    await expect(pipeline.decide(request())).resolves.toBe('unavailable')
   })
 })

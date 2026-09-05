@@ -19,7 +19,10 @@ import type {
   TrustEnvelopeEvaluatorV1,
   TrustEnvelopeInputV1,
 } from '../approval-gate/trust-envelope.js'
-import { GateFailure, gateFailureOutcome } from './gate-failure.js'
+import { GateFailure, gateFailureOutcome, GATE_FAILURE_CODES } from './gate-failure.js'
+import type { GateFailureCode } from './gate-failure.js'
+import type { GateFailureCorrelationV1 } from './gate-failure.js'
+import type { GateFailureMetricsSink } from '../ports/gate-failure-metrics.js'
 import type { SourceVerifiedDossierV1 } from '../domain/dossier.js'
 import { permitsAutomaticFastPath } from '../domain/risk-assessment.js'
 import type { RiskAssessmentV1 } from '../domain/risk-assessment.js'
@@ -117,6 +120,8 @@ export interface GateDecisionRecord {
   readonly disposition: GateRecordDispositionV1
   /** Present only for a post-facts no-decision outcome. */
   readonly failureStage?: GateFailureStageV1
+  /** WP5-a §4.4 typed failure reason code; present only for a post-facts no-decision row. */
+  readonly failureCode?: GateFailureCode
   /** Number of protocol attempts in the real Guardian run; zero for fast paths. */
   readonly reviewAttempts: number
   /** Infrastructure recovery counts, separate from protocol attempts. */
@@ -140,7 +145,7 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   const legacy = value.version === 1
   const required = ['version', 'route', 'normalizedDecision', 'pluginDisposition', 'requestId', 'parentSessionId', 'parentLifecycleFingerprint', 'callId', 'actionHash', 'generation', 'configurationFingerprint', 'disposition', 'reviewAttempts', 'contaminatedRotationAttempts', 'contaminatedRotations']
   if (!legacy) required.push('policyVersion')
-  const allowed = new Set([...required, 'reviewRunId', 'failureStage', 'policyVersion'])
+  const allowed = new Set([...required, 'reviewRunId', 'failureStage', 'policyVersion', 'failureCode'])
   for (const key of required) if (!Object.hasOwn(value, key)) throw new TypeError(`gate decision record.${key} is required`)
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`gate decision record.${key} is not supported`)
   if (!legacy && value.version !== 2) throw new TypeError('gate decision record.version must be 1 or 2')
@@ -170,7 +175,13 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
   const attempts = value.reviewAttempts as number
   const rotations = value.contaminatedRotationAttempts as number
   const successfulRotations = value.contaminatedRotations as number
+  const failureCode = value.failureCode as GateFailureCode | undefined
   if (normalized === 'no-decision') {
+    // WP5-a 闭集拒绝未知码: a failureCode outside the closed gate code set is a
+    // hard rejection at the compact durable boundary, never a silent accept.
+    if (failureCode !== undefined && !GATE_FAILURE_CODES.includes(failureCode)) {
+      throw new TypeError('gate decision record.failureCode is invalid')
+    }
     if (route !== 'post-facts-failure' || disposition !== 'no-decision'
       || (plugin !== 'unavailable' && plugin !== 'delegate')
       || !GATE_FAILURE_STAGES.includes(value.failureStage as GateFailureStageV1)
@@ -179,6 +190,7 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
       throw new TypeError('gate no-decision record is inconsistent')
     }
   } else {
+    if (failureCode !== undefined) throw new TypeError('gate decision record failureCode is only valid for a no-decision post-facts-failure row')
     if (value.failureStage !== undefined
       || (normalized === 'allow' && (disposition !== 'allow' || plugin !== 'allow'))
       || (normalized === 'deny' && (disposition !== 'deny' || plugin !== 'deny'))
@@ -225,6 +237,8 @@ export interface GatePipelineDependencies {
   readonly now?: () => number
   /** Scalar-only best-effort observer; it never influences a gate branch. */
   readonly reviewerTelemetry?: ReviewerTelemetrySink
+  /** WP5-a §4.4 scalar-only gate failure counter; it never influences a gate branch. */
+  readonly gateFailureMetrics?: GateFailureMetricsSink
 }
 
 export interface GatePipeline {
@@ -236,6 +250,7 @@ function failureRecordFor(
   facts: GateActionFacts,
   outcome: 'unavailable' | 'delegate',
   failureStage: GateFailureStageV1,
+  failureCode?: GateFailureCode,
 ): GateDecisionRecord {
   return {
     version: 2,
@@ -244,6 +259,7 @@ function failureRecordFor(
     pluginDisposition: outcome,
     disposition: 'no-decision',
     failureStage,
+    ...(failureCode === undefined ? {} : { failureCode }),
     requestId: request.requestId ?? '',
     parentSessionId: request.parentSessionId,
     parentLifecycleFingerprint: facts.breakerKey.parentLifecycleFingerprint,
@@ -255,6 +271,50 @@ function failureRecordFor(
     reviewAttempts: 0,
     contaminatedRotationAttempts: 0,
     contaminatedRotations: 0,
+  }
+}
+
+/**
+ * Build a metadata-only post-facts row for a GateFailure that surfaced before
+ * GateActionFacts could be assembled (WP5-a). The correlation carries only
+ * identity, hashes, generation and policy-version strings.
+ */
+function failureRecordWithCorrelation(
+  correlation: GateFailureCorrelationV1,
+  outcome: 'unavailable' | 'delegate',
+  failureStage: GateFailureStageV1,
+  failureCode: GateFailureCode,
+): GateDecisionRecord {
+  return {
+    version: 2,
+    route: 'post-facts-failure',
+    normalizedDecision: 'no-decision',
+    pluginDisposition: outcome,
+    disposition: 'no-decision',
+    failureStage,
+    failureCode,
+    requestId: correlation.requestId,
+    parentSessionId: correlation.parentSessionId,
+    parentLifecycleFingerprint: correlation.parentLifecycleFingerprint,
+    callId: correlation.callId,
+    actionHash: correlation.actionHash,
+    generation: correlation.generation,
+    policyVersion: correlation.policyVersion,
+    configurationFingerprint: correlation.configurationFingerprint,
+    reviewAttempts: 0,
+    contaminatedRotationAttempts: 0,
+    contaminatedRotations: 0,
+  }
+}
+
+/** Map a gate failure code to the closed post-facts failure stage it surfaces at. */
+function failureStageForGateCode(code: GateFailureCode): GateFailureStageV1 {
+  switch (code) {
+    case 'deadline': return 'deadline'
+    case 'abort': return 'pre-review'
+    // WP5-a §4.4 source-backed facts failures all surface at the verified-dossier
+    // boundary (the sealed-facts read/compile), so they are recorded there.
+    default: return 'verified-dossier'
   }
 }
 
@@ -317,6 +377,16 @@ export class DefaultGatePipeline implements GatePipeline {
     } catch (error: unknown) {
       if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me gate]', error)
       outcome = gateFailureOutcome(error, this.deps.mode)
+      // WP5-a §4.4: a source-backed GateFailure surfaces before GateActionFacts
+      // can be assembled, so it is observed in scalar metrics and (when it
+      // carries the non-sensitive correlation) recorded as a metadata-only
+      // post-facts row. A cancelled/abort outcome is not a failure row.
+      if (error instanceof GateFailure && (outcome === 'unavailable' || outcome === 'delegate')) {
+        this.observeGateFailureSafely(error.code, outcome)
+        if (error.correlation !== undefined) {
+          await this.recordBestEffortSafely(failureRecordWithCorrelation(error.correlation, outcome, failureStageForGateCode(error.code), error.code))
+        }
+      }
     }
     // Only a concrete user fallback is observed, after the authoritative gate
     // outcome is fixed. Telemetry has no async path or authority over it.
@@ -469,7 +539,9 @@ export class DefaultGatePipeline implements GatePipeline {
       const stage: GateFailureStageV1 = error instanceof GateFailure && error.code === 'deadline'
         ? 'deadline'
         : error instanceof GateFailure ? 'pre-review' : 'unexpected'
-      return this.finishPostFactsFailure(request, facts, outcome, stage)
+      const failureCode = error instanceof GateFailure ? error.code : undefined
+      if (failureCode !== undefined) this.observeGateFailureSafely(failureCode, outcome)
+      return this.finishPostFactsFailure(request, facts, outcome, stage, failureCode)
     }
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') {
       console.error('[approve-for-me gate] sealed', JSON.stringify({
@@ -528,13 +600,18 @@ export class DefaultGatePipeline implements GatePipeline {
     try { await this.deps.records.recordBestEffort(record) } catch { /* audit must not authorize */ }
   }
 
+  private observeGateFailureSafely(code: GateFailureCode, outcome: 'unavailable' | 'delegate'): void {
+    try { this.deps.gateFailureMetrics?.observe({ code, outcome }) } catch { /* telemetry is never authorizing */ }
+  }
+
   private async finishPostFactsFailure(
     request: GateMachineRequestV1,
     facts: GateActionFacts,
     outcome: 'unavailable' | 'delegate',
     failureStage: GateFailureStageV1,
+    failureCode?: GateFailureCode,
   ): Promise<GateMachineDecisionV1> {
-    await this.recordBestEffortSafely(failureRecordFor(request, facts, outcome, failureStage))
+    await this.recordBestEffortSafely(failureRecordFor(request, facts, outcome, failureStage, failureCode))
     return outcome
   }
 

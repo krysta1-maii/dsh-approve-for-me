@@ -108,4 +108,31 @@ describe('InMemoryGateDecisionRecordStore', () => {
     await store.recordBestEffort(record({ disposition: 'deny', normalizedDecision: 'deny', pluginDisposition: 'deny' }))
     await expect(store.recordBestEffort(record())).rejects.toThrow(/conflicts/)
   })
+
+  it('accepts a post-facts no-decision row carrying a §4.4 failure code', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const failure: GateDecisionRecord = {
+      ...base, route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'unavailable',
+      disposition: 'no-decision', failureStage: 'verified-dossier', failureCode: 'seal-chain-invalid',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }
+    await expect(store.createConfirmed(failure)).resolves.toBe('confirmed')
+  })
+
+  it('rejects an unknown failure code at the compact durable boundary (closed set)', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const failure: GateDecisionRecord = {
+      ...base, route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'unavailable',
+      disposition: 'no-decision', failureStage: 'verified-dossier', failureCode: 'bogus-code' as never,
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }
+    await expect(store.createConfirmed(failure)).rejects.toThrow(/failureCode/)
+  })
+
+  it('rejects a failure code on a non-no-decision row', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    await expect(store.createConfirmed(record({ failureCode: 'seal-chain-invalid' }))).rejects.toThrow(/failureCode/)
+  })
 })
