@@ -48,6 +48,14 @@ describe('gateFailureOutcome WP4-b4 reason-code routing', () => {
     })
   }
 
+  it('routes disposal-cancellation (lifecycle) to cancelled in every mode (WP7)', () => {
+    // A plugin-tree reload disposes the instance mid-approval; the in-flight
+    // run is cancelled so the fork continues to the composed answerer instead
+    // of reporting "no approval channel available".
+    expect(gateFailureOutcome(new GateFailure('lifecycle', 'approval run was cancelled by plugin disposal'), 'auto')).toBe('cancelled')
+    expect(gateFailureOutcome(new GateFailure('lifecycle', 'approval run was cancelled by plugin disposal'), 'auto-then-user')).toBe('cancelled')
+  })
+
   it('holds a closed runtime code set containing every typed gate code (WP5-a)', () => {
     const expected: readonly GateFailureCode[] = ['integrity', 'conflict', 'retryable-capability', 'abort', 'deadline', 'lifecycle', 'tail-budget-overflow', 'ledger-budget-overflow', 'sealed-current-missing', 'sealed-current-conflict', 'seal-chain-invalid', 'seal-live-rebind-failed', 'ledger-storage-unavailable', 'ledger-conflict', 'activity-projection-invalid']
     expect(GATE_FAILURE_CODES).toEqual(expected)
