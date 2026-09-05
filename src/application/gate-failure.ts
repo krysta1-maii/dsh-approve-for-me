@@ -17,6 +17,7 @@ export type GateFailureCode =
    * disguised as an explainable missing seal or a capacity overflow.
    */
   | 'tail-budget-overflow'
+  | 'ledger-budget-overflow'
   | 'sealed-current-missing'
 
 /** A failure whose business meaning is known and must not escape as an Error. */
@@ -34,6 +35,7 @@ export function gateFailureOutcome(error: unknown, mode: ReviewMode): GateMachin
     case 'abort': return 'cancelled'
     case 'retryable-capability':
     case 'tail-budget-overflow':
+    case 'ledger-budget-overflow':
     case 'sealed-current-missing': return mode === 'auto-then-user' ? 'delegate' : 'unavailable'
     case 'integrity':
     case 'conflict':

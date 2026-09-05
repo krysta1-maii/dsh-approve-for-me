@@ -420,6 +420,13 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
       // A bounded byte-capacity gap is the one typed case that may reach the
       // official human waterfall; every other incomplete dossier shape is an
       // integrity condition and stays closed.
+      if (compiled.reason === 'ledger-budget-overflow' && 'metrics' in compiled) {
+        // Ledger row-count overflow is an explainable scale gap (the sealed
+        // activity ledger exceeds maxLedgerEntries), routed under its own typed
+        // reason code -- never as retryable-capability -- so the gate sends it to
+        // the human waterfall in auto-then-user mode.
+        throw new GateFailure('ledger-budget-overflow', `approval sealed ledger exceeds maxLedgerEntries (${compiled.metrics.attemptCount})`)
+      }
       if (compiled.reason === 'budget-overflow') {
         throw new GateFailure('retryable-capability', 'approval hot packet exceeds the configured size budget')
       }

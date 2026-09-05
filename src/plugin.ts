@@ -317,6 +317,10 @@ export function installApproveForMe(
     // source as the assembler (assembleRecentExcerpts) so production assembly and
     // compile-time validation agree even at a non-default maxRecentExcerptBytes.
     maxRecentExcerptBytes: normalized.maxRecentExcerptBytes,
+    // T1 (WP4 终审): consume the maxLedgerEntries knob so the sealed ledger row
+    // count is bounded at compile time; a packet whose activity rows exceed it
+    // fails closed as ledger-budget-overflow.
+    maxLedgerEntries: normalized.maxLedgerEntries,
   })
   // The approval hot path compiles exclusively through createSealedDossierCompiler.
   // The complete-footprint DefaultDossierCompiler is a manual/debug entry provided
