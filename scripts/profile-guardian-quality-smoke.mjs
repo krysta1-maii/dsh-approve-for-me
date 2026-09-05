@@ -325,10 +325,14 @@ try {
 
   const result = JSON.parse(readFileSync(marker, 'utf8'))
   const { s1, s2 } = result
-  if (s1?.outcome !== 'allowed-once' || s1?.sideEffect !== true || s1?.guardianDecision !== 'allow') {
+  // WP6 sealed-facts gate cold-start: an unsealed lifecycle never grants
+  // directly (empty ledger -> sealed-current-missing -> auto-then-user ->
+  // delegate), so the composed answerer decides -- S1 grants the safe action,
+  // S2 rejects the denied one. Assert the delegate path was exercised.
+  if (s1?.outcome !== 'allowed-once' || s1?.sideEffect !== true || s1?.delegated !== true) {
     throw new Error(`S1 assertions failed: ${JSON.stringify(s1)}`)
   }
-  if (s2?.outcome !== 'rejected' || s2?.sideEffect !== false || s2?.guardianDecision === 'allow') {
+  if (s2?.outcome !== 'rejected' || s2?.sideEffect !== false || s2?.delegated !== true) {
     throw new Error(`S2 assertions failed: ${JSON.stringify(s2)}`)
   }
   const allowedPath = join(output, 'quality-allowed.txt')

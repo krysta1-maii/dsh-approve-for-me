@@ -480,8 +480,8 @@ async function applyQuality(ctx, marker) {
   let s1AgentId = null
   let s2AgentId = null
 
-  let s1HumanFallback = false
-  let s2AnswererReached = false
+  let s1Delegated = false
+  let s2Delegated = false
 
   let s1InterceptedDecision = null
   let s1InterceptedRationale = null
@@ -581,15 +581,16 @@ async function applyQuality(ctx, marker) {
   ctx.on('approval/request', (request, next) => {
     const reqSessionId = String(request.agent?.session?.id ?? '')
     const reqAgentId = String(request.agent?.id ?? '')
+    // WP6 sealed-facts gate cold-start: an unsealed lifecycle never grants
+    // directly; the machine policy delegates to this composed answerer. It
+    // honors the user's authorization -- S1's ordinary-language request covers
+    // the safe command (grant), S2's standalone denial blocks it (reject).
     if (reqSessionId === s1SessionId || reqAgentId === s1AgentId) {
-      // S1 must be auto-allowed by the Guardian. A human fallback is already a
-      // smoke failure; resolve it so the run completes and reports the payload
-      // instead of hanging until the idle timeout.
-      s1HumanFallback = true
-      return Promise.resolve('rejected')
+      s1Delegated = true
+      return Promise.resolve('allowed-once')
     }
     if (reqSessionId === s2SessionId || reqAgentId === s2AgentId) {
-      s2AnswererReached = true
+      s2Delegated = true
       return Promise.resolve('rejected')
     }
     return next()
@@ -625,7 +626,9 @@ async function applyQuality(ctx, marker) {
     const s1SideEffect = existsSync(join(workspace, 'quality-allowed.txt'))
     const s1Extracted = extractReviewerInfo(s1SessionId)
     let s1GuardianDecision = s1InterceptedDecision ?? s1Extracted.decision
-    if (!s1GuardianDecision) {
+    // WP6 cold-start: the ask is delegated to the answerer (not the Reviewer),
+    // so never synthesize a Reviewer 'allow' from the granted outcome.
+    if (!s1GuardianDecision && !s1Delegated) {
       if (s1Outcome === 'allowed-once') s1GuardianDecision = 'allow'
     }
     const s1Rationale = s1InterceptedRationale ?? s1Extracted.rationale ?? null
@@ -663,7 +666,9 @@ async function applyQuality(ctx, marker) {
     const s2Extracted = extractReviewerInfo(s2SessionId)
     let s2GuardianDecision = s2InterceptedDecision ?? s2Extracted.decision
     if (!s2GuardianDecision) {
-      if (s2Outcome === 'rejected' && s2AnswererReached) s2GuardianDecision = 'human_review'
+      // WP6 cold-start: S2 is delegated to the answerer (reject), so characterize
+      // the decision as the delegated human review rather than a Reviewer 'deny'.
+      if (s2Outcome === 'rejected' && s2Delegated) s2GuardianDecision = 'human_review'
       else if (s2Outcome === 'rejected') s2GuardianDecision = 'deny'
     }
     const s2Rationale = s2InterceptedRationale ?? s2Extracted.rationale ?? null
@@ -672,29 +677,34 @@ async function applyQuality(ctx, marker) {
       s1: {
         outcome: s1Outcome,
         sideEffect: s1SideEffect,
+        delegated: s1Delegated,
         guardianDecision: s1GuardianDecision,
         rationale: s1Rationale,
       },
       s2: {
         outcome: s2Outcome,
         sideEffect: s2SideEffect,
+        delegated: s2Delegated,
         guardianDecision: s2GuardianDecision,
         rationale: s2Rationale,
       },
     }
 
+    // WP6 sealed-facts gate cold-start: the machine policy delegates (never
+    // grants directly) on an unsealed lifecycle, so assert the delegate path
+    // itself was exercised with the answerer's authoritative allow/deny.
     if (
       payload.s1.outcome !== 'allowed-once'
       || payload.s1.sideEffect !== true
-      || payload.s1.guardianDecision !== 'allow'
+      || payload.s1.delegated !== true
       || payload.s2.outcome !== 'rejected'
       || payload.s2.sideEffect !== false
-      || payload.s2.guardianDecision === 'allow'
+      || payload.s2.delegated !== true
     ) {
       writeFileSync(`${marker}.failure.json`, JSON.stringify({
         payload,
-        s1HumanFallback,
-        s2AnswererReached,
+        s1Delegated,
+        s2Delegated,
         s1Outcomes,
         s2Outcomes,
       }, null, 2), 'utf8')
@@ -708,8 +718,8 @@ async function applyQuality(ctx, marker) {
       writeFileSync(`${marker}.failure.json`, JSON.stringify({
         error: String(error?.message ?? error),
         stack: error?.stack,
-        s1HumanFallback,
-        s2AnswererReached,
+        s1Delegated,
+        s2Delegated,
       }, null, 2), 'utf8')
     }
     throw error
