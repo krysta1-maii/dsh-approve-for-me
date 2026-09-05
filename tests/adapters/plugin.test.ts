@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { StorageDomainFacility } from '../../src/dsh/storage-domain-decision-record.js'
 import type { ManagedAgentProvider, ManagedProviderRegistration } from 'dsh-managed-agent'
 import {
   REVIEWER_PROVIDER,
@@ -66,6 +68,8 @@ function decisionFor(request: ReturnType<typeof parseApprovalReviewRequest>) {
 
 interface InstallHarness {
   ctx: {
+    storageDomain?: StorageDomainFacility
+    agents?: { get(id: string): Agent | undefined }
     managedAgents: { registerProvider(provider: ManagedAgentProvider): ManagedProviderRegistration }
     approval: { registerMachinePolicy(policy: unknown): () => void }
     tools: { schemas(agent: unknown): readonly unknown[] }
@@ -90,10 +94,15 @@ interface InstallHarness {
     result: ((exec: unknown, result: unknown) => unknown) | undefined
     topology: (() => unknown) | undefined
   }
+  delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
   disposeRegistration: ReturnType<typeof vi.fn>
 }
 
-function harness(): InstallHarness {
+function harness(options: {
+  schemas?: readonly unknown[]
+  storageDomain?: StorageDomainFacility
+  agents?: { get(id: string): Agent | undefined }
+} = {}): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
     result: undefined,
@@ -112,6 +121,7 @@ function harness(): InstallHarness {
   let machinePolicy: unknown | undefined
   let childTool: InstallHarness['childTool']
   let resultObserver: InstallHarness['resultObserver']
+  let delivered: ReturnType<typeof parseApprovalReviewRequest> | undefined
   const child: { id: string; session: { id: string; append: (type: string, data: unknown) => void } } = {
     id: 'reviewer-1',
     session: {
@@ -167,6 +177,7 @@ function harness(): InstallHarness {
               const raw = (content[0] as { text: string } | undefined)?.text.split('\n').at(-1)
               if (raw === undefined) throw new Error('approval request was not delivered')
               const request = parseApprovalReviewRequest(JSON.parse(raw))
+              delivered = request
               expect(childTool?.name).toBe(SUBMIT_DECISION_TOOL)
               // Simulate the real two-phase pipeline: the scoped tool stages
               // the candidate and the child-scoped tools/result observer is
@@ -201,7 +212,7 @@ function harness(): InstallHarness {
         }
       },
     },
-    tools: { schemas: vi.fn(() => []) },
+    tools: { schemas: vi.fn(() => [...(options.schemas ?? [])]) },
     llm: {
       listProviders: vi.fn(() => [{ id: 'deepseek', name: 'DeepSeek' }]),
       listModels: vi.fn(async () => [{ provider: 'deepseek', id: 'deepseek-chat', name: 'DeepSeek Chat' }]),
@@ -216,6 +227,8 @@ function harness(): InstallHarness {
     effect(setup: () => (() => void | Promise<void>)) { return setup() },
     inject: vi.fn(async () => {}),
     logger: { error: vi.fn() },
+    storageDomain: options.storageDomain,
+    agents: options.agents,
   }
   return {
     ctx: ctx as unknown as InstallHarness['ctx'],
@@ -227,6 +240,7 @@ function harness(): InstallHarness {
     get resultObserver() { return resultObserver },
     listeners,
     disposeRegistration,
+    get delivered() { return delivered },
   }
 }
 
