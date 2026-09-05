@@ -2,6 +2,7 @@ import { createElement, memo } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { ApprovalFlowData } from './approval-conversation.js'
+import { resolveReasonCodePresentation } from './reason-code.js'
 import type {} from './locales.js'
 
 export type ApprovalFlowStatus = ApprovalOutcome | 'pending'
@@ -122,6 +123,23 @@ export const APPROVAL_FLOW_STYLES = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dsh-afm-flow__reason {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  margin-top: 1px;
+  color: var(--dsw-alias-label-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-afm-flow__reason[data-reason-class="tamper"] {
+  color: var(--dsw-alias-state-error-primary);
+}
+.dsh-afm-flow__reason[data-reason-class="capacity"],
+.dsh-afm-flow__reason[data-reason-class="storage"],
+.dsh-afm-flow__reason[data-reason-class="projection"] {
+  color: var(--dsw-alias-state-warn-label);
+}
 .dsh-afm-flow__detail {
   display: inline-flex;
   align-items: center;
@@ -218,6 +236,12 @@ export const ApprovalFlowItem = memo(function ApprovalFlowItem({
   const data: ApprovalFlowData = node.data
   const status = statusOf(data)
   const summary = data.reason ?? t('approval.request', { toolName: data.toolName })
+  // The reason code is presentational: mapping it to copy never re-derives the
+  // outcome, so a missing/unknown code (or an absent renderer) can never change
+  // the Gate authorization result — it only chooses the safe generic line.
+  const reason = status === 'pending'
+    ? null
+    : resolveReasonCodePresentation(status, data.reasonCode)
   return createElement(
     'div',
     {
@@ -246,6 +270,18 @@ export const ApprovalFlowItem = memo(function ApprovalFlowItem({
         createElement('code', { className: 'dsh-afm-flow__tool' }, data.toolName),
       ),
       createElement('span', { className: 'dsh-afm-flow__summary', title: summary }, summary),
+      reason === null || reason.copyKey === undefined
+        ? null
+        : createElement(
+          'span',
+          {
+            className: 'dsh-afm-flow__reason',
+            'data-reason-class': reason.class,
+            'data-reason-miss': reason.miss ? 'true' : undefined,
+            title: t(reason.copyKey),
+          },
+          t(reason.copyKey),
+        ),
     ),
     data.callId === undefined
       ? null

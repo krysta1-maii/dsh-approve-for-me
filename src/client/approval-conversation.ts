@@ -8,6 +8,12 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
+import {
+  readReasonCode,
+  readReasonCodeFrom,
+  type ApprovalReasonCodeReader,
+  type ReasonCode,
+} from './reason-code.js'
 
 /** Browser-only projection of the canonical approval audit pair. */
 export interface ApprovalFlowData {
@@ -20,6 +26,12 @@ export interface ApprovalFlowData {
   readonly outcome?: ApprovalOutcome
   readonly decidedSeq?: number
   readonly decidedAt?: number
+  /**
+   * Resolved Gate failure reason code for a decided row, when the event or the
+   * read-only sidecar provides one. Purely presentational — it never re-derives
+   * `outcome` and never affects authorization.
+   */
+  readonly reasonCode?: ReasonCode
 }
 
 declare module '@deepseek-ai/dsh-client-ui-chat/client' {
@@ -35,6 +47,19 @@ const OUTCOMES = new Set<ApprovalOutcome>([
   'cancelled',
   'unavailable',
 ])
+
+/**
+ * Read-only sidecar query surface for the reason code of a decided approval.
+ * The server stores it in a metadata-only decision row; the browser resolves it
+ * here so no mutable/authorizing channel is needed. Defaults to a missing reader
+ * (safe generic line) until the server half wires the real read API.
+ */
+let reasonCodeSidecarReader: ApprovalReasonCodeReader | undefined = undefined
+
+/** Wire (or clear) the read-only sidecar reader used to enrich decided rows. */
+export function setApprovalReasonCodeSidecarReader(reader: ApprovalReasonCodeReader | undefined): void {
+  reasonCodeSidecarReader = reader
+}
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -101,7 +126,25 @@ function applyDecision(state: ApprovalFlowData, match: ConversationMatch): Appro
   if (requestId !== state.requestId || !OUTCOMES.has(outcome)
     || seq === undefined || time === undefined) return state
   if (state.outcome === outcome && state.decidedSeq === seq && state.decidedAt === time) return state
-  return Object.freeze({ ...state, outcome, decidedSeq: seq, decidedAt: time })
+  // The decided event may carry the Gate reason code as read-only metadata; it
+  // is validated against the closed set so an unknown value degrades instead of
+  // leaking into the node.
+  const reasonCode = readReasonCode(data?.['reasonCode'])
+  return Object.freeze({
+    ...state,
+    outcome,
+    decidedSeq: seq,
+    decidedAt: time,
+    ...reasonCode === undefined ? {} : { reasonCode },
+  })
+}
+
+/** Enrich a decided state with a known reason code from the read-only sidecar. */
+function withSidecarReasonCode(state: ApprovalFlowData | undefined): ApprovalFlowData | undefined {
+  if (state === undefined || state.reasonCode !== undefined || state.outcome === undefined) return state
+  const code = readReasonCodeFrom(state.requestId, reasonCodeSidecarReader)
+  if (code === undefined) return state
+  return Object.freeze({ ...state, reasonCode: code })
 }
 
 function fallbackState(context: ConversationNodeContext<ApprovalFlowData>): ApprovalFlowData | undefined {
@@ -109,7 +152,7 @@ function fallbackState(context: ConversationNodeContext<ApprovalFlowData>): Appr
   if (asked === undefined) return undefined
   let state = stateFromAsk(asked)
   for (const match of context.matches) state = applyDecision(state, match)
-  return state
+  return withSidecarReasonCode(state)
 }
 
 /**
@@ -124,7 +167,7 @@ export const approvalConversationDefinition: ConversationNodeDefinition<Approval
   update: (context, match) => applyDecision(context.state, match),
   publication: () => 'immediate',
   buildViewNode: (context) => {
-    const state = context.state ?? fallbackState(context)
+    const state = withSidecarReasonCode(context.state ?? fallbackState(context))
     if (state === undefined) return null
     return {
       key: context.key,
