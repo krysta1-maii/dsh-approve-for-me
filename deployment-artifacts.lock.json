@@ -49,11 +49,11 @@
       "package": "dsh-approve-for-me",
       "version": "0.1.0-dev.0",
       "file": "dsh-approve-for-me-0.1.0-dev.0.tgz",
-      "sha256": "8437201cc5e8d96bf9890276cadf61dc9d91f91c028b02c29058369411a968dd",
+      "sha256": "e0d6571c888c264a54a8a2a06c2fe0df1616cca68fc4416df8a9f296f3e9ecd0",
       "source": {
         "repository": "https://github.com/krysta1-maii/dsh-approve-for-me.git",
-        "commit": "cac76033cee21eda3a406d1576ddb07a829c4275",
-        "tree": "302c1004b2171a8c753f60bfe028a56a9a4b38ff"
+        "commit": "a4c8360e9b63cd1a6ceb7adafe4627839238a5ac",
+        "tree": "34b46bb0331385a3a41f6f18bf23d8b6a127363e"
       }
     }
   ]
