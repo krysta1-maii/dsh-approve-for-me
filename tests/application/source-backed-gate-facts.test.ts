@@ -3,11 +3,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ParentAuthority } from '../../src/ports/managed-reviewer.js'
 import {
   DossierGateFactProjector,
+  gateFailureCodeForUnavailableSubcode,
   sealedCurrentCatalogEpochMatch,
   sealedCurrentCatalogInForce,
   SourceBackedGateFactResolver,
   fingerprintGateConfigurationV1,
 } from '../../src/application/source-backed-gate-facts.js'
+import type { SealedFactsUnavailableSubcodeV1 } from '../../src/dsh/parent-session-fact-source.js'
 import { InMemoryExactDenialBreaker } from '../../src/index.js'
 import { createSealedDossierCompiler } from '../../src/application/sealed-dossier-compiler.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
@@ -203,11 +205,20 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     expect(() => subject.resolver.register({ ...p })).toThrow(/already registered/)
   })
 
-  it('routes a sealed unavailable result to undefined (no delegate, no compile)', async () => {
+  it('routes a sealed tamper unavailable subcode to its typed reason code (WP5-a)', async () => {
     const subject = resolver()
     subject.resolver.register(pending())
     subject.snapshotInput.mockResolvedValue({ agent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' })
-    subject.read.mockResolvedValue({ kind: 'unavailable', reason: 'chain-discontinuity' })
+    subject.read.mockResolvedValue({ kind: 'unavailable', subcode: 'seal-chain-invalid', reason: 'chain-discontinuity' })
+    await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'seal-chain-invalid' })
+    expect(subject.compile).not.toHaveBeenCalled()
+  })
+
+  it('keeps a read-local unclassified subcode unavailable with no typed reason code', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue({ agent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' })
+    subject.read.mockResolvedValue({ kind: 'unavailable', subcode: 'unclassified', reason: 'identity' })
     await expect(subject.resolver.resolve(request)).resolves.toBeUndefined()
     expect(subject.compile).not.toHaveBeenCalled()
   })
@@ -409,5 +420,58 @@ describe('sealedCurrentCatalogEpochMatch (WP4-b4-1a 审查 B1 rule-6)', () => {
 
   it('passes when the header is the newest, not yet recorded in any sealed epoch', () => {
     expect(sealedCurrentCatalogEpochMatch({ recordedHeaderEventSeq: 9, catalogCommitmentFingerprint, packetEpochs: [] })).toEqual({ kind: 'ok' })
+  })
+})
+
+describe('gateFailureCodeForUnavailableSubcode (WP5-a §4.4)', () => {
+  const mapping: ReadonlyArray<[SealedFactsUnavailableSubcodeV1, string | undefined]> = [
+    ['sealed-current-conflict', 'sealed-current-conflict'],
+    ['seal-chain-invalid', 'seal-chain-invalid'],
+    ['seal-live-rebind-failed', 'seal-live-rebind-failed'],
+    ['ledger-storage-unavailable', 'ledger-storage-unavailable'],
+    ['ledger-conflict', 'ledger-conflict'],
+    ['activity-projection-invalid', 'activity-projection-invalid'],
+    ['unclassified', undefined],
+  ]
+  for (const [subcode, expected] of mapping) {
+    it(`maps ${subcode} to ${expected ?? '(no typed code)'}`, () => {
+      expect(gateFailureCodeForUnavailableSubcode(subcode)).toBe(expected)
+    })
+  }
+})
+
+describe('SourceBackedGateFactResolver WP5-a correlation', () => {
+  it('carries non-sensitive correlation on a thrown source-backed failure when wired with metadata', async () => {
+    const read = vi.fn(async (): Promise<SealedFactsReadResult> => ({ kind: 'unavailable', subcode: 'sealed-current-conflict', reason: 'current-conflict' }))
+    const snapshotInput = vi.fn(async (): Promise<SealedAskFactsInputV1> => validAskInput())
+    const subject = new SourceBackedGateFactResolver({
+      sealedFacts: { read },
+      compileSealed: compileSealed(),
+      maxSealedTailEvents: 512,
+      generation: 'generation-1',
+      policyVersion: 'policy-v2',
+      reviewerConfigurationFingerprint,
+      projector: { project: vi.fn() },
+      snapshotInput,
+    })
+    subject.register(pending())
+    const error = await subject.resolve(request).catch((error: unknown) => error)
+    expect(error).toMatchObject({ code: 'sealed-current-conflict' })
+    const correlation = (error as { correlation?: { requestId: string; callId: string; generation: string; policyVersion: string; configurationFingerprint: string; parentSessionId: string } }).correlation
+    expect(correlation).toBeDefined()
+    expect(correlation).toMatchObject({ requestId: 'ask-1', callId: 'call-1', generation: 'generation-1', policyVersion: 'policy-v2', parentSessionId: 'session-1' })
+    const localSchemas = [{ name: 'bash', description: 'bash schema', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+    const realCommitment = createDshAlpha2CatalogCommitment(createDshAlpha2EffectiveCatalog(localSchemas), 'native', 0, localSchemas)
+    expect(correlation?.configurationFingerprint).toBe(fingerprintGateConfigurationV1(reviewerConfigurationFingerprint, realCommitment.fingerprint))
+  })
+
+  it('falls back to a bare typed failure (no correlation) when the resolver lacks metadata', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue({ agent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' })
+    subject.read.mockResolvedValue({ kind: 'unavailable', subcode: 'sealed-current-conflict', reason: 'current-conflict' })
+    const error = await subject.resolver.resolve(request).catch((error: unknown) => error)
+    expect(error).toMatchObject({ code: 'sealed-current-conflict' })
+    expect((error as { correlation?: unknown }).correlation).toBeUndefined()
   })
 })

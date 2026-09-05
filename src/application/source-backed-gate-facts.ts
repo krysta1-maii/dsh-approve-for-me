@@ -16,6 +16,7 @@ import type { ActionSnapshot } from '../domain/protocol.js'
 import { validateDurableToolCatalogCommitmentV1 } from '../domain/dossier.js'
 import type { GateActionFactResolver, GateActionFacts } from './gate-pipeline.js'
 import { GateFailure } from './gate-failure.js'
+import type { GateFailureCode, GateFailureCorrelationV1 } from './gate-failure.js'
 import { canonicalJson } from '../domain/json.js'
 import type { ToolApprovalClass, ToolApprovalClassificationResult } from '../approval-gate/catalog.js'
 import { hashAction } from '../domain/protocol.js'
@@ -23,7 +24,7 @@ import { assessVerifiedActionV1 } from '../domain/risk-assessment.js'
 import type { DangerEscalationRiskV1 } from '../domain/risk-assessment.js'
 import type { TrustEnvelopeInputV1 } from '../approval-gate/trust-envelope.js'
 import type { CompileSealed, SealedDossierCurrentFactsV1 } from './sealed-dossier-compiler.js'
-import type { SealedParentSessionFactsV1, SealedFactsReadResult } from '../dsh/parent-session-fact-source.js'
+import type { SealedParentSessionFactsV1, SealedFactsReadResult, SealedFactsUnavailableSubcodeV1 } from '../dsh/parent-session-fact-source.js'
 
 /**
  * A pending approval handle is correlation metadata only. It intentionally
@@ -117,6 +118,14 @@ export interface SourceBackedGateFactResolverDependencies {
   readonly compileSealed: CompileSealed
   readonly projector: SourceBackedFactProjector
   readonly maxSealedTailEvents: number
+  /**
+   * Identity/generation metadata surfaced only when a sealed-facts failure must
+   * be recorded as a metadata-only audit row (WP5-a). Optional so a default or
+   * test resolver without a real source packet can still route a typed code.
+   */
+  readonly generation?: string
+  readonly policyVersion?: string
+  readonly reviewerConfigurationFingerprint?: string
   /** Obtains the exact capture/sidecar facts + live re-validation for this same immutable approval ask. */
   snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal): Promise<SealedAskFactsInputV1 | undefined>
 }
@@ -328,6 +337,26 @@ export function sealedCurrentCatalogEpochMatch(input: CurrentCatalogEpochMatchIn
 }
 
 /**
+ * WP5-a §4.4 mapping: a reader unavailable subcode becomes a typed gate reason
+ * code. The §4.4 tamper/storage/projection classes map to their own typed code
+ * (the gate routes them hard unavailable); the read-local `unclassified`
+ * subcode (abort / identity / configuration) has no typed gate code and the
+ * resolver keeps returning undefined so the gate stays unavailable without a
+ * false typed reason.
+ */
+export function gateFailureCodeForUnavailableSubcode(subcode: SealedFactsUnavailableSubcodeV1): GateFailureCode | undefined {
+  switch (subcode) {
+    case 'sealed-current-conflict': return 'sealed-current-conflict'
+    case 'seal-chain-invalid': return 'seal-chain-invalid'
+    case 'seal-live-rebind-failed': return 'seal-live-rebind-failed'
+    case 'ledger-storage-unavailable': return 'ledger-storage-unavailable'
+    case 'ledger-conflict': return 'ledger-conflict'
+    case 'activity-projection-invalid': return 'activity-projection-invalid'
+    case 'unclassified': return undefined
+  }
+}
+
+/**
  * Production gate resolver boundary. Registration only makes a one-ask lookup
  * possible; authorization facts are accepted solely after their source packet
  * compiles to a branded sealed dossier. This class deliberately has no fallback
@@ -373,6 +402,12 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     if (input === undefined || request.signal?.aborted) return debug('missing-snapshot-input')
     if (input.agent !== pending.agent || input.approvalRequestId !== pending.requestId
       || input.callId !== pending.callId || input.toolName !== pending.toolName) return debug('snapshot-input-mismatch')
+    // WP5-a: non-sensitive correlation for a metadata-only audit row when this
+    // resolve throws (a sealed-facts read or compile failure surfaces before
+    // GateActionFacts can be assembled).
+    const correlation = this.correlation(input)
+    const gateFailure = (name: GateFailureCode, message: string): GateFailure =>
+      new GateFailure(name, message, correlation === undefined ? undefined : { correlation })
 
     const read = await this.deps.sealedFacts.read({
       agent: pending.agent,
@@ -387,12 +422,18 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
     // delegates); a bounded capacity gap or an explainable unsealed current
     // action delegates in auto-then-user mode with an explicit machine code.
     switch (read.kind) {
-      case 'unavailable':
-        return debug('sealed-unavailable', read.reason)
+      case 'unavailable': {
+        // §4.4 routing: only a typed tamper/storage/projection subcode becomes a
+        // GateFailure; the read-local unclassified subcode (abort/identity/config)
+        // stays a bare unavailable with no invented reason code.
+        const code = gateFailureCodeForUnavailableSubcode(read.subcode)
+        if (code === undefined) return debug('sealed-unavailable', read.reason)
+        throw gateFailure(code, `sealed facts unavailable (${read.reason ?? read.subcode})`)
+      }
       case 'tail-budget-overflow':
-        throw new GateFailure('tail-budget-overflow', `approval sealed tail exceeds maxSealedTailEvents (${read.sealedCount}/${read.maxSealedTailEvents})`)
+        throw gateFailure('tail-budget-overflow', `approval sealed tail exceeds maxSealedTailEvents (${read.sealedCount}/${read.maxSealedTailEvents})`)
       case 'empty-ledger':
-        throw new GateFailure('sealed-current-missing', 'no sealed facts exist for this lifecycle; the current action is unsealed pending')
+        throw gateFailure('sealed-current-missing', 'no sealed facts exist for this lifecycle; the current action is unsealed pending')
       case 'ok':
         break
     }
@@ -425,16 +466,55 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
         // activity ledger exceeds maxLedgerEntries), routed under its own typed
         // reason code -- never as retryable-capability -- so the gate sends it to
         // the human waterfall in auto-then-user mode.
-        throw new GateFailure('ledger-budget-overflow', `approval sealed ledger exceeds maxLedgerEntries (${compiled.metrics.attemptCount})`)
+        throw gateFailure('ledger-budget-overflow', `approval sealed ledger exceeds maxLedgerEntries (${compiled.metrics.attemptCount})`)
       }
       if (compiled.reason === 'budget-overflow') {
-        throw new GateFailure('retryable-capability', 'approval hot packet exceeds the configured size budget')
+        throw gateFailure('retryable-capability', 'approval hot packet exceeds the configured size budget')
       }
       return debug('dossier-not-ready', compiled)
     }
     if (request.signal?.aborted) return debug('aborted')
     return this.deps.projector.project({ request, pending, facts: read.facts, sealedCurrent: carrier, verifiedDossier: compiled.verified })
       ?? debug('projection-failed')
+  }
+
+  /**
+   * Non-sensitive correlation for a metadata-only audit row raised by this
+   * resolver. Only identity, hashes, generation and policy-version strings are
+   * carried; never packet, rationale, tool arguments or content. Returns
+   * undefined when a resolver is not wired with the projector metadata, in which
+   * case the gate records the failure only in scalar metrics.
+   */
+  private correlation(input: SealedAskFactsInputV1): GateFailureCorrelationV1 | undefined {
+    // Every field is read defensively: a resolver wired without the full source
+    // packet correlation must still route a typed code (no metadata row) rather
+    // than throw a secondary TypeError.
+    const lifecycle = input.freeze?.parent
+    const executionFact = input.executionFact
+    const catalogCommitment = executionFact?.catalogCommitment
+    const action = executionFact?.projection
+    if (lifecycle === undefined || executionFact === undefined || catalogCommitment === undefined || action === undefined) return undefined
+    const parentLifecycleFingerprint = canonicalJson({
+      sessionId: lifecycle.sessionId,
+      sessionFormatVersion: lifecycle.sessionFormatVersion,
+      createdAt: lifecycle.createdAt,
+      ...(lifecycle.cwd === undefined ? {} : { cwd: lifecycle.cwd }),
+    })
+    const configurationFingerprint = fingerprintGateConfigurationV1(
+      this.deps.reviewerConfigurationFingerprint ?? '',
+      catalogCommitment.fingerprint,
+    )
+    if (this.deps.generation === undefined || this.deps.policyVersion === undefined || configurationFingerprint === undefined) return undefined
+    return Object.freeze({
+      parentSessionId: lifecycle.sessionId,
+      parentLifecycleFingerprint,
+      requestId: input.approvalRequestId,
+      callId: input.callId,
+      actionHash: action.actionHash,
+      generation: this.deps.generation,
+      policyVersion: this.deps.policyVersion,
+      configurationFingerprint,
+    })
   }
 
   /** Assemble the sealed current facts from the capture-frozen execution fact + approval sidecar. */
