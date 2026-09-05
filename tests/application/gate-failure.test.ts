@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { GateFailure, gateFailureOutcome } from '../../src/application/gate-failure.js'
+import { GateFailure, gateFailureOutcome, GATE_FAILURE_CODES } from '../../src/application/gate-failure.js'
+import type { GateFailureCode } from '../../src/application/gate-failure.js'
 
 describe('gateFailureOutcome WP4-b4 reason-code routing', () => {
   it('routes a sealed tail-budget overflow to delegate only in auto-then-user mode', () => {
@@ -34,5 +35,27 @@ describe('gateFailureOutcome WP4-b4 reason-code routing', () => {
     const failure = new GateFailure('ledger-budget-overflow', 'sealed activity ledger exceeds maxLedgerEntries')
     expect(gateFailureOutcome(failure, 'auto')).toBe('unavailable')
     expect(gateFailureOutcome(failure, 'auto-then-user')).toBe('delegate')
+  })
+
+  // WP5-a §4.4: the tamper, storage and projection classes are hard unavailable
+  // in every mode; they must never be routed to the human waterfall as if they
+  // were an explainable sealed-current-missing or a capacity overflow.
+  const UNAVAILABLE_SIX: readonly GateFailureCode[] = ['sealed-current-conflict', 'seal-chain-invalid', 'seal-live-rebind-failed', 'ledger-storage-unavailable', 'ledger-conflict', 'activity-projection-invalid']
+  for (const code of UNAVAILABLE_SIX) {
+    it(`routes '${code}' to unavailable in every mode (never delegates)`, () => {
+      expect(gateFailureOutcome(new GateFailure(code, 'tamper/failure'), 'auto')).toBe('unavailable')
+      expect(gateFailureOutcome(new GateFailure(code, 'tamper/failure'), 'auto-then-user')).toBe('unavailable')
+    })
+  }
+
+  it('holds a closed runtime code set containing every typed gate code (WP5-a)', () => {
+    const expected: readonly GateFailureCode[] = ['integrity', 'conflict', 'retryable-capability', 'abort', 'deadline', 'lifecycle', 'tail-budget-overflow', 'ledger-budget-overflow', 'sealed-current-missing', 'sealed-current-conflict', 'seal-chain-invalid', 'seal-live-rebind-failed', 'ledger-storage-unavailable', 'ledger-conflict', 'activity-projection-invalid']
+    expect(GATE_FAILURE_CODES).toEqual(expected)
+    expect(new Set(GATE_FAILURE_CODES).size).toBe(GATE_FAILURE_CODES.length)
+  })
+
+  it('fails closed on a runtime-unknown code rather than delegating (WP5-a)', () => {
+    const unknown = new GateFailure('bogus' as GateFailureCode, 'unknown code')
+    expect(gateFailureOutcome(unknown, 'auto-then-user')).toBe('unavailable')
   })
 })
