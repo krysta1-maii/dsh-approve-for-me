@@ -340,6 +340,35 @@ describe('DefaultAuthorizationExtractionCoordinator', () => {
     expect((await ledger.read(LIFE))!).toHaveLength(1)
   })
 
+  it('reuses the exact same absolute deadline across a contamination rotate', async () => {
+    const events = [userEvent(1, 1000, 'please deploy the app for me')]
+    const { clock, channel, port, coordinator } = makeHarness({ events })
+    const armed: number[] = []
+    const originalArm = channel.arm.bind(channel)
+    vi.spyOn(channel, 'arm').mockImplementation((args) => {
+      armed.push(args.deadlineAt)
+      return originalArm(args)
+    })
+    port.deliverHook = attempt => {
+      if (attempt === 1) clock.value += 5_000 // time passes before the rotate re-arms
+      return attempt === 1
+        ? new Error('child contaminated: unauthorized transcript received')
+        : undefined
+    }
+    const status = await coordinator.extract({
+      authority: AUTHORITY,
+      lifecycleFingerprint: LIFE,
+      eventAt: eventAtFrom(events),
+      throughSeq: 1,
+      deadlineAt: deadlineOf(clock),
+    })
+    expect(status).toBe('created')
+    expect(port.rotateCount).toBe(1)
+    expect(armed).toHaveLength(2)
+    // The rotate must never buy extra time: both arms carry the first deadline.
+    expect(armed[1]).toBe(armed[0])
+  })
+
   it('fails when the rotated child is contaminated again, writing nothing', async () => {
     const events = [userEvent(1, 1000, 'please deploy the app for me')]
     const { clock, port, ledger, coordinator } = makeHarness({ events })

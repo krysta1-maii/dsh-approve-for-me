@@ -61,6 +61,10 @@ export class DshStorageDomainSealedFacts {
     const storedActivity = activities.get(ak)
     if (storedActivity !== undefined && canonicalJson(parseActivityV1(storedActivity)) !== canonicalJson(activity)) return 'conflict'
     if (storedActivity === undefined) await activities.put(ak, activity)
+    // Defensive dead branch: an already-indexed seal always trips the
+    // previousSealHash/sourceSeq monotonic gate above first (a replayed tip is
+    // 'conflict', by pinned test), so this path is unreachable in practice.
+    // Kept as a belt-and-suspenders guard for future refactors.
     const alreadyIndexed = old?.keys.includes(sk) ?? false
     if (alreadyIndexed) return this.validated(domain, seal.lifecycleFingerprint) === undefined ? 'conflict' : 'identical'
     await tips.put(sealedFactKey(seal.lifecycleFingerprint), makeTip(seal.lifecycleFingerprint, [...(old?.keys ?? []), sk], seal.sealHash))

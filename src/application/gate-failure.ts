@@ -97,9 +97,10 @@ export function gateFailureOutcome(error: unknown, mode: ReviewMode): GateMachin
     // WP7 smoke evidence: plugin disposal (e.g. a cordis plugin-tree reload
     // triggered by adapter publication) cancels in-flight machine runs with a
     // 'lifecycle' failure. That is a benign cancellation — the disposed
-    // instance simply cannot answer — never a tamper or storage signal, so the
-    // fork must continue its waterfall (composed answerer / re-mounted
-    // instance) exactly as for a caller abort. Routing it to hard 'unavailable'
+    // instance simply cannot answer — never a tamper or storage signal. The
+    // fork claims 'cancelled' as a non-allowing terminal outcome for this
+    // request (no tool executes), so a re-mounted instance or a human answerer
+    // can only be reached by a FRESH ask. Routing it to hard 'unavailable'
     // turned every mid-approval reload into "no approval channel available".
     case 'lifecycle': return 'cancelled'
     case 'retryable-capability':

@@ -353,9 +353,13 @@ export function installApproveForMe(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
     () => ctx.logger.error(new Error('approval ledger storage unavailable')),
   )
-  // Private authorization drawer (WP7-a, decision 9). Drawer pollution or
-  // storage failure degrades to an empty drawer (fewer authorizing rows,
-  // never more), so a failed domain can never block or amplify an approval.
+  // Private authorization drawer (WP7-a, decision 9). A degraded drawer can
+  // never AMPLIFY an approval (absent rows = fewer authorizations). But a
+  // polluted/failed drawer READ on the approval path is hard 'unavailable'
+  // (ledger-storage-unavailable, plan §4.4) — the gate fails closed rather
+  // than adjudicating over a storage state it cannot trust. The turn-end
+  // extraction path, by contrast, degrades silently (fewer rows, retry next
+  // turn) because it never gates a decision.
   const authorizationLedger = rollbackAuthorizationLedger = new DshStorageDomainAuthorizationLedger(
     (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
     () => ctx.logger.error(new Error('authorization ledger storage unavailable')),

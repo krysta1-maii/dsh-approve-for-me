@@ -181,6 +181,8 @@ sealed-facts 一期（`feat/approval-ledger` 的 WP4/WP5）已落地，但以下
 
 **d. split-duplicate 设计边界（窗外历史归 sealed 锚定）。** 旧全历史校验对任一 request id 的重复 approval/asked 失败关闭，包括跨窗口的一对重复；新实现只监测有界 sealed 窗口 —— “1 条窗内 + 1 条窗外古重复”现在通过（窗外历史归 sealed 锚定，不作为 live 重复判据）。这与 WP4-a2 冷启动边界同构（cold-repair／asked 定位只在 `maxSealedTailEvents` 窗内回扫）；两者都把“窗外”视为 sealed-anchored 健壮性边界，窗内重复仍严格 fail-closed。
 
+**e. catalog 不变式校验的扫描跨度随"距上一个 request/header 的事件数"线性增长（容量，非安全）。** 宿主仅在 catalog 变化时写 request/header，长会话单 catalog 场景下该跨度≈会话长度；每步是 O(1) 精确 eventAt 读（无负载拷贝），受 run deadline 约束且失败关闭，远优于旧 20k 硬顶（超限直接抛错）。独立终审已记录此点；后续可用 volatile last-header-seq 索引降为 O(1)。
+
 ## 仍需人工/真实环境 E2E（2026-09-04 对账）
 
 已完成：真实 LLM Guardian 授权内放行/授权外下沉（S1/S2）、SIGKILL 后 pending 状态 cold-resume、policy-v3 danger 升档授权内场景的 live 实测。发布前仍需验证：
