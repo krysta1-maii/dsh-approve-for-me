@@ -2,7 +2,7 @@
 
 面向 DeepSeek Harness（DSH）的受管自动审批插件：工具副作用发生前，由隔离的 Guardian Reviewer 裁决；只有来源可验证、作用域精确且满足证据规则的动作才可能自动放行，其余请求失败关闭或下沉官方人工审批链。
 
-> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点（含 WP7 二期授权抽屉）通过 59 个测试文件、740 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
+> 当前实现基线：精确适配 DSH `0.1.2-rc.1`（commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`，tag `dsh-v0.1.2-rc.1`），采用机器决策槽 v3。宿主闭包直接消费 npm 上已发布的 `0.1.2-rc.1` 包，由 `pnpm-lock.yaml` 的 integrity 固定；本仓库另外交付插件本体与 `@deepseek-ai/dsh-user-approval` 的最小 fork，`dsh-managed-agent` 由独立仓库构建为受摘要约束的安装 artifact。rc.1 实现检查点（含 WP7 二期授权抽屉）通过 59 个测试文件、742 项测试。生产 loader 会从 `ctx.llm.listProviders()` / `listModels()` 绑定并校验 Guardian route，再复用 DSH 的 adapter、凭据、retry 与 model selection；stale provider/model/effort 在注册机器策略前失败关闭。真实 artifact 已具备 disposable Profile 自动冒烟；真实 LLM Guardian 判断质量（S1/S2）与 pending 状态跨进程 cold-resume 已验收，policy-v3 的 danger 升档自动放行已在 live 实例实测通过（证据见 [验收记录](docs/acceptance-0.1.2.md)）；官方 Web 人工面板点击链、故障注入与长程 soak 仍须单独执行端到端验收。
 
 ## 部署组成
 

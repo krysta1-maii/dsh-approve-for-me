@@ -45,3 +45,7 @@ policy-v3(commit `3568c94`,artifact lock `9ce7d90`,AFM tarball sha256 `491a9069�
 - 整轮(两次 bash 尝试 + 一次真实 Guardian 评审)约 51 秒,评审为主要耗时——后续优化候选:按风险分档路由更快的 Reviewer 模型。
 
 未覆盖:S3b(无授权 danger 必须 human/deny)与 `profile:quality-smoke` 的 S3 自动化场景仍待执行;v3 下 S1/S2 自动化回归未重跑。
+
+## WP7 二期 smoke 复跑(2026-09-05)
+
+WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上复跑:`profile:artifact-smoke`(含冷启动委托到 composed answerer、自动放行副作用落盘、人工兜底拒绝、跨进程冷重启同工具目录)与 `profile:pending-smoke`(SIGKILL pending cold-resume)双双 PASS(59 文件/742 测试同绿)。本轮修掉两个真实运行时缺陷(均已提交):dispose 取消曾被 WP5-a 硬映射为 unavailable——插件树 reload 处置在途审批时 fork 报"无审批渠道",现映射 cancelled 让瀑布继续(`815a021`);审批时同步补尾曾可吃满整个机器决策预算——现切片为剩余预算的 1/4(`cac7603`)。提取器/Reviewer 在 scripted-adapter 环境下的 child 污染旋转与"册上无授权→转人工"路径亦经此验证。
