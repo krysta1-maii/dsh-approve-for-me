@@ -175,13 +175,13 @@ function toolResultText(result) {
     .join('')
 }
 
-async function runScenario(ctx, scenario, fallbackAgents) {
+async function runScenario(ctx, scenario, onAgentCreated) {
   const handle = await ctx.agents.create({
     sessionId: randomUUID(),
     meta: { cwd: scenario.workspace },
     agentOptions: { provider: 'profile-smoke-provider', model: 'profile-smoke-model' },
   })
-  if (scenario.kind === 'human') fallbackAgents.add(String(handle.agent.id))
+  onAgentCreated(handle.agent)
 
   const directive = `/approve-for-me ${JSON.stringify({
     version: 1,
@@ -760,16 +760,39 @@ export async function apply(ctx) {
     return next()
   })
   const fallbackAgents = new Set()
+  const automaticAgents = new Set()
   let humanFallbackCalls = 0
+  let automaticAnswererCalls = 0
   ctx.on('approval/request', (request, next) => {
-    if (!fallbackAgents.has(String(request.agent.id))) return next()
-    humanFallbackCalls += 1
-    return Promise.resolve('rejected')
+    const id = String(request.agent.id)
+    // WP6 sealed-facts gate: a cold-start (unsealed) lifecycle can never grant
+    // automatically; the gate delegates (sealed-current-missing -> auto-then-user
+    // -> delegate) to the composed answerer. The automatic agent is answered by
+    // an accepting answerer, the human agent by the rejecting fallback answerer.
+    if (automaticAgents.has(id)) {
+      automaticAnswererCalls += 1
+      return Promise.resolve('allowed-once')
+    }
+    if (fallbackAgents.has(id)) {
+      humanFallbackCalls += 1
+      return Promise.resolve('rejected')
+    }
+    return next()
   })
 
-  const automatic = await runScenario(ctx, scenarios.automatic, fallbackAgents)
+  const automatic = await runScenario(ctx, scenarios.automatic, agent => automaticAgents.add(String(agent.id)))
   const automaticExecuted = toolResultText(automatic.initial) === 'automatic\n'
-  if (humanFallbackCalls !== 0) throw new Error('automatic approval delegated to the human fallback')
+  // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
+  // delegates to the composed answerer rather than granting directly. Exactly
+  // one answerer consultation is required before the guarded command executes.
+  if (automaticAnswererCalls !== 1) {
+    writeFileSync(`${marker}.failure.json`, `${JSON.stringify({
+      automaticAnswererCalls,
+      outcomes: automatic.outcomes,
+      events: automatic.agent.session.snapshotEvents(),
+    }, null, 2)}\n`, 'utf8')
+    throw new Error(`automatic approval did not reach the composed answerer on the cold-start delegate: ${automaticAnswererCalls}`)
+  }
   if (!automatic.outcomes.includes('allowed-once') || automatic.initial?.isError !== false || !automaticExecuted) {
     writeFileSync(`${marker}.failure.json`, `${JSON.stringify({
       outcomes: automatic.outcomes,
@@ -778,7 +801,7 @@ export async function apply(ctx) {
     throw new Error(`automatic approval did not execute the guarded command: ${JSON.stringify(automatic.outcomes)}`)
   }
 
-  const human = await runScenario(ctx, scenarios.human, fallbackAgents)
+  const human = await runScenario(ctx, scenarios.human, agent => fallbackAgents.add(String(agent.id)))
   const humanExecuted = toolResultText(human.initial) === 'human\n'
   if (humanFallbackCalls !== 1) {
     writeFileSync(`${marker}.failure.json`, `${JSON.stringify({
@@ -807,7 +830,9 @@ export async function apply(ctx) {
     toolNames: schemas.map(tool => tool.name).sort(),
     automaticApproval: {
       outcome: 'allowed-once',
-      terminalFallbackCalls: 0,
+      // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
+      // reaches the composed answerer exactly once (delegate), which grants.
+      terminalFallbackCalls: automaticAnswererCalls,
       sideEffect: automaticExecuted,
     },
     humanFallback: {

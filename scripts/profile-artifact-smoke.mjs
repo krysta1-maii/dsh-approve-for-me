@@ -211,9 +211,14 @@ try {
     })
     if (!existsSync(markerPath)) throw new Error(`${phase} Profile boot exited without the injected probe marker`)
     const probe = JSON.parse(readFileSync(markerPath, 'utf8'))
+    // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
+    // never grants automatically (empty ledger -> sealed-current-missing ->
+    // auto-then-user -> delegate); the composed approval/request answerer grants
+    // exactly once. The sealed hot path (an established baseline) auto-grants
+    // later. This alignment is documented in the fixture's apply() comment.
     if (probe.managedAgents !== true || probe.approvalMachinePolicy !== true || probe.toolCount < 1
       || probe.automaticApproval?.outcome !== 'allowed-once'
-      || probe.automaticApproval?.terminalFallbackCalls !== 0
+      || probe.automaticApproval?.terminalFallbackCalls !== 1
       || probe.automaticApproval?.sideEffect !== true
       || probe.humanFallback?.outcome !== 'rejected'
       || probe.humanFallback?.terminalFallbackCalls !== 1
