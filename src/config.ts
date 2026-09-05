@@ -122,6 +122,17 @@ export interface Config {
    * an unsealed session automatically approvable. Default false.
    */
   readonly sealBackfill?: boolean
+  /**
+   * WP9-b fact retention (default true). When enabled, a bounded sweep prunes
+   * fact rows of ended session lifecycles once their grace window closes.
+   * The audit spine (sealed ledger, authorization drawer, decision records)
+   * is never pruned, and every doubt skips (fail closed).
+   */
+  readonly factRetention?: boolean
+  /** WP9-b: retention grace measured from the observed lifecycle end (default 24h). */
+  readonly factRetentionGraceMs?: number
+  /** WP9-b: maximum lifecycles examined by one sweep, oldest ended first (default 8). */
+  readonly factRetentionSweepLimit?: number
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
   readonly caseCapture?: GuardianCaseCaptureConfigV1
@@ -150,6 +161,9 @@ export const Config: z<Config> = z.object({
   maxAuthorizationEntries: z.number().min(1),
   maxAuthorizationExtractionEvents: z.number().min(1),
   sealBackfill: z.boolean(),
+  factRetention: z.boolean(),
+  factRetentionGraceMs: z.number().min(1),
+  factRetentionSweepLimit: z.number().min(1),
   // Full structural schema is enforced in normalizeConfig/TrustEnvelopeConfigV1;
   // keep the loader schema permissive so YAML partials remain expressible.
   trustEnvelope: z.any(),
@@ -180,6 +194,9 @@ export interface NormalizedConfig {
   readonly maxAuthorizationEntries: number
   readonly maxAuthorizationExtractionEvents: number
   readonly sealBackfill: boolean
+  readonly factRetention: boolean
+  readonly factRetentionGraceMs: number
+  readonly factRetentionSweepLimit: number
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
@@ -204,6 +221,11 @@ const DEFAULT_MAX_AUTHORIZATION_DRAWER_ENTRIES = DEFAULT_MAX_AUTHORIZATION_ENTRI
 // WP7 decision 6: one incremental extraction consumes at most this many
 // user/message events; single-sourced with authorization-verification.ts.
 const DEFAULT_AUTHORIZATION_EXTRACTION_EVENTS = DEFAULT_MAX_AUTHORIZATION_EXTRACTION_EVENTS
+// WP9-b: a lifecycle ended longer than this ago (and carrying no doubt)
+// becomes eligible for the fact-retention prune.
+const DEFAULT_FACT_RETENTION_GRACE_MS = 24 * 60 * 60 * 1000
+// WP9-b: one sweep examines at most this many lifecycles, oldest ended first.
+const DEFAULT_FACT_RETENTION_SWEEP_LIMIT = 8
 
 const DEFAULT_TOOL_CATALOG: ApprovalToolCatalog = (() => {
   const unsealed = {
@@ -368,6 +390,20 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (typeof sealBackfill !== 'boolean') {
     throw new TypeError('sealBackfill must be a boolean')
   }
+  // WP9-b: fact retention knobs, fail-closed validated. An invalid value must
+  // never silently disable (or unboundedly enable) pruning.
+  const factRetention = config.factRetention ?? true
+  if (typeof factRetention !== 'boolean') {
+    throw new TypeError('factRetention must be a boolean')
+  }
+  const factRetentionGraceMs = config.factRetentionGraceMs ?? DEFAULT_FACT_RETENTION_GRACE_MS
+  if (!Number.isSafeInteger(factRetentionGraceMs) || factRetentionGraceMs < 1) {
+    throw new TypeError('factRetentionGraceMs must be a positive safe integer')
+  }
+  const factRetentionSweepLimit = config.factRetentionSweepLimit ?? DEFAULT_FACT_RETENTION_SWEEP_LIMIT
+  if (!Number.isSafeInteger(factRetentionSweepLimit) || factRetentionSweepLimit < 1) {
+    throw new TypeError('factRetentionSweepLimit must be a positive safe integer')
+  }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
     modelRoute: {
@@ -393,6 +429,9 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     maxAuthorizationEntries,
     maxAuthorizationExtractionEvents,
     sealBackfill,
+    factRetention,
+    factRetentionGraceMs,
+    factRetentionSweepLimit,
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),

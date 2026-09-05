@@ -310,6 +310,32 @@ describe('plugin config', () => {
       .toThrow(/toolsetVersion/)
   })
 
+  it('normalizes WP9-b fact retention knobs to their defaults and accepts explicit values', () => {
+    const normalized = normalizeConfig(valid())
+    expect(normalized.factRetention).toBe(true)
+    expect(normalized.factRetentionGraceMs).toBe(86_400_000)
+    expect(normalized.factRetentionSweepLimit).toBe(8)
+    const explicit = normalizeConfig({
+      ...valid(),
+      factRetention: false,
+      factRetentionGraceMs: 60_000,
+      factRetentionSweepLimit: 2,
+    })
+    expect(explicit.factRetention).toBe(false)
+    expect(explicit.factRetentionGraceMs).toBe(60_000)
+    expect(explicit.factRetentionSweepLimit).toBe(2)
+  })
+
+  it('rejects invalid WP9-b fact retention knobs (fail closed before mount)', () => {
+    expect(() => normalizeConfig({ ...valid(), factRetention: 'yes' as never })).toThrow(/factRetention must be a boolean/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionGraceMs: 0 })).toThrow(/factRetentionGraceMs/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionGraceMs: -1 })).toThrow(/factRetentionGraceMs/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionGraceMs: 1.5 })).toThrow(/factRetentionGraceMs/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionSweepLimit: 0 })).toThrow(/factRetentionSweepLimit/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionSweepLimit: -3 })).toThrow(/factRetentionSweepLimit/)
+    expect(() => normalizeConfig({ ...valid(), factRetentionSweepLimit: 2.5 })).toThrow(/factRetentionSweepLimit/)
+  })
+
   it('validates through the Schemastery schema', () => {
     const validated = Config(valid())
     const reviewer = (validated as unknown as { reviewer: { generation: string; toolsetVersion: number } }).reviewer

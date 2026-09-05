@@ -18,7 +18,7 @@ function fake() {
   const table = (name: string) => {
     let t = tables.get(name)
     if (!t) { t = new Map(); tables.set(name, t) }
-    return { get: (k: string) => t!.get(k), put: async (k: string, v: unknown) => { t!.set(k, v) } }
+    return { get: (k: string) => t!.get(k), put: async (k: string, v: unknown) => { t!.set(k, v) }, delete: async (k: string) => { t!.delete(k) } }
   }
   const close = vi.fn(async () => {})
   return { tables, close, facility: { open: async () => ({ table, close }) } as StorageDomainFacility }

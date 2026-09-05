@@ -18,6 +18,12 @@ import type { GateFailureCode } from '../application/gate-failure.js'
 export interface StorageDomainTable {
   get(key: string): unknown | undefined
   put(key: string, value: unknown): Promise<void>
+  /**
+   * WP9-b: verified alpha.1 capability used by the fact-retention prune.
+   * Deleting an absent key is a no-op. The union return models both a
+   * synchronous host implementation and a promise-based one; callers await.
+   */
+  delete(key: string): void | Promise<void>
 }
 
 export interface StorageDomainHandle {

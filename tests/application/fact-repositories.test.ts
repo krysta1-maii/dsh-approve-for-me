@@ -98,4 +98,40 @@ describe('in-memory fact repositories', () => {
     // Original row is not overwritten.
     await expect(repo.get({ session, approvalRequestId: 'ask-1', approvalAskedSeq: 5 })).resolves.toEqual(approvalSnapshot())
   })
+
+  describe('WP9-b pruneLifecycle (in-memory)', () => {
+    const options = (overrides: Record<string, unknown> = {}) => ({
+      graceMs: 60_000,
+      now: 2_000_000,
+      endedAt: 1_000_000,
+      live: false,
+      hasPendingApprovals: false,
+      ...overrides,
+    })
+
+    it('skips live, recent, and pending lifecycles without deleting', async () => {
+      const repo = new InMemoryExecutionFactRepository()
+      await repo.create(executionFact())
+      await expect(repo.pruneLifecycle(session, options({ live: true }))).resolves.toBe('skipped-live')
+      await expect(repo.pruneLifecycle(session, options({ endedAt: undefined }))).resolves.toBe('skipped-live')
+      await expect(repo.pruneLifecycle(session, options({ now: 1_000_030 }))).resolves.toBe('skipped-recent')
+      await expect(repo.pruneLifecycle(session, options({ hasPendingApprovals: true }))).resolves.toBe('skipped-uncommitted')
+      await expect(repo.list(session)).resolves.toHaveLength(1)
+    })
+
+    it('skips in-flight executions and prunes settled ones idempotently', async () => {
+      const repo = new InMemoryExecutionFactRepository()
+      await repo.create(executionFact())
+      await expect(repo.pruneLifecycle(session, options())).resolves.toBe('skipped-uncommitted')
+      await repo.stageTerminal({ session, callId: 'call-1', requestEventSeq: 5, terminalEvidence: { isError: false, outcome: { kind: 'completed' } } })
+      await repo.attachResult({ session, callId: 'call-1', requestEventSeq: 5, result: { eventSeq: 6, eventType: 'tool/result', outcome: { kind: 'completed' } } })
+      await expect(repo.pruneLifecycle(session, options())).resolves.toBe('pruned')
+      await expect(repo.list(session)).resolves.toEqual([])
+      await expect(repo.pruneLifecycle(session, options())).resolves.toBe('pruned')
+      const approvals = new InMemoryApprovalSnapshotRepository()
+      await approvals.create(approvalSnapshot())
+      await expect(approvals.pruneLifecycle(session, options())).resolves.toBe('pruned')
+      await expect(approvals.list(session)).resolves.toEqual([])
+    })
+  })
 })

@@ -81,6 +81,8 @@ import { DefaultAuthorizationExtractionCoordinator, boundedSyncTailDeadline } fr
 import type { AuthorizationLiveEventView } from './application/authorization-verification.js'
 import { SealBackfillRunner } from './application/seal-backfill.js'
 import type { SealBackfillLiveEventView } from './application/seal-backfill.js'
+import type { PruneLifecycleResult } from './application/fact-repositories.js'
+import type { SessionLifecycleIdentityV1 } from './domain/records.js'
 import { DshStorageDomainAuthorizationLedger } from './dsh/storage-domain-authorization-ledger.js'
 import { AUTHORIZATION_EXTRACTOR_VERSION, createExtractorProviderData, EXTRACTION_PROVIDER } from './domain/extraction-protocol.js'
 
@@ -312,6 +314,11 @@ export function installApproveForMe(
   let stopResult = () => {}
   let stopSessionEvent = () => {}
   let stopMachinePolicy = () => {}
+  // WP9-b: fact-retention sweep fencing. The lane never rejects; disposal and
+  // mount rollback both abort the sweep and await the lane before the fact
+  // domain closes.
+  let retentionSweepLane: Promise<void> = Promise.resolve()
+  let retentionSweepAborted = false
   // WP8-a: presentational reason-code route disposer; a no-op when the host has
   // no webServer (CLI profile) or registration failed.
   let stopReasonCodeRoute = () => {}
@@ -764,6 +771,94 @@ export function installApproveForMe(
   // running backfill for that session's lifecycle (the idle assumption is
   // invalidated the moment the Host asks again).
   const pendingApprovalRuns = new Map<string, number>()
+  // WP9-b: bounded in-process registry of observed session lifecycles for the
+  // fact-retention sweep. The Storage Domain offers no global enumeration
+  // (per-record layout, index rows keyed by an unrecoverable digest), so the
+  // known-lifecycle set is exactly what this process observed; lifecycles
+  // from earlier processes are not swept (sanctioned limitation, WP9-b
+  // report). The registry is sweep-only state: it never authorizes anything
+  // and is dropped at cap instead of evicting pruning candidates silently.
+  const RETENTION_REGISTRY_CAP = 4096
+  interface RetentionEntry { readonly lifecycle: SessionLifecycleIdentityV1; endedAt: number | undefined }
+  const retentionEntries = new Map<string, RetentionEntry>()
+  const observeRetentionEvent = (session: unknown, event: unknown): void => {
+    if (!normalized.factRetention) return
+    const binding = session as {
+      readonly id?: unknown
+      readonly header?: { readonly version?: unknown; readonly createdAt?: unknown; readonly cwd?: unknown }
+    } | undefined
+    const sessionId = typeof binding?.id === 'string' ? binding.id : ''
+    const header = binding?.header
+    const version = header?.version
+    const createdAt = header?.createdAt
+    if (sessionId.length === 0 || !Number.isSafeInteger(version) || (version as number) < 0
+      || !Number.isSafeInteger(createdAt) || (createdAt as number) < 0) return
+    const cwd = typeof header?.cwd === 'string' && header.cwd.length > 0 ? header.cwd : undefined
+    if (header?.cwd !== undefined && cwd === undefined) return
+    const eventType = (event as { readonly type?: unknown } | undefined)?.type
+    const eventTime = (event as { readonly time?: unknown } | undefined)?.time
+    // A doubtfully shaped event time must never arm a deletion clock.
+    if (!Number.isSafeInteger(eventTime) || (eventTime as number) < 0 || Object.is(eventTime, -0)) return
+    const lifecycle: SessionLifecycleIdentityV1 = {
+      sessionId,
+      sessionFormatVersion: version as number,
+      createdAt: createdAt as number,
+      ...(cwd === undefined ? {} : { cwd }),
+    }
+    const fingerprint = canonicalJson(lifecycle)
+    const entry = retentionEntries.get(fingerprint)
+    // turn/end is the only observed end marker; any later activity
+    // (user/message, tool events, another turn) revokes it.
+    const endedAt = eventType === 'turn/end' ? eventTime as number : undefined
+    if (entry === undefined) {
+      if (retentionEntries.size >= RETENTION_REGISTRY_CAP) return
+      retentionEntries.set(fingerprint, { lifecycle, endedAt })
+      return
+    }
+    entry.endedAt = endedAt
+  }
+  const agentsRegistry = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents
+  /**
+   * WP9-b: one bounded, oldest-first, single-lane retention sweep. Examines
+   * at most factRetentionSweepLimit ended lifecycles; each prune re-checks
+   * every condition fail-closed (liveness, grace, pending approvals, storage
+   * integrity). 'unavailable' (or any unexpected throw) stops the whole
+   * sweep; the specific skips do not. The sweep never rejects.
+   */
+  const runRetentionSweep = (): void => {
+    if (!normalized.factRetention || retentionSweepAborted) return
+    retentionSweepLane = retentionSweepLane.then(async (): Promise<void> => {
+      if (retentionSweepAborted) return
+      const now = Date.now()
+      const candidates = [...retentionEntries.values()]
+        .flatMap(entry => entry.endedAt === undefined ? [] : [{ entry, endedAt: entry.endedAt }])
+        .sort((left, right) => left.endedAt - right.endedAt)
+        .slice(0, normalized.factRetentionSweepLimit)
+      for (const { entry } of candidates) {
+        if (retentionSweepAborted) return
+        const sessionId = entry.lifecycle.sessionId
+        // Fail closed on liveness doubt: a registry that cannot be consulted
+        // reads as live, so nothing is ever pruned on missing evidence.
+        const live = typeof agentsRegistry?.get !== 'function' || agentsRegistry.get(sessionId) !== undefined
+        let result: PruneLifecycleResult
+        try {
+          result = await durableFacts.pruneLifecycle(entry.lifecycle, {
+            graceMs: normalized.factRetentionGraceMs,
+            now,
+            endedAt: entry.endedAt,
+            live,
+            hasPendingApprovals: (pendingApprovalRuns.get(sessionId) ?? 0) > 0,
+          })
+        } catch {
+          return
+        }
+        if (result === 'unavailable') return
+      }
+    }).catch(() => {
+      // The sweep is observational housekeeping; it must never take down the
+      // Host process.
+    })
+  }
   const abortBackfillForAgentSession = (agent: Agent): void => {
     const session = agent.session as unknown as {
       id?: unknown
@@ -822,6 +917,12 @@ export function installApproveForMe(
     })
     stopSessionEvent = ctx.on('session/event', (session, event) => {
       const sessionId = String((session as unknown as { id?: unknown }).id ?? '')
+      // WP9-b: feed the bounded retention registry; a newly ended lifecycle
+      // arms one bounded sweep (the startup sweep precedes any observation,
+      // so the turn/end retrigger is what keeps the bounded prune actually
+      // reaching candidates within a long-running process).
+      observeRetentionEvent(session, event)
+      if ((event as { type?: unknown }).type === 'turn/end') runRetentionSweep()
       const agent = (ctx as unknown as { agents?: { get?(id: string): Agent | undefined } }).agents?.get?.(sessionId)
       if (agent !== undefined) {
         void executionProjection.observeSessionEvent(agent, event as never).catch(() => {
@@ -957,6 +1058,9 @@ export function installApproveForMe(
       },
     }
     stopMachinePolicy = approval.registerMachinePolicy(trackedMachinePolicy)
+    // WP9-b: bounded startup sweep; every observed turn/end retriggers one
+    // (each run stays within factRetentionSweepLimit, oldest first).
+    runRetentionSweep()
   let disposal: Promise<void> | undefined
   return {
     config: normalized,
@@ -1003,6 +1107,9 @@ export function installApproveForMe(
         try { channel.dispose() } catch (error) { errors.push(error) }
         try { await acquiredRegistration.dispose() } catch (error) { errors.push(error) }
         try { await acquiredExtractorRegistration.dispose() } catch (error) { errors.push(error) }
+        // WP9-b: fence the retention sweep before the fact domain closes.
+        retentionSweepAborted = true
+        try { await retentionSweepLane } catch (error) { errors.push(error) }
         for (const close of [() => durableFacts.drain(), () => records.drain()]) {
           try { await close() } catch (error) { errors.push(error) }
         }
@@ -1017,6 +1124,10 @@ export function installApproveForMe(
       try { stop() } catch (reason) { rollbackErrors.push(reason) }
     }
     const rollback = (async () => {
+      // WP9-b: the sweep is normally armed only after the last mount step, but
+      // fence it here too so a mid-mount failure can never leak a pruning
+      // lane past rollback.
+      retentionSweepAborted = true
       for (const close of [
         () => lifecycle.dispose(),
         () => rollbackExtractionChannel?.dispose(),
@@ -1024,6 +1135,7 @@ export function installApproveForMe(
         () => rollbackSealBackfill?.dispose(),
         () => rollbackLedger?.drain(),
         () => rollbackAuthorizationLedger?.drain(),
+        () => retentionSweepLane,
         () => rollbackDurableFacts?.drain(),
         () => rollbackRecords?.drain(),
       ]) {

@@ -40,6 +40,7 @@ function memoryStorageDomain(): StorageDomainFacility {
     return {
       get: (key: string) => current!.get(key),
       put: async (key: string, value: unknown) => { current!.set(key, value) },
+  delete: async (key: string) => { current!.delete(key) },
     }
   }
   return { open: async () => ({ table, close: async () => {} }) }

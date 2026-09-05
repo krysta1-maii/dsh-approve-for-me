@@ -9,7 +9,7 @@ import {
   DshStorageDomainFactRepositories,
   hashAction,
 } from '../../src/index.js'
-import type { ApprovalSnapshotRecordV1, JsonValue, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV2 } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, JsonValue, PruneLifecycleOptions, SessionLifecycleIdentityV1, StorageDomainFacility, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 
 const session: SessionLifecycleIdentityV1 = { sessionId: 'parent-1', sessionFormatVersion: 1, createdAt: 1_000, cwd: '/workspace' }
@@ -43,16 +43,21 @@ function approval(): ApprovalSnapshotRecordV1 {
 
 function facility() {
   const tables = new Map<string, Map<string, unknown>>()
+  const deleteCalls: { table: string; key: string }[] = []
   const close = vi.fn(async () => {})
   const open = vi.fn(async () => ({
     table(name: string) {
       const rows = tables.get(name) ?? new Map<string, unknown>()
       tables.set(name, rows)
-      return { get: (key: string) => rows.get(key), put: async (key: string, value: unknown) => { rows.set(key, value) } }
+      return {
+        get: (key: string) => rows.get(key),
+        put: async (key: string, value: unknown) => { rows.set(key, value) },
+        delete: async (key: string) => { deleteCalls.push({ table: name, key }); rows.delete(key) },
+      }
     },
     close,
   }))
-  return { facility: { open } as StorageDomainFacility, open, close, tables }
+  return { facility: { open } as StorageDomainFacility, open, close, tables, deleteCalls }
 }
 
 function repositories(storage: StorageDomainFacility) {
@@ -327,5 +332,189 @@ describe('WP9-a fact row v2 integrity', () => {
     }
     expect(persisted!.projection.action.arguments.kind).toBe('digest')
     await shared.drain()
+  })
+
+  describe('WP9-b pruneLifecycle', () => {
+    const pruneOptions = (overrides: Partial<PruneLifecycleOptions> = {}): PruneLifecycleOptions => ({
+      graceMs: 60_000,
+      now: 2_000_000,
+      endedAt: 1_000_000,
+      live: false,
+      hasPendingApprovals: false,
+      ...overrides,
+    })
+
+    /** Settle one execution (terminal evidence + result) so it is prunable. */
+    async function settle(shared: DshStorageDomainFactRepositories, callId = 'call-1', requestEventSeq = 5) {
+      await shared.stageTerminal({
+        session,
+        callId,
+        requestEventSeq,
+        terminalEvidence: { isError: false, outcome: { kind: 'completed' } },
+      })
+      await shared.attachResult({
+        session,
+        callId,
+        requestEventSeq,
+        result: { eventSeq: requestEventSeq + 2, eventType: 'tool/result', outcome: { kind: 'completed' } },
+      })
+    }
+
+    const indexKeyOf = (rows: Map<string, unknown>) =>
+      [...rows.entries()].find(([, value]) => (value as { version?: unknown }).version === 1)?.[0]
+
+    it('skips a live lifecycle without touching storage', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      await expect(executions.pruneLifecycle(session, pruneOptions({ live: true }))).resolves.toBe('skipped-live')
+      await expect(executions.pruneLifecycle(session, pruneOptions({ live: 'yes' as never }))).resolves.toBe('skipped-live')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await expect(executions.list(session)).resolves.toHaveLength(1)
+      await shared.drain()
+    })
+
+    it('skips when the lifecycle end is unknown or unproven', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      await expect(executions.pruneLifecycle(session, pruneOptions({ endedAt: undefined }))).resolves.toBe('skipped-live')
+      await expect(executions.pruneLifecycle(session, pruneOptions({ endedAt: -1 }))).resolves.toBe('skipped-live')
+      await expect(executions.pruneLifecycle(session, pruneOptions({ endedAt: 1.5 }))).resolves.toBe('skipped-live')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await shared.drain()
+    })
+
+    it('skips within the grace window', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      await expect(executions.pruneLifecycle(session, pruneOptions({ now: 1_000_000 + 60_000 - 1 }))).resolves.toBe('skipped-recent')
+      // Clock doubt (now precedes endedAt) is unavailable, not recent.
+      await expect(executions.pruneLifecycle(session, pruneOptions({ now: 999_999 }))).resolves.toBe('unavailable')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await expect(executions.list(session)).resolves.toHaveLength(1)
+      await shared.drain()
+    })
+
+    it('skips on caller-evidenced pending approvals', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      await expect(executions.pruneLifecycle(session, pruneOptions({ hasPendingApprovals: true }))).resolves.toBe('skipped-uncommitted')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await shared.drain()
+    })
+
+    it('skips a lifecycle whose executions are still in flight', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      // No terminal evidence/result: the execution has not durably settled.
+      await executions.create(execution())
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('skipped-uncommitted')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await expect(executions.list(session)).resolves.toHaveLength(1)
+      // Settling it afterwards makes the lifecycle prunable.
+      await settle(shared)
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('pruned')
+      await shared.drain()
+    })
+
+    it('prunes records first and both index rows last, and replays idempotently', async () => {
+      const fake = facility()
+      const { shared, executions, approvals } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      await approvals.create(approval())
+      const executionIndexKey = indexKeyOf(fake.tables.get('executions')!)!
+      const approvalIndexKey = indexKeyOf(fake.tables.get('approval_snapshots')!)!
+      const recordDeletesBefore = fake.deleteCalls.length
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('pruned')
+      expect(fake.tables.get('executions')!.size).toBe(0)
+      expect(fake.tables.get('approval_snapshots')!.size).toBe(0)
+      const calls = fake.deleteCalls.slice(recordDeletesBefore)
+      expect(calls).toHaveLength(4)
+      const executionCalls = calls.filter(call => call.table === 'executions').map(call => call.key)
+      const approvalCalls = calls.filter(call => call.table === 'approval_snapshots').map(call => call.key)
+      // Every record key is deleted before its table's index row.
+      expect(executionCalls.at(-1)).toBe(executionIndexKey)
+      expect(approvalCalls.at(-1)).toBe(approvalIndexKey)
+      const lastTwo = calls.slice(-2).map(call => call.key)
+      expect(lastTwo).toEqual(expect.arrayContaining([executionIndexKey, approvalIndexKey]))
+      await expect(executions.list(session)).resolves.toEqual([])
+      await expect(approvals.list(session)).resolves.toEqual([])
+      // Identical replay: nothing left to delete, still 'pruned'.
+      const callsAfterPrune = fake.deleteCalls.length
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('pruned')
+      expect(fake.deleteCalls.length).toBe(callsAfterPrune)
+      await shared.drain()
+    })
+
+    it('stops on a mid-prune delete failure, keeps the index, and resumes idempotently', async () => {
+      // The failure injection must exist before the first open: the
+      // repository caches its domain handle from the first use.
+      const tables = new Map<string, Map<string, unknown>>()
+      let approvalDeleteFailures = 1
+      const failingFacility = {
+        open: async () => ({
+          table(name: string) {
+            const rows = tables.get(name) ?? new Map<string, unknown>()
+            tables.set(name, rows)
+            return {
+              get: (key: string) => rows.get(key),
+              put: async (key: string, value: unknown) => { rows.set(key, value) },
+              delete: async (key: string) => {
+                if (name === 'approval_snapshots' && approvalDeleteFailures > 0) {
+                  approvalDeleteFailures -= 1
+                  throw new Error('storage down')
+                }
+                rows.delete(key)
+              },
+            }
+          },
+          close: async () => {},
+        }),
+      } as StorageDomainFacility
+      const { shared, executions, approvals } = repositories(failingFacility)
+      await executions.create(execution())
+      await settle(shared)
+      await approvals.create(approval())
+      // The executions record is deleted, the approvals record delete throws,
+      // both index rows survive for the replay.
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('unavailable')
+      expect(tables.get('executions')!.size).toBe(1) // index row retained
+      expect(tables.get('approval_snapshots')!.size).toBe(2) // record + index retained
+      // Replay after the transient failure completes the prune.
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('pruned')
+      expect(tables.get('executions')!.size).toBe(0)
+      expect(tables.get('approval_snapshots')!.size).toBe(0)
+      await shared.drain()
+    })
+
+    it('never deletes on a poisoned index row', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await executions.create(execution())
+      await settle(shared)
+      const rows = fake.tables.get('executions')!
+      const indexKey = indexKeyOf(rows)!
+      const index = rows.get(indexKey) as { canonical: string }
+      rows.set(indexKey, { ...index, canonical: 'tampered' })
+      await expect(executions.pruneLifecycle(session, pruneOptions())).resolves.toBe('unavailable')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await shared.drain()
+    })
+
+    it('treats an empty lifecycle as an already-pruned no-op', async () => {
+      const fake = facility()
+      const { shared, executions } = repositories(fake.facility)
+      await expect(executions.pruneLifecycle({ sessionId: 'ghost', sessionFormatVersion: 1, createdAt: 2 }, pruneOptions())).resolves.toBe('pruned')
+      expect(fake.deleteCalls).toHaveLength(0)
+      await shared.drain()
+    })
   })
 })

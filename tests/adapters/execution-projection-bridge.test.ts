@@ -213,6 +213,7 @@ describe('DshExecutionFactProjectionBridge', () => {
         if (attachAttempts === 1) return 'missing' as const
         return repository.attachResult(input)
       },
+      pruneLifecycle: repository.pruneLifecycle.bind(repository),
     }
     const events = [
       { seq: 0, time: 20, type: 'tool/call', data: { turn: 1, step: 0, callId: 'call-1', name: 'bash' } },
@@ -242,6 +243,7 @@ describe('DshExecutionFactProjectionBridge', () => {
         if (createAttempts === 1) return 'conflict' as const
         return approvals.create(input)
       },
+      pruneLifecycle: approvals.pruneLifecycle.bind(approvals),
     }
     const owner = agent([
       { seq: 0, time: 20, type: 'tool/call', data: { callId: 'call-1', name: 'bash' } },

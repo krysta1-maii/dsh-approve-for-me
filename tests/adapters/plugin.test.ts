@@ -41,7 +41,7 @@ import {
   parseApprovalReviewPacketV2,
   parseApprovalReviewRequest,
 } from '../../src/index.js'
-import type { ApprovalSnapshotRecordV1, Config, ToolExecutionFactRecordV2 } from '../../src/index.js'
+import type { ApprovalSnapshotRecordV1, Config, SessionLifecycleIdentityV1, StorageDomainHandle, ToolExecutionFactRecordV2 } from '../../src/index.js'
 import { createDshAlpha2CatalogCommitment, createDshAlpha2EffectiveCatalog } from '../../src/dsh/effective-tool-catalog.js'
 import * as approveForMe from '../../src/index.js'
 import { approvalE2ESchemas, buildApprovalE2EFixture, seedApprovalE2E } from '../helpers/approval-e2e.js'
@@ -1458,4 +1458,183 @@ describe('WP8-c seal backfill wiring', () => {
     await plugin.dispose()
   })
 })
+})
+
+describe('WP9-b fact retention sweep', () => {
+  /** Storage Domain fake with per-table maps, a delete-order log, and an injectable delete failure. */
+  function sweepStorage() {
+    const tables = new Map<string, Map<string, unknown>>()
+    const deleteCalls: { table: string; key: string }[] = []
+    let failOnDeleteCall = -1
+    const facility = {
+      open: async (): Promise<StorageDomainHandle> => ({
+        table(name: string) {
+          const rows = tables.get(name) ?? new Map<string, unknown>()
+          tables.set(name, rows)
+          return {
+            get: (key: string) => rows.get(key),
+            put: async (key: string, value: unknown) => { rows.set(key, value) },
+            delete: async (key: string) => {
+              const callIndex = deleteCalls.length
+              deleteCalls.push({ table: name, key })
+              // Persistent from the nth call on: every re-sweep of the oldest
+              // lifecycle keeps failing, so the sweep must keep stopping.
+              if (failOnDeleteCall >= 0 && callIndex >= failOnDeleteCall) throw new Error('storage down')
+              rows.delete(key)
+            },
+          }
+        },
+        close: async () => {},
+      }),
+    } as StorageDomainFacility
+    return {
+      facility,
+      tables,
+      deleteCalls,
+      /** Make the (0-based) nth and every later delete call throw. */
+      failOnDeleteCall(index: number) { failOnDeleteCall = index },
+    }
+  }
+
+  const lifecycleOf = (id: string): SessionLifecycleIdentityV1 =>
+    ({ sessionId: id, sessionFormatVersion: 1, createdAt: 100, cwd: '/workspace' })
+  const sessionOf = (id: string) =>
+    ({ id, header: { id, version: 1, createdAt: 100, cwd: '/workspace' }, eventAt: () => undefined })
+
+  /** Seed one fully settled execution fact (terminal evidence + result). */
+  async function seedSettled(facility: StorageDomainFacility, lifecycle: SessionLifecycleIdentityV1) {
+    const effective = createDshAlpha2EffectiveCatalog([approvalE2ESchemas])
+    const commitment = createDshAlpha2CatalogCommitment(effective, 'native', 0, [approvalE2ESchemas])
+    const action = createActionSnapshot({
+      toolName: 'bash',
+      arguments: { command: 'pwd' },
+      projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID,
+      semantics: {
+        family: DSH_ALPHA2_SHELL_FAMILY,
+        value: { operation: 'bash', command: 'pwd', description: 'print the working directory', cwd: '/workspace', runInBackground: false },
+      },
+      requestedPermissions: [],
+    })
+    const facts = new DshStorageDomainFactRepositories(facility)
+    const record = createToolExecutionFactRecordV2({
+      session: lifecycle,
+      request: { kind: 'model-tool-call', eventSeq: 3, eventType: 'tool/call', callId: 'call-1', toolName: 'bash' },
+      catalogCommitment: commitment,
+      toolClassification: { classificationCatalogFingerprint: effective.dossier.fingerprint, descriptor: effective.dossier.descriptors.find(item => item.toolName === 'bash')! },
+      projection: { projectorId: DSH_ALPHA2_SHELL_PROJECTOR_ID, action, observedAt: 103 },
+      terminalEvidence: { isError: false, outcome: { kind: 'completed' } },
+      result: { eventSeq: 4, eventType: 'tool/result', outcome: { kind: 'completed' } },
+    })
+    expect(await facts.create(record)).toBe('created')
+    return facts
+  }
+
+  const getFact = (facts: DshStorageDomainFactRepositories, lifecycle: SessionLifecycleIdentityV1) =>
+    facts.get({ session: lifecycle, callId: 'call-1', requestEventSeq: 3 })
+
+  const sweepConfig = (overrides: Record<string, unknown> = {}) => ({
+    ...config,
+    toolCatalog: validToolCatalog(),
+    factRetentionGraceMs: 1_000,
+    factRetentionSweepLimit: 2,
+    ...overrides,
+  })
+
+  const endLifecycle = (h: InstallHarness, id: string, endedAt: number) => {
+    h.listeners.sessionEvent!(sessionOf(id), { seq: 0, type: 'user/message', time: endedAt - 500, data: {} })
+    h.listeners.sessionEvent!(sessionOf(id), { seq: 1, type: 'turn/end', time: endedAt, data: {} })
+  }
+
+  it('turn/end sweep prunes the oldest ended lifecycles up to the sweep limit', async () => {
+    const storage = sweepStorage()
+    const a = lifecycleOf('session-a')
+    const b = lifecycleOf('session-b')
+    const c = lifecycleOf('session-c')
+    const factsA = await seedSettled(storage.facility, a)
+    const factsB = await seedSettled(storage.facility, b)
+    const factsC = await seedSettled(storage.facility, c)
+    const h = harness({ storageDomain: storage.facility, agents: { get: () => undefined } })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, sweepConfig(), { toolFamilyActionProjectors: catalogProjectors })
+    const now = Date.now()
+    endLifecycle(h, 'session-c', now - 60 * 60_000)
+    endLifecycle(h, 'session-a', now - 3 * 60 * 60_000)
+    endLifecycle(h, 'session-b', now - 2 * 60 * 60_000)
+    // Oldest first within the limit of 2: a and b go, c stays.
+    await vi.waitFor(async () => {
+      expect(await getFact(factsA, a)).toBeUndefined()
+      expect(await getFact(factsB, b)).toBeUndefined()
+    }, { timeout: 2000 })
+    expect(await getFact(factsC, c)).toBeDefined()
+    // The executions table holds exactly c's record + index row.
+    expect(storage.tables.get('executions')!.size).toBe(2)
+    await plugin.dispose()
+  })
+
+  it('a mid-sweep storage failure stops the sweep, keeps later lifecycles, and never throws', async () => {
+    const storage = sweepStorage()
+    const a = lifecycleOf('session-a')
+    const b = lifecycleOf('session-b')
+    const factsA = await seedSettled(storage.facility, a)
+    const factsB = await seedSettled(storage.facility, b)
+    // session-a prunes first (oldest): record delete ok, its index delete (call 1) fails.
+    storage.failOnDeleteCall(1)
+    const h = harness({ storageDomain: storage.facility, agents: { get: () => undefined } })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, sweepConfig(), { toolFamilyActionProjectors: catalogProjectors })
+    const now = Date.now()
+    endLifecycle(h, 'session-a', now - 3 * 60 * 60_000)
+    endLifecycle(h, 'session-b', now - 2 * 60 * 60_000)
+    // The failure still removed session-a's record; the sweep then stopped
+    // before touching session-b.
+    await vi.waitFor(async () => {
+      expect(await getFact(factsA, a)).toBeUndefined()
+    }, { timeout: 2000 })
+    expect(await getFact(factsB, b)).toBeDefined()
+    await new Promise<void>(resolve => setTimeout(resolve, 30))
+    expect(await getFact(factsB, b)).toBeDefined()
+    // Disposal fences the sweep lane and resolves cleanly.
+    await expect(plugin.dispose()).resolves.toBeUndefined()
+  })
+
+  it('never prunes a lifecycle whose agent is still live', async () => {
+    const storage = sweepStorage()
+    const live = lifecycleOf('session-live')
+    const dead = lifecycleOf('session-dead')
+    const factsLive = await seedSettled(storage.facility, live)
+    const factsDead = await seedSettled(storage.facility, dead)
+    const h = harness({
+      storageDomain: storage.facility,
+      agents: { get: id => (id === 'session-live' ? {} as never : undefined) },
+    })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, sweepConfig(), { toolFamilyActionProjectors: catalogProjectors })
+    const now = Date.now()
+    endLifecycle(h, 'session-live', now - 3 * 60 * 60_000)
+    endLifecycle(h, 'session-dead', now - 2 * 60 * 60_000)
+    // The dead lifecycle proves the sweep ran to completion; the live one
+    // must be untouched.
+    await vi.waitFor(async () => {
+      expect(await getFact(factsDead, dead)).toBeUndefined()
+    }, { timeout: 2000 })
+    expect(await getFact(factsLive, live)).toBeDefined()
+    await plugin.dispose()
+  })
+
+  it('revokes the end marker when the lifecycle shows activity again', async () => {
+    const storage = sweepStorage()
+    const revived = lifecycleOf('session-revived')
+    const dead = lifecycleOf('session-dead')
+    const factsRevived = await seedSettled(storage.facility, revived)
+    const factsDead = await seedSettled(storage.facility, dead)
+    const h = harness({ storageDomain: storage.facility, agents: { get: () => undefined } })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, sweepConfig(), { toolFamilyActionProjectors: catalogProjectors })
+    const now = Date.now()
+    endLifecycle(h, 'session-revived', now - 3 * 60 * 60_000)
+    // Newer activity revokes the ended state before the sweep observes it.
+    h.listeners.sessionEvent!(sessionOf('session-revived'), { seq: 2, type: 'user/message', time: now - 60_000, data: {} })
+    endLifecycle(h, 'session-dead', now - 2 * 60 * 60_000)
+    await vi.waitFor(async () => {
+      expect(await getFact(factsDead, dead)).toBeUndefined()
+    }, { timeout: 2000 })
+    expect(await getFact(factsRevived, revived)).toBeDefined()
+    await plugin.dispose()
+  })
 })

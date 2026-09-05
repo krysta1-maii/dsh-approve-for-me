@@ -16,7 +16,7 @@ function facility() {
   const rows = new Map<string, unknown>()
   const put = vi.fn(async (key: string, value: unknown) => { rows.set(key, value) })
   const close = vi.fn(async () => {})
-  const open = vi.fn(async () => ({ table: () => ({ get: (key: string) => rows.get(key), put }), close }))
+  const open = vi.fn(async () => ({ table: () => ({ get: (key: string) => rows.get(key), put, delete: async (key: string) => { rows.delete(key) } }), close }))
   return { facility: { open } as StorageDomainFacility, rows, put, close, open }
 }
 
@@ -51,7 +51,7 @@ describe('DshStorageDomainGateDecisionRecordStore', () => {
   it('fails closed when a resolved write is not readable as the canonical record', async () => {
     const put = vi.fn(async () => {})
     const store = new DshStorageDomainGateDecisionRecordStore({
-      open: async () => ({ table: () => ({ get: () => undefined, put }), close: async () => {} }),
+      open: async () => ({ table: () => ({ get: () => undefined, put, delete: async () => {} }), close: async () => {} }),
     })
     await expect(store.createConfirmed(record())).resolves.toBe('unavailable')
     expect(put).toHaveBeenCalledOnce()

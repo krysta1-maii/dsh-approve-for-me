@@ -12,7 +12,8 @@ import {
 import type { ApprovalSnapshotRecordV1, ToolExecutionFactRecordV1, ToolExecutionFactRecordV2 } from '../domain/dossier.js'
 import { canonicalSha256, isPayloadRefV1 } from '../domain/payload-ref.js'
 import type { SessionLifecycleIdentityV1 } from '../domain/records.js'
-import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
+import type { ApprovalSnapshotRepository, ExecutionFactRepository, PruneLifecycleOptions, PruneLifecycleResult } from '../application/fact-repositories.js'
+import { pruneSkipReason } from '../application/fact-repositories.js'
 import { GateFailure } from '../application/gate-failure.js'
 import type { StorageDomainFacility, StorageDomainHandle, StorageDomainTable } from './storage-domain-decision-record.js'
 
@@ -456,6 +457,98 @@ export class DshStorageDomainFactRepositories {
   async listSnapshot(session: SessionLifecycleIdentityV1): Promise<readonly ApprovalSnapshotRecordV1[]> { return this.listApprovals(session) }
   async getSnapshot(input: { session: SessionLifecycleIdentityV1; approvalRequestId: string; approvalAskedSeq: number }): Promise<ApprovalSnapshotRecordV1 | undefined> { return this.getApproval(input) }
 
+  /**
+   * WP9-b lifecycle retention prune (see the application port for the
+   * fail-closed evidence contract). Re-evaluates every skip condition, then
+   * prunes the whole shared fact domain for the lifecycle: every indexed
+   * record row first, both per-lifecycle index rows last. Never throws.
+   */
+  async pruneLifecycle(session: SessionLifecycleIdentityV1, options: PruneLifecycleOptions): Promise<PruneLifecycleResult> {
+    try {
+      if (!this.admissionOpen) return 'unavailable'
+      const skip = pruneSkipReason(options)
+      if (skip !== undefined) return skip
+      return await this.serial(session, () => this.pruneLifecycleLocked(session))
+    } catch {
+      return 'unavailable'
+    }
+  }
+
+  /**
+   * WP9-b mechanical prune. Reads both per-lifecycle index rows (a missing
+   * index means nothing stored; a malformed/mismatched one is doubt), then
+   * re-validates every listed row exactly like list() before deleting
+   * anything: row-digest recompute, strict record shape, exact lifecycle.
+   * Any read doubt → 'unavailable' (skip, never delete). An execution
+   * without durable terminal evidence or its result event is still in
+   * flight → 'skipped-uncommitted'. Deletes are strictly ordered — all
+   * record keys first, both index rows last — and any failure stops
+   * immediately, keeping the remaining index rows so an identical replay
+   * resumes where the crash window left off (deleting an absent key is a
+   * host no-op). A post-delete read-back verifies both index rows are gone.
+   */
+  private async pruneLifecycleLocked(session: SessionLifecycleIdentityV1): Promise<PruneLifecycleResult> {
+    const domain = await this.domain()
+    if (domain === undefined) return 'unavailable'
+    const executionsTable = domain.table('executions')
+    const approvalsTable = domain.table('approval_snapshots')
+    const executionsIndex = this.readPruneIndex(executionsTable, session)
+    const approvalsIndex = this.readPruneIndex(approvalsTable, session)
+    if (executionsIndex === 'invalid' || approvalsIndex === 'invalid') return 'unavailable'
+    if (executionsIndex === 'absent' && approvalsIndex === 'absent') return 'pruned'
+    const executionRows: ToolExecutionFactRecordV2[] = []
+    if (executionsIndex !== 'absent') {
+      for (const key of executionsIndex) {
+        // An absent row is the expected resume state after a crash window
+        // that deleted the record before the index; a present-but-poisoned
+        // row is doubt and blocks the whole prune.
+        const stored = executionsTable.get(key)
+        if (stored === undefined) continue
+        const row = parseRow(stored).record
+        if (!this.validExecution(row) || !sameLifecycle(row.session, session)) return 'unavailable'
+        executionRows.push(row)
+      }
+    }
+    if (executionRows.some(row => row.terminalEvidence === undefined || row.result === undefined)) {
+      return 'skipped-uncommitted'
+    }
+    if (approvalsIndex !== 'absent') {
+      for (const key of approvalsIndex) {
+        const stored = approvalsTable.get(key)
+        if (stored === undefined) continue
+        const row = parseRow(stored).record
+        if (!this.validApproval(row) || !sameLifecycle(row.session, session)) return 'unavailable'
+      }
+    }
+    // Deletion order is pinned: every record key first, both index rows last,
+    // so a crash window always leaves an index that an identical replay can
+    // resume from.
+    if (executionsIndex !== 'absent') {
+      for (const key of executionsIndex) await executionsTable.delete(key)
+    }
+    if (approvalsIndex !== 'absent') {
+      for (const key of approvalsIndex) await approvalsTable.delete(key)
+    }
+    await executionsTable.delete(this.lifecycleKey(session))
+    await approvalsTable.delete(this.lifecycleKey(session))
+    if (executionsTable.get(this.lifecycleKey(session)) !== undefined
+      || approvalsTable.get(this.lifecycleKey(session)) !== undefined) return 'unavailable'
+    return 'pruned'
+  }
+
+  /** WP9-b: one index row read, discriminating "nothing stored" from doubt. */
+  private readPruneIndex(table: StorageDomainTable, session: SessionLifecycleIdentityV1): 'absent' | 'invalid' | readonly string[] {
+    const stored = table.get(this.lifecycleKey(session))
+    if (stored === undefined) return 'absent'
+    try {
+      const parsed = parseIndex(stored)
+      if (!sameLifecycle(parsed.session, session)) return 'invalid'
+      return parsed.keys
+    } catch {
+      return 'invalid'
+    }
+  }
+
   private async createOnce(tableName: string, indexName: string, session: SessionLifecycleIdentityV1, key: string, record: unknown): Promise<'created' | 'identical' | 'conflict'> {
     return this.serial(session, async () => {
       if (!this.admissionOpen) return 'conflict'
@@ -600,6 +693,7 @@ export class DshStorageDomainExecutionFactRepository implements ExecutionFactRep
   stageTerminal(input: Parameters<ExecutionFactRepository['stageTerminal']>[0]) { return this.shared.stageTerminal(input) }
   attachResult(input: Parameters<ExecutionFactRepository['attachResult']>[0]) { return this.shared.attachResult(input) }
   get(input: Parameters<ExecutionFactRepository['get']>[0]) { return this.shared.get(input) }
+  pruneLifecycle(session: SessionLifecycleIdentityV1, options: PruneLifecycleOptions) { return this.shared.pruneLifecycle(session, options) }
 }
 
 export class DshStorageDomainApprovalSnapshotRepository implements ApprovalSnapshotRepository {
@@ -607,4 +701,5 @@ export class DshStorageDomainApprovalSnapshotRepository implements ApprovalSnaps
   list(session: SessionLifecycleIdentityV1, signal?: AbortSignal) { return this.shared.listApprovals(session, signal) }
   create(record: ApprovalSnapshotRecordV1) { return this.shared.createApproval(record) }
   get(input: Parameters<ApprovalSnapshotRepository['get']>[0]) { return this.shared.getApproval(input) }
+  pruneLifecycle(session: SessionLifecycleIdentityV1, options: PruneLifecycleOptions) { return this.shared.pruneLifecycle(session, options) }
 }

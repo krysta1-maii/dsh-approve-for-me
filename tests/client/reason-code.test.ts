@@ -207,7 +207,7 @@ function memoryFacility(): StorageDomainFacility {
   const rows = new Map<string, unknown>()
   return {
     open: async () => ({
-      table: () => ({ get: (key: string) => rows.get(key), put: async (key: string, value: unknown) => { rows.set(key, value) } }),
+      table: () => ({ get: (key: string) => rows.get(key), put: async (key: string, value: unknown) => { rows.set(key, value) }, delete: async (key: string) => { rows.delete(key) } }),
       close: async () => {},
     }),
   }

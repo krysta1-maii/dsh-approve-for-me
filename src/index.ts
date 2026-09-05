@@ -545,7 +545,10 @@ export {
 export type {
   ApprovalSnapshotRepository,
   ExecutionFactRepository,
+  PruneLifecycleOptions,
+  PruneLifecycleResult,
 } from './application/fact-repositories.js'
+export { pruneSkipReason } from './application/fact-repositories.js'
 export type {
   DecisionRecordStorageBackend,
   DecisionRecordStore,
