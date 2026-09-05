@@ -53,3 +53,13 @@ WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上�
 ## WP8 三期交付(2026-09-05)
 
 三期(可见性与旧会话)按施工计划 §5 三期全量落地(65 文件/835 测试 + typecheck/build 全绿,提交 `3d843b4`):原因码 renderer 传输通路(webServer exact 路由 + 浏览器去重缓存桥,Web GUI 下解除一期恒泛化 miss,CLI 自动跳过)、链健康/extractor watermark 只读可见性(ledger-health 路由 + 写者维护 O(1) stats 行 + 设置卡健康区)、`sealBackfill` background-once 补盖章(默认 off;idle+无 pending+单写 lane;与 live 路径共享同一构造纯函数;任一失败整体停止,无章 lifecycle 永不自动放行)。**新增待验收项**:Web GUI 下原因码行/台账健康区的浏览器实测(路由传输仅经 stub 级测试)、sealBackfill=true 的真实宿主补章行为;既有 S3b/S3 自动化与 soak 欠账不变。
+
+## WP9 四期交付(2026-09-06,OOM 根治)
+
+**事故**:web profile 启用插件 ~136s 后 4GB 堆 OOM。根因实证:dsh-storage-domain `open()` 全量物化(`loadAll`)+`approve_for_me` 域一天积累 2.5GB/约 1.5 万条执行记录(均值 ~150KB/条:全量 arguments+每记录内嵌完整工具目录+canonical 全文字符串自校验 2 倍冗余)。处置:旧域授权归档为 `approve_for_me.retired-20260906`;另修复 WP8-a 暴露的 Cordis 可选服务探测 bug(属性访问抛 without inject→统一 `ctx.get`,提交 f2d2704,含 Cordis 保真回归测试)。
+
+**WP9-a(971902f)**:fact 记录格式 v2——PayloadRefV1 内容寻址(inline≤8KB / sha256 digest+2KB 预览)、catalog commitment 缩为 digest+计数、行壳 {version:2,digest,record} 取代 canonical 全文;v1 行有意读作缺席(不迁移)。实测 150KB 参数记录 331KB→8.5KB(38.8x),5MB 参数 10.5MB→8.5KB 且测试断言 <16KB。
+
+**WP9-b(0a9660f)**:保留期剪除——pruneLifecycle 经 per-lifecycle 索引行拿键、逐行复核后删除(先记录后索引、失败即止可重放、删后回读),fail-closed 五态跳过;插件侧有界注册表(4096)+启动/turn-end 有界清扫(默认 grace 24h、单次上限 8);审计脊(sealed 链/授权抽屉/决策记录)永不剪。配置旋钮 factRetention/factRetentionGraceMs/factRetentionSweepLimit。
+
+**验证**:npm run check 66 文件/874 测试全绿(WP9-a 857→WP9-b +17),typecheck/build 绿;artifact/pending profile smoke 复跑见下节。**新增待验收项**:多日真实使用下 approve_for_me 域体积的有界性观察(单元/回归已证单条体积与剪除语义,长期曲线只能 live 观察);跨进程存量剪除依赖上游 loadAll 提案(docs/upstream-storage-loadall-proposal.md)。

@@ -169,9 +169,19 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - **`sealBackfill`（默认 false）**：开启后，root 会话 turn/end 且无在途审批时，对未盖章旧执行记录做每 lifecycle 每进程一次的 background-once 补章 —— 逐条重做快照唯一绑定、live 事件再绑、projector 可解析性验证，用与 live 路径完全同一的构造纯函数（`seal-projection.ts`）造 seal 后 create-once 追加；任一失败整体停止，该 lifecycle 保持无章（永不自动放行）；新审批 run 或新 user/message 立即 abort。
 - 无章旧会话即使不迁移也永久走人工；backfill 只是给"证据齐全的旧会话"一条补账通路，绝不为兼容退化。
 
-## 四期：fact 记录格式 v2 瘦身（WP9-a 已实现）
+## 四期：存储瘦身与保留期（WP9 已实现）
+
+**根因（2026-09-06 线上事故）**：`dsh-storage-domain` 的 `open()` 会把整个存储单元全量物化进堆（`loadAll`）；`approve_for_me` 域一天积累 2.5GB / 约 1.5 万条执行记录（均值 ~150KB：全量 arguments + 每记录内嵌完整工具目录 + canonical 全文字符串自校验的 2 倍冗余），启用插件即 4GB 堆 OOM。四期分两步根治，另有平台侧上游提案（`docs/upstream-storage-loadall-proposal.md`）。
+
+### WP9-a：fact 记录格式 v2 瘦身
 
 OOM 根治第一步：执行记录从 v1（全量 arguments + 每记录内嵌 catalog commitment + canonical 全文自校验的 2 倍冗余）瘦身为 v2 —— arguments/语义投影改内容寻址 `PayloadRefV1`（inline 有界预览或 sha256 digest）、catalog commitment 缩为 `DurableCatalogEvidenceV2`（分类/审批 catalog 指纹 + wireSchemasDigest）、行壳由 `{version, canonical, record}` 改为 `{version:2, digest, record}`（digest 取代 canonical 全文）。实测行体积（10 工具 catalog）：小参数 24.2KB→6.4KB（3.8x）；RCA 均值 150KB 参数 331KB→8.5KB（38.8x）；5MB 参数 10.5MB→8.5KB（1231x）。语义投影值仍内联但有界（>256KB 写入时 fail-closed），动作真实性在消费时由 live 事件参数经 payload-ref 校验重派生并与 actionHash 比对 —— 与 v1 逐字节比较在 sha256 碰撞 resistance 意义下等价。存储域中遗留的 v1 行**有意读作缺席**（fail-closed，行版本不符即整行拒读/拒写覆盖），不做迁移；旧数据已由 WP8 前的归档处置（`approve_for_me.retired-20260906`）。
+
+### WP9-b：保留期剪除（总量上界）
+
+瘦身只缩小单条记录，记录**条数**仍随使用线性增长——保留期才是真正的上界。仓储层新增 `pruneLifecycle`：经 per-lifecycle 索引行取键清单，删除前逐行复核（digest 重算 + 严格形状 + 精确生命周期），**先删全部记录行、后删两个索引行**，中途失败即止（保留索引供 identical 重放续删），删后回读验证，永不抛出。插件侧有界进程内注册表（4096 上限，仅作清扫候选、永不授权）+ 启动清扫一次 + 每次 `turn/end` 重触发（最旧优先、单 lane 串行、`unavailable` 即止）。旋钮：`factRetention`（默认 true）、`factRetentionGraceMs`（默认 24h）、`factRetentionSweepLimit`（默认 8)。审计脊（sealed 链、授权抽屉、决策记录）永不剪除。
+
+**已知限制**：存储设施无全局枚举，跨进程（历史进程遗留的）生命周期本进程不剪；该存量的上界依赖平台 `loadAll` 修复（见上游提案）。
 
 ## 一期已知限制（sealed-facts 阶段，选型说明）
 
