@@ -6,6 +6,17 @@ export const SEALED_FACTS_VERSION = 1 as const
 export const SEAL_HASH_DOMAIN = 'dsh-approve-for-me/approval-ledger/seal/v1\0'
 export const GENESIS_HASH_DOMAIN = 'dsh-approve-for-me/approval-ledger/genesis/v1\0'
 export const TIP_HASH_DOMAIN = 'dsh-approve-for-me/approval-ledger/tip/v1\0'
+/**
+ * Canonical default for the bounded sealed-history window. The sealed-tail read
+ * window (`maxSealedTailEvents`) and the sealed-ledger row-count gate
+ * (`maxLedgerEntries`) MUST both resolve to this one value: a read window wider
+ * than the ledger gate lets the resolver admit rows the compiler then rejects as
+ * `ledger-budget-overflow`, turning an in-budget approval into a spurious
+ * human-waterfall delegate (WP6-b1 measured the default 512>256 inconsistency).
+ * Both the config normalization and the dsh/application layer fallbacks resolve
+ * to this single constant so the default cannot drift again (WP6-b4).
+ */
+export const DEFAULT_MAX_SEALED_HISTORY_WINDOW = 256
 const HASH = /^sha256:[0-9a-f]{64}$/
 export type SealResultStatusV1 = 'completed' | 'tool-error' | 'sandbox-denied'
 export interface SealV1 {

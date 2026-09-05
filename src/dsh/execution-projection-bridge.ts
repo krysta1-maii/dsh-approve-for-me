@@ -7,7 +7,7 @@ import type { ApprovalSnapshotRecordV1, DelegationReceiptFactRecordV1, Principal
 import type { DshAlpha2EffectiveCatalog } from './effective-tool-catalog.js'
 import type { ActionCapture, ActionProjector } from '../ports/action-projector.js'
 import type { ApprovalSnapshotRepository, ExecutionFactRepository } from '../application/fact-repositories.js'
-import { createActivityV1, createSealV1, genesisSealHash } from '../domain/sealed-facts.js'
+import { createActivityV1, createSealV1, DEFAULT_MAX_SEALED_HISTORY_WINDOW, genesisSealHash } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealResultStatusV1, SealV1 } from '../domain/sealed-facts.js'
 
 interface EventLike {
@@ -167,8 +167,8 @@ export class DshExecutionFactProjectionBridge {
     /** Reuse the exact volatile projection when capture and fact bridging share one. */
     private readonly captures?: ActionCapture<Agent, string>,
     private readonly ledger?: SealedFactsLedger,
-    /** Bounded leading-tail window for approval hot-path fact resolution. */
-    private readonly maxSealedTailEvents = 512,
+    /** Bounded leading-tail window for approval hot-path fact resolution (default shared with the ledger gate; WP6-b4). */
+    private readonly maxSealedTailEvents = DEFAULT_MAX_SEALED_HISTORY_WINDOW,
   ) {}
 
   async preExecute(exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {

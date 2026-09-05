@@ -11,6 +11,7 @@ import type {
 } from './approval-gate/trust-envelope.js'
 import { fingerprintApprovalToolCatalogV1 } from './approval-gate/catalog.js'
 import type { ApprovalToolCatalog } from './approval-gate/catalog.js'
+import { DEFAULT_MAX_SEALED_HISTORY_WINDOW } from './domain/sealed-facts.js'
 import { validateCaseCaptureConfig } from './domain/records.js'
 import type { GuardianCaseCaptureConfigV1 } from './domain/records.js'
 
@@ -92,9 +93,9 @@ export interface Config {
   readonly maxDeliveryAttemptsPerChild?: number
   /** Maximum UTF-8 bytes of a complete serialized Guardian dossier. */
   readonly maxDossierBytes?: number
-  /** Maximum unanchored sealed events admitted to an approval hot path. */
+  /** Maximum unanchored sealed events admitted to an approval hot path (default matches the ledger gate at 256; WP6-b4). */
   readonly maxSealedTailEvents?: number
-  /** Maximum ledger entries admitted to an approval hot packet. */
+  /** Maximum ledger entries admitted to an approval hot packet (default matches the sealed tail window at 256; WP6-b4). */
   readonly maxLedgerEntries?: number
   /** Maximum bytes of the recent transcript excerpt admitted to an approval hot packet. */
   readonly maxRecentExcerptBytes?: number
@@ -161,8 +162,11 @@ export interface NormalizedConfig {
 const DEFAULT_MAX_DELIVERY_ATTEMPTS_PER_CHILD = 64
 /** Conservative envelope for the serialized full v1 dossier; deployments may lower it. */
 const DEFAULT_MAX_DOSSIER_BYTES = 256_000
-const DEFAULT_MAX_SEALED_TAIL_EVENTS = 512
-const DEFAULT_MAX_LEDGER_ENTRIES = 256
+// WP6-b4: the sealed-tail read window and the sealed-ledger row gate MUST agree
+// so the resolver never reads more history than the compiler can gate (b1 measured
+// the 512>256 default split). Both defaults resolve to the single source below.
+const DEFAULT_MAX_SEALED_TAIL_EVENTS = DEFAULT_MAX_SEALED_HISTORY_WINDOW
+const DEFAULT_MAX_LEDGER_ENTRIES = DEFAULT_MAX_SEALED_HISTORY_WINDOW
 const DEFAULT_MAX_RECENT_EXCERPT_BYTES = 24_000
 const DEFAULT_MAX_HOT_PACKET_BYTES = 96_000
 

@@ -12,6 +12,7 @@ import type {
 import { sealSourceVerifiedDossier } from '../domain/dossier.js'
 import type { ActionSnapshot } from '../domain/protocol.js'
 import { hashAction } from '../domain/protocol.js'
+import { DEFAULT_MAX_SEALED_HISTORY_WINDOW } from '../domain/sealed-facts.js'
 import type { SealResultStatusV1 } from '../domain/sealed-facts.js'
 import type { SealedParentSessionFactsV1 } from '../dsh/parent-session-fact-source.js'
 
@@ -78,7 +79,8 @@ export interface SealedDossierCompilerOptions {
    * Upper bound on the number of sealed ledger (activity) rows projected into the
    * dossier's interaction.sealed.ledger section. Validated once at construction;
    * must be a positive safe integer. Defaults to 256 (the config
-   * maxLedgerEntries default). The ledger row-count gate is checked before any
+   * maxLedgerEntries default, single-sourced with the sealed tail window; WP6-b4).
+   * The ledger row-count gate is checked before any
    * row is projected: a packet whose activity count exceeds this bound fails
    * closed as { kind: 'incomplete', reason: 'ledger-budget-overflow' } without
    * doing the (possibly large) projection work, distinct from the byte-budget
@@ -229,7 +231,7 @@ export function createSealedDossierCompiler(options: SealedDossierCompilerOption
   if (!Number.isSafeInteger(excerptByteBudget) || excerptByteBudget < 1) {
     throw new TypeError('maxRecentExcerptBytes must be a positive safe integer')
   }
-  const ledgerEntryBudget = options.maxLedgerEntries ?? 256
+  const ledgerEntryBudget = options.maxLedgerEntries ?? DEFAULT_MAX_SEALED_HISTORY_WINDOW
   if (!Number.isSafeInteger(ledgerEntryBudget) || ledgerEntryBudget < 1) {
     throw new TypeError('maxLedgerEntries must be a positive safe integer')
   }

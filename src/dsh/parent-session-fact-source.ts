@@ -1,7 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { canonicalJson, freezeJson, snapshotJson } from '../domain/json.js'
 import type { JsonValue } from '../domain/json.js'
-import { activityClassificationFromDescriptorV1, genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
+import { activityClassificationFromDescriptorV1, DEFAULT_MAX_SEALED_HISTORY_WINDOW, genesisSealHash, parseActivityV1, parseSealV1 } from '../domain/sealed-facts.js'
 import type { ActivityV1, SealV1 } from '../domain/sealed-facts.js'
 import type { SealedFactsLedger } from './execution-projection-bridge.js'
 import type { ExecutionFactRepository } from '../application/fact-repositories.js'
@@ -406,7 +406,7 @@ export async function readSealedParentSessionFacts(input: {
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', reason, detail === undefined ? '' : JSON.stringify(detail))
     return { kind: 'unavailable', subcode, reason }
   }
-  const maxSealedTailEvents = input.maxSealedTailEvents ?? 512
+  const maxSealedTailEvents = input.maxSealedTailEvents ?? DEFAULT_MAX_SEALED_HISTORY_WINDOW
   if (input.signal?.aborted) return fail('unclassified', 'aborted')
   if (!Number.isSafeInteger(maxSealedTailEvents) || maxSealedTailEvents < 1) return fail('unclassified', 'max-sealed-tail-events-invalid', { maxSealedTailEvents })
   const bound = sessionIdentity(input.agent)
