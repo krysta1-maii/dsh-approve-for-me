@@ -26,6 +26,12 @@ function parseChain(tipDomain: 'authorization' | 'checkpoint', value: unknown): 
   return Object.freeze({ ...p, canonical: o.canonical })
 }
 
+/** Dev-only diagnostics, mirroring DSH_APPROVE_FOR_ME_DEBUG in machine-policy-adapter. */
+function debugAuthorizationLedger(event: string, detail: unknown): void {
+  if (process.env.DSH_APPROVE_FOR_ME_DEBUG !== '1') return
+  console.error('[approve-for-me authorization-ledger]', event, detail instanceof Error ? (detail.stack ?? detail.message) : detail)
+}
+
 const spec = Object.freeze({
   name: 'afm_authorization_ledger',
   version: 1,
@@ -69,7 +75,7 @@ export class DshStorageDomainAuthorizationLedger {
   private readonly ready: Promise<StorageDomainHandle | undefined>
 
   constructor(facility: StorageDomainFacility | undefined, onUnavailable: () => void = () => {}) {
-    this.ready = facility === undefined ? (onUnavailable(), Promise.resolve(undefined)) : facility.open(spec).catch(() => { onUnavailable(); return undefined })
+    this.ready = facility === undefined ? (onUnavailable(), Promise.resolve(undefined)) : facility.open(spec).catch((error) => { debugAuthorizationLedger('open failed', error); onUnavailable(); return undefined })
   }
 
   /**
@@ -197,6 +203,7 @@ export class DshStorageDomainAuthorizationLedger {
   }
 
   async drain(): Promise<void> {
+    debugAuthorizationLedger('drain', '')
     this.admissionOpen = false
     await Promise.all(this.tails.values())
     const domain = await this.ready
@@ -222,7 +229,7 @@ export class DshStorageDomainAuthorizationLedger {
       }
       if (chain.tipHash !== authorizationChainTipHash(lifecycleFingerprint, previous)) return undefined
       return Object.freeze(rows)
-    } catch { return undefined }
+    } catch (error) { debugAuthorizationLedger('validatedEntries failed', error); return undefined }
   }
 
   private validatedCheckpoints(domain: StorageDomainHandle, lifecycleFingerprint: string): readonly ExtractionCheckpointV1[] | undefined {
@@ -244,7 +251,7 @@ export class DshStorageDomainAuthorizationLedger {
       }
       if (chain.tipHash !== extractionCheckpointChainTipHash(lifecycleFingerprint, previous)) return undefined
       return Object.freeze(rows)
-    } catch { return undefined }
+    } catch (error) { debugAuthorizationLedger('validatedCheckpoints failed', error); return undefined }
   }
 
   private serial<T>(lifecycle: string, operation: () => Promise<T>): Promise<T> {

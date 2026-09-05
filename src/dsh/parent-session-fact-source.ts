@@ -564,9 +564,9 @@ export async function readSealedParentSessionFacts(input: {
   let authorizations: readonly AuthorizationEntryV1[] = Object.freeze([])
   if (input.authorizationLedger !== undefined) {
     let drawerEntries: readonly AuthorizationEntryV1[] | undefined
-    try { drawerEntries = await input.authorizationLedger.read(lifecycleFingerprint) } catch { return fail('ledger-storage-unavailable', 'authorization-ledger-read') }
+    try { drawerEntries = await input.authorizationLedger.read(lifecycleFingerprint) } catch (error) { if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me sealed-reader] drawer read threw', error); return fail('ledger-storage-unavailable', 'authorization-ledger-read') }
     if (input.signal?.aborted) return fail('unclassified', 'aborted')
-    if (drawerEntries === undefined) return fail('ledger-storage-unavailable', 'authorization-ledger-read')
+    if (drawerEntries === undefined) { if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me sealed-reader] drawer read unavailable', { aborted: input.signal?.aborted === true }); return fail('ledger-storage-unavailable', 'authorization-ledger-read') }
     const verified: AuthorizationEntryV1[] = []
     for (let index = 0; index < drawerEntries.length; index += 1) {
       if (input.signal?.aborted) return fail('unclassified', 'aborted')
