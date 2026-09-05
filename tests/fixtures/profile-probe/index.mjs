@@ -585,6 +585,11 @@ async function applyQuality(ctx, marker) {
     // directly; the machine policy delegates to this composed answerer. It
     // honors the user's authorization -- S1's ordinary-language request covers
     // the safe command (grant), S2's standalone denial blocks it (reject).
+    // WP6-b5: this is the cold-start (no seal row yet) case only. b3's earlier
+    // read that pre-sealing was a gate/lifecycle limitation was a misdiagnosis;
+    // the real cause was the Session eventAt 'this'-unpack in
+    // src/dsh/parent-session-fact-source.ts (fixed WP6-b5), so a >=1-seal
+    // lifecycle reaches the machine-policy allow path.
     if (reqSessionId === s1SessionId || reqAgentId === s1AgentId) {
       s1Delegated = true
       return Promise.resolve('allowed-once')
@@ -628,6 +633,10 @@ async function applyQuality(ctx, marker) {
     let s1GuardianDecision = s1InterceptedDecision ?? s1Extracted.decision
     // WP6 cold-start: the ask is delegated to the answerer (not the Reviewer),
     // so never synthesize a Reviewer 'allow' from the granted outcome.
+    // WP6-b5: cold-start (no seal) only; the b3 "pre-sealing is a
+    // gate/lifecycle limitation" read is corrected -- the true cause was the
+    // Session eventAt 'this'-unpack (fixed WP6-b5), so a >=1-seal lifecycle
+    // reaches the Reviewer/machine-policy allow path.
     if (!s1GuardianDecision && !s1Delegated) {
       if (s1Outcome === 'allowed-once') s1GuardianDecision = 'allow'
     }
@@ -668,6 +677,9 @@ async function applyQuality(ctx, marker) {
     if (!s2GuardianDecision) {
       // WP6 cold-start: S2 is delegated to the answerer (reject), so characterize
       // the decision as the delegated human review rather than a Reviewer 'deny'.
+      // WP6-b5: cold-start (no seal) only -- the real cause of b3's
+      // "pre-sealing is a gate/lifecycle limitation" misdiagnosis was the
+      // Session eventAt 'this'-unpack (fixed WP6-b5).
       if (s2Outcome === 'rejected' && s2Delegated) s2GuardianDecision = 'human_review'
       else if (s2Outcome === 'rejected') s2GuardianDecision = 'deny'
     }
@@ -693,6 +705,10 @@ async function applyQuality(ctx, marker) {
     // WP6 sealed-facts gate cold-start: the machine policy delegates (never
     // grants directly) on an unsealed lifecycle, so assert the delegate path
     // itself was exercised with the answerer's authoritative allow/deny.
+    // WP6-b5: cold-start only -- b3's "pre-sealing is a gate/lifecycle
+    // limitation" read was a misdiagnosis; the true cause was the Session
+    // eventAt 'this'-unpack in src/dsh/parent-session-fact-source.ts (fixed
+    // WP6-b5), so a >=1-seal lifecycle reaches the machine-policy allow path.
     if (
       payload.s1.outcome !== 'allowed-once'
       || payload.s1.sideEffect !== true
@@ -779,6 +795,9 @@ export async function apply(ctx) {
     // automatically; the gate delegates (sealed-current-missing -> auto-then-user
     // -> delegate) to the composed answerer. The automatic agent is answered by
     // an accepting answerer, the human agent by the rejecting fallback answerer.
+    // WP6-b5: cold-start (no seal) only; b3's "pre-sealing is a gate/lifecycle
+    // limitation" read is corrected -- the true cause was the Session eventAt
+    // 'this'-unpack in src/dsh/parent-session-fact-source.ts (fixed WP6-b5).
     if (automaticAgents.has(id)) {
       automaticAnswererCalls += 1
       return Promise.resolve('allowed-once')
@@ -794,6 +813,9 @@ export async function apply(ctx) {
   const automaticExecuted = toolResultText(automatic.initial) === 'automatic\n'
   // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
   // delegates to the composed answerer rather than granting directly. Exactly
+  // WP6-b5: cold-start (no seal) only; the true cause of b3's "pre-sealing is a
+  // gate/lifecycle limitation" read was the Session eventAt 'this'-unpack
+  // (fixed WP6-b5), so a >=1-seal lifecycle reaches the machine-policy allow.
   // one answerer consultation is required before the guarded command executes.
   if (automaticAnswererCalls !== 1) {
     writeFileSync(`${marker}.failure.json`, `${JSON.stringify({
@@ -842,6 +864,9 @@ export async function apply(ctx) {
       outcome: 'allowed-once',
       // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
       // reaches the composed answerer exactly once (delegate), which grants.
+      // WP6-b5: cold-start (no seal) only; b3's "pre-sealing is a
+      // gate/lifecycle limitation" read is corrected -- the true cause was the
+      // Session eventAt 'this'-unpack (fixed WP6-b5).
       terminalFallbackCalls: automaticAnswererCalls,
       sideEffect: automaticExecuted,
     },

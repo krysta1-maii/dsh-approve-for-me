@@ -328,7 +328,11 @@ try {
   // WP6 sealed-facts gate cold-start: an unsealed lifecycle never grants
   // directly (empty ledger -> sealed-current-missing -> auto-then-user ->
   // delegate), so the composed answerer decides -- S1 grants the safe action,
-  // S2 rejects the denied one. Assert the delegate path was exercised.
+  // S2 rejects the denied one. This is the cold-start (no seal row yet) case
+  // only. WP6-b5: b3's read that pre-sealing was a gate/lifecycle limitation
+  // was a misdiagnosis -- the real cause was the Session eventAt 'this'-unpack
+  // in src/dsh/parent-session-fact-source.ts (fixed WP6-b5), so a >=1-seal
+  // lifecycle reaches the machine-policy allow path.
   if (s1?.outcome !== 'allowed-once' || s1?.sideEffect !== true || s1?.delegated !== true) {
     throw new Error(`S1 assertions failed: ${JSON.stringify(s1)}`)
   }

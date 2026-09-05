@@ -214,8 +214,12 @@ try {
     // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
     // never grants automatically (empty ledger -> sealed-current-missing ->
     // auto-then-user -> delegate); the composed approval/request answerer grants
-    // exactly once. The sealed hot path (an established baseline) auto-grants
-    // later. This alignment is documented in the fixture's apply() comment.
+    // exactly once. This is the cold-start (no seal row yet) case only.
+    // WP6-b5: b3's read that pre-sealing was a gate/lifecycle limitation was a
+    // misdiagnosis -- the real cause was the Session eventAt 'this'-unpack in
+    // src/dsh/parent-session-fact-source.ts (fixed WP6-b5), so a >=1-seal
+    // lifecycle reaches the machine-policy allow path. This alignment is
+    // documented in the fixture's apply() comment.
     if (probe.managedAgents !== true || probe.approvalMachinePolicy !== true || probe.toolCount < 1
       || probe.automaticApproval?.outcome !== 'allowed-once'
       || probe.automaticApproval?.terminalFallbackCalls !== 1
