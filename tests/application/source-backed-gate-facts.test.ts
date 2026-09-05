@@ -278,6 +278,15 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'retryable-capability' })
   })
 
+  it('routes a compileSealed ledger-budget overflow to the explicit ledger reason code (T1)', async () => {
+    const subject = resolver()
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue(validAskInput())
+    subject.read.mockResolvedValue({ kind: 'ok', facts: packet() })
+    subject.compile.mockReturnValue({ kind: 'incomplete', reason: 'ledger-budget-overflow', metrics: { attemptCount: 257 } } as never)
+    await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'ledger-budget-overflow' })
+  })
+
   it('routes a generic incomplete dossier to undefined, never delegate (S-2)', async () => {
     const subject = resolver()
     subject.resolver.register(pending())

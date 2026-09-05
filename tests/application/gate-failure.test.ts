@@ -29,4 +29,10 @@ describe('gateFailureOutcome WP4-b4 reason-code routing', () => {
     expect(gateFailureOutcome(new Error('boom'), 'auto-then-user')).toBe('unavailable')
     expect(gateFailureOutcome(undefined, 'auto-then-user')).toBe('unavailable')
   })
+
+  it('routes a ledger-budget-overflow gap to delegate only in auto-then-user mode (T1)', () => {
+    const failure = new GateFailure('ledger-budget-overflow', 'sealed activity ledger exceeds maxLedgerEntries')
+    expect(gateFailureOutcome(failure, 'auto')).toBe('unavailable')
+    expect(gateFailureOutcome(failure, 'auto-then-user')).toBe('delegate')
+  })
 })
