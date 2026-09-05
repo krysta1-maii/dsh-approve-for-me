@@ -1,7 +1,7 @@
 # 审批台账施工计划（approval ledger）
 
-> **状态**：2026-09-04，候选施工计划，尚未实现。  
-> **分支／基点**：feat/approval-ledger；3e97af9。  
+> **状态**：2026-09-05，一期的 sealed-facts 施工（WP4/WP5）已在 feat/approval-ledger 实现（当前 HEAD 9af7b4a，609 项测试全绿）；本文仍为新增语义的最高权威。
+> **分支／基点**：feat/approval-ledger；基点 3e97af9（实施期间推进至 HEAD 9af7b4a）。
 > **权威关系**：本文对新增 sealed facts、授权台账、增量预算、原因码和迁移语义为最高权威；若与 [宿主接口与生命周期契约](host-contract.md) 或 [Guardian 案件卷宗接口与编译规范](guardian-dossier.md) 冲突，新增内容以本文为准。实施时须把两文受影响条款显式标为“由 approval ledger 演化”；未涉及的既有契约保持有效。总顺序见 [文档地图](README.md)，代码事实优先于本文行号。
 
 ## 1. 问题定义与证据摘要

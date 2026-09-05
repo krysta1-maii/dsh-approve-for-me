@@ -32,7 +32,7 @@ patched `dsh-user-approval` 提供唯一的 `registerMachinePolicy()` 槽：
 → ApprovalService.decide()
    ├─ never → rejected
    └─ machine policy
-      ├─ 从 exact Session/source snapshot 编译 branded dossier
+      ├─ 从 exact Agent/Session sealed facts + 有界近期摘录编译 branded hot dossier
       ├─ 从 verified action + direct-user evidence 计算 R4
       ├─ trust envelope / deny breaker / allow cache
       └─ Guardian Reviewer（dsh-managed-agent child）
@@ -90,7 +90,7 @@ R4 是提供给 Reviewer 并约束 authorization-derived cache/replay fast path 
 
 第一版 approval barrier 会在进程重启后的首次审批中重放全部历史 `tool/result`，而每条 native result 又全表读取 execution sidecar，形成 O(R×E) 放大；长 Session 会耗尽事件循环，使 Web Stop、审批持久化和 timer 都得不到调度。当前实现改为利用 `sourceEventSeqs` 和 approval 前最后一条 exact request 做 `repository.get()`，只等待本进程已经在写的结果，不再全历史重放。
 
-`maxSourceEvents` 默认且最高为 `20000`（部署只能下调），在读取全量 sidecar 或同步构建 dossier 前拒绝超预算历史：`auto-then-user` 下进入官方人工审批，`auto` 下保持 unavailable。Storage Domain 大索引每 32 条主动让出一次 macrotask 并检查 AbortSignal；`timeoutMs` 现在覆盖从 machine-policy 入口开始的事实读取、dossier、Reviewer 与确认全链，而不仅是 Reviewer I/O。用户 Stop 或 deadline 会立即结束当前审批等待，底层协作任务仍由 lifecycle 持有并排空，迟到工作不能产生授权。
+sealed-facts 一期把 `maxSourceEvents` 移除：含该旧字段的配置拒绝启动并给出升级错误（热路径改由 sealed-tail／ledger 预算保护）。审批热路径从不调用全量 `snapshotEvents`，事实输入 = 当前冻结动作 + 有界 sealed tail（`maxSealedTailEvents` 默认 `512`）+ 有界台账（`maxLedgerEntries` 默认 `256`）+ 有界近期摘录（`maxRecentExcerptBytes` 默认 `24000`），并预构建 branded hot packet（`maxHotPacketBytes` 默认 `96000 ≤ 256000`）。超预算以显式原因码分流：`tail-budget-overflow`／`ledger-budget-overflow`／hot-packet `budget-overflow`（路由 `retryable-capability`）在 `auto-then-user` 下 delegate 人工、`auto` 下保持 unavailable；篡改／存储／投影失败与 `seal-chain-invalid` 类为 unavailable 且不 delegate。`timeoutMs` 仍覆盖从 machine-policy 入口开始的事实读取、dossier、Reviewer 与确认全链；用户 Stop 或 deadline 会立即结束当前审批等待，底层协作任务仍由 lifecycle 持有并排空，迟到工作不能产生授权。
 
 ## Reviewer 容量与 deadline
 
@@ -150,6 +150,18 @@ DSH_DEMO_PROVIDER=<provider-id> DSH_DEMO_MODEL=<model-id> npm run demo:prepare
 - 验证 `ctx.managedAgents` 的 create/renew/provider API、`ctx.approval.registerMachinePolicy()` 以及非空 Host tool catalog。
 
 它证明 artifact 安装图、Cordis loader boot、机器决策槽与两条业务路径在真实 Host 进程内可达；它**不证明**浏览器审批面板与人工点击流程、真实 LLM Reviewer 的判断质量，也不证明带 pending approval / Reviewer child 状态的跨进程 cold-resume（冒烟里的 Guardian 是脚本化 adapter，不是真实模型）。后两者分别由 `profile:quality-smoke`（真实 LLM，S1/S2）与 `profile:pending-smoke`（SIGKILL cold-resume）覆盖，证据与 policy-v3 live 实测补记见 [验收记录](docs/acceptance-0.1.2.md)。
+
+## 一期已知限制（sealed-facts 阶段，选型说明）
+
+sealed-facts 一期（`feat/approval-ledger` 的 WP4/WP5）已落地，但以下是有意的阶段边界与可用性权衡，供读代码／做验收时对照：
+
+**a. B2 键域权衡：turn 内用户 follow-up 不再重置已熔断 denial。** 精确 denial 断路器按键 `lifecycle + turn + actionHash`（不再含 `frontierSeq`）。同一 turn 内用户追加 follow-up 消息也不会重置已熔断的同一 `actionHash` 拒绝 —— 方向为 fail-closed（不因同 turn 重试放松），代价是用户需进入新 turn 才能重新请求刚被熔断的动作；authorization-derived allow cache 的键仍保留 `frontierSeq`。
+
+**b. `dossierMetricsSink` 一期惰性。** 插件保留 `dossierMetricsSink` 选项但一期无生产调用点，`getDossierCompilationMetrics` 恒返回空基线。WP6 验收的“完整卷宗 vs 热路径体积对比”需要真实可达的全量编译入口 —— 该入口已不作为生产热路径调用（plugin 闭包内的 `compile()` 已移除），验收 harness 须用导出的 `DefaultDossierCompiler`／`InstrumentedDossierCompiler` 类自建。
+
+**c. 原因码 renderer 一期恒泛化 miss（浏览器↔服务端传输属三期）。** 宿主 `ctx.remote` 由宿主生成、不可被插件扩展，浏览器↔服务端 reason-code 传输未生产闭环，因此一期生产 renderer 恒走泛化 `reason.miss`。render-miss 分层：client 侧 = `miss` 标志 + `data-reason-miss` DOM 属性（表现层）；数值 `reason-code-render-miss` 遥测计数属服务端／Gate 侧（WP5-a）。
+
+**d. split-duplicate 设计边界（窗外历史归 sealed 锚定）。** 旧全历史校验对任一 request id 的重复 approval/asked 失败关闭，包括跨窗口的一对重复；新实现只监测有界 sealed 窗口 —— “1 条窗内 + 1 条窗外古重复”现在通过（窗外历史归 sealed 锚定，不作为 live 重复判据）。这与 WP4-a2 冷启动边界同构（cold-repair／asked 定位只在 `maxSealedTailEvents` 窗内回扫）；两者都把“窗外”视为 sealed-anchored 健壮性边界，窗内重复仍严格 fail-closed。
 
 ## 仍需人工/真实环境 E2E（2026-09-04 对账）
 
