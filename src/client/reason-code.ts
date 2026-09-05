@@ -69,6 +69,10 @@ export const REASON_CODE_TABLE: Readonly<Record<ReasonCode, ReasonCodeDescriptor
   'sealed-current-missing': { class: 'capacity', tone: 'warn', copyKey: 'reason.sealed-current-missing' },
   'tail-budget-overflow': { class: 'capacity', tone: 'warn', copyKey: 'reason.tail-budget-overflow' },
   'ledger-budget-overflow': { class: 'capacity', tone: 'warn', copyKey: 'reason.ledger-budget-overflow' },
+  // budget-overflow: listed in the §4.4 brief but currently unreachable from the
+  // Gate mapping -- the compileSealed hot-packet size overflow routes to
+  // 'retryable-capability' (source-backed-gate-facts). Retained defensively as
+  // part of the closed set.
   'budget-overflow': { class: 'capacity', tone: 'warn', copyKey: 'reason.budget-overflow' },
   'retryable-capability': { class: 'capacity', tone: 'warn', copyKey: 'reason.retryable-capability' },
   'ledger-storage-unavailable': { class: 'storage', tone: 'warn', copyKey: 'reason.ledger-storage-unavailable' },

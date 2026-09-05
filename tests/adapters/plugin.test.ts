@@ -894,8 +894,12 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     expect(h.deliveredPacket).toBeDefined()
     const excerpts = (h.deliveredPacket as any)?.dossier?.interaction?.sealed?.excerpts
     expect(excerpts).toBeDefined()
-    expect(excerpts.length).toBeGreaterThan(0)
-    expect(excerpts[0]).toMatchObject({ seq: expect.any(Number), text: expect.any(String) })
+    // WP6 verbatim pin: the excerpt channel must carry the fixture user-message text
+    // exactly (it is an intent aid, not a transformed summary), in seq order.
+    expect(excerpts.map((entry: { text: string }) => entry.text)).toEqual([
+      'list the workspace',
+      'now print the working directory',
+    ])
 
     // The Reviewer's explicit decision is committed as the allow outcome.
     await plugin.dispose()
