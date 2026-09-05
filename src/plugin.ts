@@ -210,6 +210,22 @@ function askRef(seq: number, session: { eventAt?: (seq: number) => SealedSession
  * registration → adapters → hooks, so the decision tool never waits on a
  * half-initialized manager.
  */
+/**
+ * Optional Cordis service probe. On a real Cordis context, plain property
+ * access to a non-injected service throws `cannot get property "<name>"
+ * without inject` (the context Proxy get-trap enforces declared injections —
+ * confirmed live on the web profile, WP8-a hot incident 2026-09-06), so
+ * optional capabilities MUST be discovered through `ctx.get(name)`, which
+ * returns undefined for absent or inactive providers. Plain-object test
+ * harnesses expose no `get`; only those fall back to a direct property
+ * read. A context that HAS `get` is never touched with property access.
+ */
+function probeOptionalService<T>(ctx: unknown, name: string): T | undefined {
+  const withGet = ctx as { get?: (name: string) => unknown }
+  if (typeof withGet.get === 'function') return withGet.get(name) as T | undefined
+  return (ctx as Record<string, unknown>)[name] as T | undefined
+}
+
 export function installApproveForMe(
   ctx: Context,
   config: ApproveForMeConfig,
@@ -345,12 +361,12 @@ export function installApproveForMe(
   // access remains non-authorizing because the source-backed resolver cannot
   // correlate an approval ask without both sidecars.
   const durableFacts = rollbackDurableFacts = new DshStorageDomainFactRepositories(
-    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    probeOptionalService<StorageDomainFacility>(ctx, 'storageDomain'),
   )
   const executionFacts = new DshStorageDomainExecutionFactRepository(durableFacts)
   const approvalSnapshots = new DshStorageDomainApprovalSnapshotRepository(durableFacts)
   const ledger = rollbackLedger = new DshStorageDomainSealedFacts(
-    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    probeOptionalService<StorageDomainFacility>(ctx, 'storageDomain'),
     () => ctx.logger.error(new Error('approval ledger storage unavailable')),
   )
   // Private authorization drawer (WP7-a, decision 9). A degraded drawer can
@@ -361,7 +377,7 @@ export function installApproveForMe(
   // extraction path, by contrast, degrades silently (fewer rows, retry next
   // turn) because it never gates a decision.
   const authorizationLedger = rollbackAuthorizationLedger = new DshStorageDomainAuthorizationLedger(
-    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    probeOptionalService<StorageDomainFacility>(ctx, 'storageDomain'),
     () => ctx.logger.error(new Error('authorization ledger storage unavailable')),
   )
   // WP8-c: background-once seal backfill runner. Created unconditionally (it
@@ -620,17 +636,17 @@ export function installApproveForMe(
   // failed domain remains non-authorizing: record confirmation returns
   // unavailable, so no automatic grant can escape the durability boundary.
   const records = rollbackRecords = new DshStorageDomainGateDecisionRecordStore(
-    (ctx as unknown as { storageDomain?: StorageDomainFacility }).storageDomain,
+    probeOptionalService<StorageDomainFacility>(ctx, 'storageDomain'),
   )
-  // WP8-a: read-only reason-code renderer transport. The web GUI host exposes
-  // ctx.webServer; the CLI profile has no such service, so probe-cast and skip
-  // silently rather than injecting a required service. The route is purely
+  // WP8-a: read-only reason-code renderer transport. The web GUI host provides
+  // the webServer service; the CLI profile does not, so probe via ctx.get (plain
+  // property access throws on real Cordis contexts) and skip silently. The route is purely
   // presentational — a failing/absent registration (or host) can never affect
   // authorization, so registration failure is logged and never fails the mount.
   {
-    const webServer = (ctx as unknown as {
-      webServer?: { register(route: { kind: 'exact'; path: string; handler: unknown }): () => void }
-    }).webServer
+    const webServer = probeOptionalService<{
+      register(route: { kind: 'exact'; path: string; handler: unknown }): () => void
+    }>(ctx, 'webServer')
     if (webServer !== undefined && typeof webServer.register === 'function') {
       try {
         stopReasonCodeRoute = webServer.register({
@@ -646,13 +662,13 @@ export function installApproveForMe(
     }
   }
   // WP8-b: read-only ledger-health transport (seal-chain counts + authorization
-  // drawer counts + extractor watermark). Same probe-cast, no-webServer skip,
+  // drawer counts + extractor watermark). Same ctx.get probe, no-webServer skip,
   // and never-fail-the-mount discipline as WP8-a: the route only ever exposes
   // bounded scalars, and a degraded store merely omits its segment.
   {
-    const webServer = (ctx as unknown as {
-      webServer?: { register(route: { kind: 'exact'; path: string; handler: unknown }): () => void }
-    }).webServer
+    const webServer = probeOptionalService<{
+      register(route: { kind: 'exact'; path: string; handler: unknown }): () => void
+    }>(ctx, 'webServer')
     if (webServer !== undefined && typeof webServer.register === 'function') {
       try {
         stopLedgerHealthRoute = webServer.register({

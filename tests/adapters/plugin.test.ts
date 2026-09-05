@@ -1216,6 +1216,31 @@ describe('WP8-a reason-code renderer transport route', () => {
     expect(h.webServerRoute).toBeUndefined()
     await plugin.dispose()
   })
+
+  // Regression for the 2026-09-06 live incident: on a real Cordis context,
+  // plain property access to a non-injected service throws
+  // 'cannot get property "<name>" without inject'. Optional capabilities must
+  // be discovered through ctx.get — model that contract with a Proxy that
+  // throws on webServer/storageDomain property access.
+  it('probes optional services via ctx.get on a Cordis-faithful context (property access throws)', async () => {
+    const h = harness({ webServer: true })
+    const inner = h.ctx as unknown as Record<string | symbol, unknown>
+    const cordisLike = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'get') return (name: string) => target[name]
+        if (prop === 'webServer' || prop === 'storageDomain') {
+          throw new Error(`cannot get property "${String(prop)}" without inject`)
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const plugin = installApproveForMe(cordisLike as unknown as Context, config)
+    expect(h.webServerRoute?.kind).toBe('exact')
+    expect(h.webServerRoute?.path).toBe(REASON_CODE_ROUTE_PATH)
+    expect(h.webServerRoutes.get(LEDGER_HEALTH_ROUTE_PATH)?.path).toBe(LEDGER_HEALTH_ROUTE_PATH)
+    await plugin.dispose()
+    expect(h.disposeWebServerRoute).toHaveBeenCalledOnce()
+  })
 })
 
 describe('WP8-b ledger-health route', () => {
