@@ -19,6 +19,7 @@ import type {
 import { DefaultDecisionChannel } from './application/decision-channel.js'
 import { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
 import { GateFailure } from './application/gate-failure.js'
+import type { GateFailureCode } from './application/gate-failure.js'
 import { DefaultReviewCoordinator } from './application/review-coordinator.js'
 import { DefaultReviewerDirectory } from './application/reviewer-directory.js'
 import { SerialLanes } from './application/serial-lanes.js'
@@ -80,6 +81,14 @@ export interface ApproveForMePlugin {
   getReviewerTelemetryMetrics(): ReviewerTelemetrySnapshotV1
   /** WP5-a §4.4 scalar-only gate failure reason-code totals. */
   getGateFailureMetrics(): GateFailureMetricsSnapshotV1
+  /**
+   * WP5-c: read-only, metadata-only reason code for an approval request id.
+   * Resolves the typed Gate failure code recorded on the most recent
+   * post-facts-failure decision row, or `undefined` when there is none or the
+   * read cannot be satisfied. It never exposes a dossier, action, rationale or
+   * authorizing channel — a read miss degrades to the renderer's generic line.
+   */
+  readApprovalReasonCode(requestId: string): Promise<GateFailureCode | undefined>
   dispose(): Promise<void>
 }
 
@@ -592,6 +601,7 @@ export function installApproveForMe(
     getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
     getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
     getGateFailureMetrics: () => gateFailureMetrics.snapshot(),
+    readApprovalReasonCode: requestId => records.readReasonCode(requestId),
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal
       // Fence observers and policy first, abort active work, then drain every

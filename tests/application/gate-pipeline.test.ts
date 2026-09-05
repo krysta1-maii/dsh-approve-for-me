@@ -82,6 +82,7 @@ function recordsStub(overrides: Partial<GateDecisionRecordStore> = {}): GateDeci
   return {
     createConfirmed: vi.fn(async (): Promise<GateDecisionRecordResult> => 'confirmed'),
     recordBestEffort: vi.fn(async () => {}),
+    readReasonCode: vi.fn(async () => undefined),
     ...overrides,
   }
 }

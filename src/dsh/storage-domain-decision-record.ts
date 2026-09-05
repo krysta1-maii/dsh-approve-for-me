@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from '../domain/json.js'
 import { parseGateDecisionRecord } from '../application/gate-pipeline.js'
+import { GATE_FAILURE_CODES } from '../application/gate-failure.js'
 import type {
   GateDecisionRecord,
   GateDecisionRecordResult,
   GateDecisionRecordStore,
 } from '../application/gate-pipeline.js'
+import type { GateFailureCode } from '../application/gate-failure.js'
 
 /** Minimal structural view of the alpha.1 Storage Domain API.
  *
@@ -33,6 +35,12 @@ interface StoredGateDecisionRecordV1 {
   readonly record: GateDecisionRecord
 }
 
+/** WP5-c metadata-only failure-code row: only a request id key and reason code. */
+interface StoredFailureCodeIndexV1 {
+  readonly version: 1
+  readonly failureCode: GateFailureCode
+}
+
 const decisionRecordDomainSpec = Object.freeze({
   name: 'afm_decision_records',
   version: 1,
@@ -52,6 +60,21 @@ const decisionRecordDomainSpec = Object.freeze({
             throw new TypeError('approve-for-me decision record canonical form does not match')
           }
           return Object.freeze({ version: 1, canonical: row.canonical, record })
+        },
+      }),
+    }),
+    // WP5-c: read-only metadata-only reason-code index keyed by request id. It
+    // deliberately stores ONLY the typed reason code (plus the row version) so a
+    // renderer sidecar read never exposes a packet, action, rationale or hash.
+    reasonCode: Object.freeze({
+      valueSchema: Object.freeze({
+        parse(value: unknown): StoredFailureCodeIndexV1 {
+          const row = value as Partial<StoredFailureCodeIndexV1>
+          if (row?.version !== 1) throw new TypeError('invalid approve-for-me reason-code index row')
+          if (typeof row.failureCode !== 'string' || !GATE_FAILURE_CODES.includes(row.failureCode as GateFailureCode)) {
+            throw new TypeError('approve-for-me reason-code index failureCode is invalid')
+          }
+          return Object.freeze({ version: 1, failureCode: row.failureCode as GateFailureCode })
         },
       }),
     }),
@@ -80,6 +103,20 @@ function recordKey(record: GateDecisionRecord): string {
     actionHash: record.actionHash,
   })
   return `r_${createHash('sha256').update(identity).digest('hex')}`
+}
+
+/** WP5-c: validate a reason-code index row; a missing/malformed value is a miss. */
+function parseReasonCodeIndex(value: unknown): StoredFailureCodeIndexV1 | undefined {
+  try {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const row = value as Partial<StoredFailureCodeIndexV1>
+    if (row.version !== 1 || typeof row.failureCode !== 'string' || !GATE_FAILURE_CODES.includes(row.failureCode as GateFailureCode)) {
+      return undefined
+    }
+    return Object.freeze({ version: 1, failureCode: row.failureCode as GateFailureCode })
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -111,6 +148,22 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
     if (result === 'conflict') throw new Error('durable decision record conflicts with an existing record')
   }
 
+  async readReasonCode(requestId: string): Promise<GateFailureCode | undefined> {
+    // WP5-c: read-only, metadata-only reason-code query. It reads exactly one
+    // non-sensitive row (request id → typed reason code) and never exposes the
+    // record shape, packet, action, rationale or hashes. Any storage failure or
+    // missing row degrades to `undefined` (the renderer already falls back to
+    // the generic safe line); this read is never an authorizing channel.
+    try {
+      const domain = await this.ready
+      if (domain === undefined) return undefined
+      const row = parseReasonCodeIndex(domain.table('reasonCode').get(requestId))
+      return row === undefined ? undefined : row.failureCode
+    } catch {
+      return undefined
+    }
+  }
+
   async drain(): Promise<void> {
     this.admissionOpen = false
     await Promise.all(this.tails.values())
@@ -135,7 +188,18 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
           return matchesCanonicalRecord(existing, canonical) ? 'confirmed' : 'conflict'
         }
         await table.put(key, Object.freeze({ version: 1, canonical, record: Object.freeze({ ...record }) }))
-        return matchesCanonicalRecord(table.get(key), canonical) ? 'confirmed' : 'unavailable'
+        const result = matchesCanonicalRecord(table.get(key), canonical) ? 'confirmed' : 'unavailable'
+        // WP5-c: keep the read-only metadata-only reason-code index in sync. A
+        // best-effort index write is non-authorizing: if it fails the durable
+        // record is still confirmed and the renderer sidecar degrades to a miss.
+        if (result === 'confirmed' && record.route === 'post-facts-failure' && record.failureCode !== undefined) {
+          try {
+            await domain.table('reasonCode').put(record.requestId, Object.freeze({ version: 1, failureCode: record.failureCode }))
+          } catch {
+            /* reason-code index is presentational, never authorizing */
+          }
+        }
+        return result
       } catch {
         return 'unavailable'
       }

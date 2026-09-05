@@ -217,6 +217,14 @@ export function parseGateDecisionRecord(input: unknown): GateDecisionRecord {
 export interface GateDecisionRecordStore {
   createConfirmed(record: GateDecisionRecord): Promise<GateDecisionRecordResult>
   recordBestEffort(record: GateDecisionRecord): Promise<void>
+  /**
+   * WP5-c: read-only, metadata-only reason-code query. Resolves the typed Gate
+   * failure code recorded on the most recent post-facts-failure decision row for
+   * an approval request id, or `undefined` when there is no such record or the
+   * read cannot be satisfied. It exposes ONLY the non-sensitive reason code.
+   * The caller (renderer sidecar) already degrades a miss to the generic line.
+   */
+  readReasonCode(requestId: string): Promise<GateFailureCode | undefined>
 }
 
 export interface GatePreReview {

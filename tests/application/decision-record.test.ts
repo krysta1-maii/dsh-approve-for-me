@@ -135,4 +135,35 @@ describe('InMemoryGateDecisionRecordStore', () => {
     const store = new InMemoryGateDecisionRecordStore()
     await expect(store.createConfirmed(record({ failureCode: 'seal-chain-invalid' }))).rejects.toThrow(/failureCode/)
   })
+
+  it('reason-code read returns the recorded failure code for a post-facts row (WP5-c)', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const failure: GateDecisionRecord = {
+      ...base, route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'unavailable',
+      disposition: 'no-decision', failureStage: 'verified-dossier', failureCode: 'ledger-storage-unavailable',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }
+    await expect(store.createConfirmed(failure)).resolves.toBe('confirmed')
+    await expect(store.readReasonCode('ask-1')).resolves.toBe('ledger-storage-unavailable')
+  })
+
+  it('reason-code read misses for a non-failure row or another request id (WP5-c)', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    await expect(store.createConfirmed(record())).resolves.toBe('confirmed')
+    await expect(store.readReasonCode('ask-1')).resolves.toBeUndefined()
+    await expect(store.readReasonCode('ask-other')).resolves.toBeUndefined()
+  })
+
+  it('reason-code read resolves via a recorded best-effort row (WP5-c)', async () => {
+    const store = new InMemoryGateDecisionRecordStore()
+    const { reviewRunId: _reviewRunId, ...base } = record()
+    const failure: GateDecisionRecord = {
+      ...base, route: 'post-facts-failure', normalizedDecision: 'no-decision', pluginDisposition: 'delegate',
+      disposition: 'no-decision', failureStage: 'verified-dossier', failureCode: 'tail-budget-overflow',
+      reviewAttempts: 0, contaminatedRotationAttempts: 0, contaminatedRotations: 0,
+    }
+    await store.recordBestEffort(failure)
+    await expect(store.readReasonCode('ask-1')).resolves.toBe('tail-budget-overflow')
+  })
 })

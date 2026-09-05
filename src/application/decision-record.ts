@@ -4,6 +4,13 @@ import type {
   GateDecisionRecordResult,
   GateDecisionRecordStore,
 } from './gate-pipeline.js'
+import type { GateFailureCode } from './gate-failure.js'
+
+/** WP5-c: a post-facts-failure row's reason code for a matching request id. */
+function reasonCodeFor(record: GateDecisionRecord, requestId: string): GateFailureCode | undefined {
+  if (record.requestId !== requestId || record.route !== 'post-facts-failure') return undefined
+  return record.failureCode
+}
 
 /**
  * In-memory minimal decision-record store used for tests and pre-durable
@@ -52,6 +59,21 @@ export class InMemoryGateDecisionRecordStore implements GateDecisionRecordStore 
       record.actionHash,
       record.requestId,
     ].join('\0')
+  }
+
+  async readReasonCode(requestId: string): Promise<GateFailureCode | undefined> {
+    // WP5-c: metadata-only scan of the durable decision rows for the approval
+    // request id. Only the typed reason code ever returns; the record shape,
+    // packet, action and rationale stay behind the writable boundary.
+    for (const record of this.confirmed.values()) {
+      const code = reasonCodeFor(record, requestId)
+      if (code !== undefined) return code
+    }
+    for (const record of this.bestEffort.values()) {
+      const code = reasonCodeFor(record, requestId)
+      if (code !== undefined) return code
+    }
+    return undefined
   }
 
   private sameDecision(a: GateDecisionRecord, b: GateDecisionRecord): boolean {
