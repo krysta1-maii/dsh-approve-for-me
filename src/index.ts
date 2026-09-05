@@ -283,9 +283,9 @@ export type {
 } from './dsh/machine-policy-adapter.js'
 
 // Application gate pieces (DSH-neutral).
-export { GateFailure, gateFailureOutcome } from './application/gate-failure.js'
+export { GateFailure, gateFailureOutcome, GATE_FAILURE_CODES } from './application/gate-failure.js'
 export { ApprovalRunLifecycle } from './application/approval-run-lifecycle.js'
-export type { GateFailureCode } from './application/gate-failure.js'
+export type { GateFailureCode, GateFailureCorrelationV1 } from './application/gate-failure.js'
 export {
   InMemoryAllowCache,
   InMemoryExactDenialBreaker,
@@ -318,11 +318,18 @@ export type {
   ReviewerTelemetrySink,
   ReviewerTelemetrySnapshotV1,
 } from './ports/reviewer-telemetry.js'
+export { InMemoryGateFailureMetrics } from './application/gate-failure-metrics.js'
+export type {
+  GateFailureMetricsObservationV1,
+  GateFailureMetricsSink,
+  GateFailureMetricsSnapshotV1,
+} from './ports/gate-failure-metrics.js'
 export { InMemoryGateActionFactStore } from './application/capture-gate-facts.js'
 export type { GateFactRegistration } from './application/capture-gate-facts.js'
 export {
   DossierGateFactProjector,
   SourceBackedGateFactResolver,
+  gateFailureCodeForUnavailableSubcode,
 } from './application/source-backed-gate-facts.js'
 export type {
   PendingSourceBackedAsk,
@@ -369,7 +376,7 @@ export type {
 } from './ports/dossier-compilation-metrics.js'
 export { DefaultPrincipalDelegationProjector } from './application/delegation-projector.js'
 export { DshParentSessionFactSource, deriveRequesterDepthV1, readSealedParentSessionFacts } from './dsh/parent-session-fact-source.js'
-export type { RequesterDepthEvidenceV1, SealedFactsReadResult, SealedParentSessionFactsV1 } from './dsh/parent-session-fact-source.js'
+export type { RequesterDepthEvidenceV1, SealedFactsReadResult, SealedFactsUnavailableSubcodeV1, SealedParentSessionFactsV1 } from './dsh/parent-session-fact-source.js'
 export type { LiveAgentRegistry, ParentSessionFactSource } from './ports/parent-session-facts.js'
 export {
   InMemoryApprovalSnapshotRepository,

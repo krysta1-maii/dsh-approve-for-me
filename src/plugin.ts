@@ -44,6 +44,8 @@ import { InMemoryDossierCompilationMetrics } from './application/instrumented-do
 import type { DossierCompilationMetricsSink, DossierCompilationMetricsSnapshotV1 } from './ports/dossier-compilation-metrics.js'
 import { InMemoryReviewerTelemetry } from './application/reviewer-telemetry.js'
 import type { ReviewerTelemetrySink, ReviewerTelemetrySnapshotV1 } from './ports/reviewer-telemetry.js'
+import { InMemoryGateFailureMetrics } from './application/gate-failure-metrics.js'
+import type { GateFailureMetricsSink, GateFailureMetricsSnapshotV1 } from './ports/gate-failure-metrics.js'
 import { createMachinePolicyAdapter } from './dsh/machine-policy-adapter.js'
 import type { PatchedMachineApprovalPolicyLike } from './dsh/machine-policy-adapter.js'
 import { createManagedReviewerPort } from './dsh/managed-controller.js'
@@ -76,6 +78,8 @@ export interface ApproveForMePlugin {
   getDossierCompilationMetrics(): DossierCompilationMetricsSnapshotV1
   /** Non-sensitive bounded Reviewer execution measurements. */
   getReviewerTelemetryMetrics(): ReviewerTelemetrySnapshotV1
+  /** WP5-a §4.4 scalar-only gate failure reason-code totals. */
+  getGateFailureMetrics(): GateFailureMetricsSnapshotV1
   dispose(): Promise<void>
 }
 
@@ -329,10 +333,19 @@ export function installApproveForMe(
   // stays for API stability and reports the empty legacy baseline (WP4-b §7: the
   // manual full-compile harness builds the class from the export directly).
   const dossierMetrics = new InMemoryDossierCompilationMetrics()
+  // WP5-a §4.4: scalar-only gate failure counter; observe is best-effort and
+  // never authorizing. It exposes per-reason-code totals for the tamper,
+  // storage, projection and capacity classes.
+  const gateFailureMetrics = new InMemoryGateFailureMetrics()
   const factStore = new SourceBackedGateFactResolver({
     sealedFacts,
     compileSealed,
     maxSealedTailEvents: normalized.maxSealedTailEvents,
+    // WP5-a: the resolver carries this generation/policy/reviewer-config metadata
+    // so a source-backed failure can be recorded as a metadata-only audit row.
+    generation: normalized.preset.generation,
+    policyVersion: normalized.preset.policyVersion,
+    reviewerConfigurationFingerprint: normalized.preset.configurationFingerprint,
     projector: new DossierGateFactProjector(
       normalized.preset.generation,
       normalized.preset.configurationFingerprint,
@@ -511,6 +524,7 @@ export function installApproveForMe(
     preReview,
     records,
     reviewerTelemetry: reviewerTelemetrySink,
+    gateFailureMetrics,
     mode: normalized.mode,
     // No automatic path may run until the source adapter supplies a complete,
     // source-verified dossier for this exact approval ask.
@@ -577,6 +591,7 @@ export function installApproveForMe(
     config: normalized,
     getDossierCompilationMetrics: () => dossierMetrics.snapshot(),
     getReviewerTelemetryMetrics: () => reviewerTelemetry.snapshot(),
+    getGateFailureMetrics: () => gateFailureMetrics.snapshot(),
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal
       // Fence observers and policy first, abort active work, then drain every
