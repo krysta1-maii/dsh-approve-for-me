@@ -87,6 +87,28 @@ const decisionRecordDomainSpec = Object.freeze({
   }),
 })
 
+/**
+ * WP10-d: durable-audit write failures are deliberately non-authorizing and are
+ * swallowed upstream (the gate must never convert an audit failure into an
+ * authorization decision), which also makes them invisible. With the debug flag
+ * on, each failure point logs ONE bounded metadata line — route, normalized
+ * outcome, stage and an error class only — never a packet, action, rationale or
+ * hash. The log never influences a branch.
+ */
+function debugRecordWriteFailure(stage: string, record: unknown, error?: unknown): void {
+  if (process.env.DSH_APPROVE_FOR_ME_DEBUG !== '1') return
+  const row = (record === null || typeof record !== 'object' ? {} : record) as Record<string, unknown>
+  const field = (key: string): string | undefined => typeof row[key] === 'string' ? row[key] as string : undefined
+  console.error('[approve-for-me decision-record]', JSON.stringify({
+    stage,
+    route: field('route'),
+    normalizedDecision: field('normalizedDecision'),
+    pluginDisposition: field('pluginDisposition'),
+    failureStage: field('failureStage'),
+    error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
+  }))
+}
+
 function matchesCanonicalRecord(value: unknown, canonical: string): boolean {
   try {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
@@ -142,7 +164,12 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
   constructor(facility: StorageDomainFacility | undefined) {
     this.ready = facility === undefined
       ? Promise.resolve(undefined)
-      : facility.open(decisionRecordDomainSpec).catch(() => undefined)
+      : facility.open(decisionRecordDomainSpec).catch((error: unknown) => {
+          // WP10-d: an unopened domain turns every later write into a silent
+          // 'unavailable'; surface it under the debug flag only.
+          debugRecordWriteFailure('domain-open-failed', undefined, error)
+          return undefined
+        })
   }
 
   async createConfirmed(record: GateDecisionRecord): Promise<GateDecisionRecordResult> {
@@ -151,7 +178,12 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
 
   async recordBestEffort(record: GateDecisionRecord): Promise<void> {
     const result = await this.write(record)
-    if (result === 'conflict') throw new Error('durable decision record conflicts with an existing record')
+    // WP10-d: 'unavailable' resolves silently by design (audit must not
+    // authorize); the debug line inside write() is the only observability.
+    if (result === 'conflict') {
+      debugRecordWriteFailure('best-effort-conflict', record)
+      throw new Error('durable decision record conflicts with an existing record')
+    }
   }
 
   async readReasonCode(requestId: string): Promise<GateFailureCode | undefined> {
@@ -178,35 +210,55 @@ export class DshStorageDomainGateDecisionRecordStore implements GateDecisionReco
   }
 
   private async write(record: GateDecisionRecord): Promise<GateDecisionRecordResult> {
-    if (!this.admissionOpen) return 'unavailable'
-    try { record = parseGateDecisionRecord(record) } catch { return 'unavailable' }
+    if (!this.admissionOpen) {
+      debugRecordWriteFailure('admission-closed', record)
+      return 'unavailable'
+    }
+    try { record = parseGateDecisionRecord(record) } catch (error) {
+      debugRecordWriteFailure('record-invalid', record, error)
+      return 'unavailable'
+    }
     const key = recordKey(record)
     const previous = this.tails.get(key) ?? Promise.resolve()
     const operation = previous.then(async (): Promise<GateDecisionRecordResult> => {
       try {
-        if (!this.admissionOpen) return 'unavailable'
+        if (!this.admissionOpen) {
+          debugRecordWriteFailure('admission-closed-in-lane', record)
+          return 'unavailable'
+        }
         const domain = await this.ready
-        if (domain === undefined) return 'unavailable'
+        if (domain === undefined) {
+          debugRecordWriteFailure('domain-unavailable', record)
+          return 'unavailable'
+        }
         const table = domain.table('records')
         const canonical = canonicalJson(record)
         const existing = table.get(key)
         if (existing !== undefined) {
-          return matchesCanonicalRecord(existing, canonical) ? 'confirmed' : 'conflict'
+          if (matchesCanonicalRecord(existing, canonical)) return 'confirmed'
+          debugRecordWriteFailure('conflict-with-existing', record)
+          return 'conflict'
         }
         await table.put(key, Object.freeze({ version: 1, canonical, record: Object.freeze({ ...record }) }))
-        const result = matchesCanonicalRecord(table.get(key), canonical) ? 'confirmed' : 'unavailable'
+        let result: GateDecisionRecordResult = 'confirmed'
+        if (!matchesCanonicalRecord(table.get(key), canonical)) {
+          debugRecordWriteFailure('write-unverified', record)
+          result = 'unavailable'
+        }
         // WP5-c: keep the read-only metadata-only reason-code index in sync. A
         // best-effort index write is non-authorizing: if it fails the durable
         // record is still confirmed and the renderer sidecar degrades to a miss.
         if (result === 'confirmed' && record.route === 'post-facts-failure' && record.failureCode !== undefined) {
           try {
             await domain.table('reasonCode').put(record.requestId, Object.freeze({ version: 1, failureCode: record.failureCode }))
-          } catch {
+          } catch (error) {
             /* reason-code index is presentational, never authorizing */
+            debugRecordWriteFailure('reason-code-index', record, error)
           }
         }
         return result
-      } catch {
+      } catch (error) {
+        debugRecordWriteFailure('storage-error', record, error)
         return 'unavailable'
       }
     })
