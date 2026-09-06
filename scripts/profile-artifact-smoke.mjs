@@ -192,6 +192,11 @@ try {
   const profileDir = join(dshHome, 'profiles', profile)
   const profileManifest = join(profileDir, 'package.json')
   const userPatch = join(profileDir, 'cordis.patch.yml')
+  // genesisReview is deliberately NOT set here: the deployment-frozen plugin
+  // artifact predates the key (WP10-a) and its closed-set config validation
+  // would reject it. Once the demo kit is rebuilt with WP10 code, either set
+  // genesisReview: false explicitly to keep pinning the rollback channel, or
+  // update the profile-probe fixture for genesis machine-review assertions.
   writeFileSync(userPatch, `- id: dsh-approve-for-me\n  config:\n    mode: auto-then-user\n    timeoutMs: 5000\n    trustEnvelope:\n      version: 1\n      enabled: false\n    reviewer:\n      generation: profile-smoke-v1\n      provider: profile-smoke-provider\n      model: profile-smoke-model\n      policyVersion: policy-v2\n      toolsetVersion: 1\n`)
 
   const dump = run(process.execPath, [
@@ -211,10 +216,26 @@ try {
     })
     if (!existsSync(markerPath)) throw new Error(`${phase} Profile boot exited without the injected probe marker`)
     const probe = JSON.parse(readFileSync(markerPath, 'utf8'))
-    // WP6 sealed-facts gate cold-start: the first ask on an unsealed lifecycle
-    // never grants automatically (empty ledger -> sealed-current-missing ->
-    // auto-then-user -> delegate); the composed approval/request answerer grants
-    // exactly once. This is the cold-start (no seal row yet) case only.
+    // Genesis semantics (plan docs/genesis-first-approval-plan.md §3, WP10-a):
+    // an empty sealed ledger (no chain_tips row) is a LEGAL genesis state, not a
+    // gate failure. With genesisReview at its default true the first ask
+    // compiles a genesis dossier and enters machine review: a scripted Reviewer
+    // 'allow' grants allowed-once WITHOUT any answerer consultation, while
+    // 'human_review' routes to the composed approval/request answerer. The
+    // legacy empty-ledger -> sealed-current-missing -> auto-then-user ->
+    // delegate behavior now holds only with genesisReview: false (plan §5
+    // rollback channel).
+    // Deployment-artifact constraint: this smoke installs the deployment-frozen
+    // pre-WP10 trio (approve tarball locked at source commit 9c886a4, before the
+    // genesisReview config key existed), so the observable behavior here is
+    // still the legacy cold-start delegate path, and the frozen plugin's
+    // closed-set config validation would reject a genesisReview key in
+    // cordis.patch.yml. The profile-probe fixture pins that legacy path
+    // (answerer consulted exactly once per scenario) until the demo kit is
+    // rebuilt with WP10 code and the fixture gains genesis assertions (separate
+    // wave). The assertions below therefore pin the frozen artifact's legacy
+    // cold-start delegate: the answerer grants exactly once on the automatic
+    // scenario and rejects on the human scenario.
     // WP6-b5: b3's read that pre-sealing was a gate/lifecycle limitation was a
     // misdiagnosis -- the real cause was the Session eventAt 'this'-unpack in
     // src/dsh/parent-session-fact-source.ts (fixed WP6-b5), so a >=1-seal

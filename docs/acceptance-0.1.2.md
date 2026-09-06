@@ -48,7 +48,7 @@ policy-v3(commit `3568c94`,artifact lock `9ce7d90`,AFM tarball sha256 `491a9069�
 
 ## WP7 二期 smoke 复跑(2026-09-05)
 
-WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上复跑:`profile:artifact-smoke`(含冷启动委托到 composed answerer、自动放行副作用落盘、人工兜底拒绝、跨进程冷重启同工具目录)与 `profile:pending-smoke`(SIGKILL pending cold-resume)双双 PASS(59 文件/742 测试同绿)。本轮修掉两个真实运行时缺陷(均已提交):dispose 取消曾被 WP5-a 硬映射为 unavailable——插件树 reload 处置在途审批时 fork 报"无审批渠道",现映射 cancelled 让瀑布继续(`815a021`);审批时同步补尾曾可吃满整个机器决策预算——现切片为剩余预算的 1/4(`cac7603`)。提取器/Reviewer 在 scripted-adapter 环境下的 child 污染旋转与"册上无授权→转人工"路径亦经此验证。
+WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上复跑:`profile:artifact-smoke`(含冷启动委托到 composed answerer——该预期自 WP10 起演化为冷启动机器评审:Reviewer allow→自动放行、human_review→delegate 人工,见 `genesis-first-approval-plan.md` §3 与 §4 WP10-e 项 9;自动放行副作用落盘、人工兜底拒绝、跨进程冷重启同工具目录)与 `profile:pending-smoke`(SIGKILL pending cold-resume)双双 PASS(59 文件/742 测试同绿)。本轮修掉两个真实运行时缺陷(均已提交):dispose 取消曾被 WP5-a 硬映射为 unavailable——插件树 reload 处置在途审批时 fork 报"无审批渠道",现映射 cancelled 让瀑布继续(`815a021`);审批时同步补尾曾可吃满整个机器决策预算——现切片为剩余预算的 1/4(`cac7603`)。提取器/Reviewer 在 scripted-adapter 环境下的 child 污染旋转与"册上无授权→转人工"路径亦经此验证。
 
 ## WP8 三期交付(2026-09-05)
 
@@ -63,3 +63,20 @@ WP7(授权抽屉 + 闲时提取器)合入后,在已发布 CLI + 封存 kit 上�
 **WP9-b(0a9660f)**:保留期剪除——pruneLifecycle 经 per-lifecycle 索引行拿键、逐行复核后删除(先记录后索引、失败即止可重放、删后回读),fail-closed 五态跳过;插件侧有界注册表(4096)+启动/turn-end 有界清扫(默认 grace 24h、单次上限 8);审计脊(sealed 链/授权抽屉/决策记录)永不剪。配置旋钮 factRetention/factRetentionGraceMs/factRetentionSweepLimit。
 
 **验证**:npm run check 66 文件/874 测试全绿(WP9-a 857→WP9-b +17),typecheck/build 绿;artifact/pending profile smoke 复跑见下节。**新增待验收项**:多日真实使用下 approve_for_me 域体积的有界性观察(单元/回归已证单条体积与剪除语义,长期曲线只能 live 观察);跨进程存量剪除依赖上游 loadAll 提案(docs/upstream-storage-loadall-proposal.md)。
+
+## WP10 五期交付(2026-09-06,genesis 首审机器评审)
+
+**计划**:`docs/genesis-first-approval-plan.md`(3461d44,本文 §3 目标行为表为 genesis 语义最高权威)。
+
+- **WP10-a(8150cc2)**:`genesisReview` 配置(默认 true)——空密封台账(无 chain_tips 行)合法化为 genesis,首审编译 genesis dossier 走机器评审;off 时回退 sealed-current-missing→delegate(码值在闭集/客户端 union/locales 保留,历史 sidecar 行渲染兼容)。
+- **WP10-b**:现状确认完成,零代码改动(gate 不阻塞等待模型提取,与摘录/抽屉降级原则一致)。
+- **WP10-d(ec40db9)**:决策记录存储 debug 可观测性(DSH_APPROVE_FOR_ME_DEBUG=1 记录 write 返回值)+ 12 项 delegate-human 落盘钉住测试。
+- **WP10-e(本次改动)**:两个 profile smoke 脚本的冷启动预期文案同步为 genesis 语义;`tests/adapters/plugin.test.ts` 增补 WP10-e 项 7 钉住——genesis 评审中取消(中途取消→cancelled、无授权无确认记录;预取消→cancelled 且 Reviewer 未被咨询)、评审中超时(→unavailable、无授权无确认记录)。
+
+**冷启动预期演化(WP10-e 项 9)**:上文 WP7 复跑记录中「冷启动委托到 composed answerer」的预期自本 WP 起更新为「冷启动机器评审(allow 与 human_review 两路)」——Reviewer allow→自动放行(createConfirmed 落盘);Reviewer human_review→delegate 人工;旧行为仅在 genesisReview:false 下成立。
+
+**smoke 现状(遗留)**:两个 profile smoke 安装的仍是 deployment-frozen 预 WP10 三件套(approve tarball 锁于 9c886a4,早于 genesisReview 键),其闭集 config 校验会拒绝未知键,故 smoke 配置无法显式置 genesisReview;profile-probe 夹具钉住的也仍是旧委托路径(每场景恰好一次 answerer 咨询 / delegated===true)。本次已在两个 smoke 脚本注释中标注该约束;待 demo kit 重建(需 npm run build 与锁文件翻动,另行安排)并更新 profile-probe 夹具后,smoke 才能在新产物上验证 genesis 语义(S1 allow 自动放行、S2 human_review 委托两路)。
+
+**验证**:npx vitest run 全量绿(900→903 项),npm run typecheck 绿;本波零源码改动,未跑 npm run build。
+
+**新增待验收项**:重建 demo kit 后 genesis 语义的 artifact/quality smoke 复跑;评审中取消/超时在 live 实例上的观察。

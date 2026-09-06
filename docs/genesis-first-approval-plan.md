@@ -1,6 +1,6 @@
 # 首审机器评审施工计划（genesis first-approval review）
 
-> **状态**：2026-09-06，方案待评审；未施工。
+> **状态**：2026-09-06，WP10-a/b/d/e 已施工（3461d44 / 8150cc2 / ec40db9 / 本次改动），待独立审查终审；WP10-c（配置层，另案）未施工。
 > **分支／基点**：建议 feat/genesis-first-approval；基点 main@d28d9a5（feat/approval-ledger 已并入）。
 > **权威关系**：本文对 genesis 首审语义（空密封台账合法化、chain-initialized 判定、首审抽屉降级）为最高权威；本文显式演化 [审批台账施工计划](approval-ledger-construction-plan.md) 的 empty-ledger 条款（WP4-b4 §4.4 路由）与 [0.1.2 验收记录](acceptance-0.1.2.md) 的冷启动委托预期，其余既有契约保持有效。总顺序见 [文档地图](README.md)，代码事实优先于本文行号。
 
@@ -72,6 +72,8 @@ trust-envelope 快速通道（现 live 配置 disabled）同样经 facts.resolve
 
 ### WP10-a genesis 取证分支
 
+> **完成状态：已施工（8150cc2），含钉住测试；待独立审查终审。**
+
 - `readSealedParentSessionFacts`：删除 `rows.length === 0 → empty-ledger` 早退（parent-session-fact-source.ts:435），让零行走正常 'ok' 构造：链验证循环平凡通过、epochs 空、packetRows 空、抽屉照常读、current 缺席（正常 pending）。返回的 SealedParentSessionFactsV1 形状不变（seals/activities/catalogEpochs 为空数组），**无 packet schema 变更**。
 - `source-backed-gate-facts.ts` resolve：移除 empty-ledger 分支（:446-447）；其余闭集校验原样。genesis 下 epoch 交叉校验 vacuous-ok、intervening-header 扫描与 currentFacts/carrier/compileSealed 不变。
 - `compileSealed`：核对零行 packet 通过全部闭集校验（sealed-dossier-compiler.ts:265 已只要求数组）；若有隐含非空假设，按闭集原则显式放开空数组并加钉。
@@ -79,10 +81,14 @@ trust-envelope 快速通道（现 live 配置 disabled）同样经 facts.resolve
 
 ### WP10-b 提取协同（确认现状即可，零或极小改动）
 
+> **完成状态：已确认现状（零代码改动，gate 不阻塞等待模型提取与既有降级原则一致）；待独立审查终审。**
+
 - gate **不阻塞等待模型提取**：抽屉取最近检查点状态，空=授权 unknown，交 Reviewer 权衡——与 excerpts/抽屉既有"失败/空降级、不阻塞审批"原则一致。审批到达时的 catch-up 在无新用户消息时只同步写空 delta 检查点（实测 12ms），有模型提取时异步进行、服务后续审批。**此行为已是现架构，本 WP 仅加测试钉住。**
 - 可选配置 `extractorWarmup`（默认 off）：放宽 plugin.ts:964-980 的 no-op guard，首条 root user/message 即初始化抽屉。默认保持懒惰（不为无审批会话白拉模型）；高审批密度部署可开。
 
 ### WP10-c 延迟余量
+
+> **完成状态：未施工（配置层，另案处理）。**
 
 - 实测：Extractor 14s、Reviewer 24s（deepseek-v4-flash-vision-exp），gate timeoutMs=30000，#2 仅剩 5.4s 余量。首审走评审后超时=retryable-capability→delegate，虽仍人工但浪费一轮评审。
 - 项 1：live profile 的 timeoutMs 提升至 45000（配置层，非代码）。
@@ -91,11 +97,15 @@ trust-envelope 快速通道（现 live 配置 disabled）同样经 facts.resolve
 
 ### WP10-d delegate-human 决策记录落盘修复
 
+> **完成状态：已施工（ec40db9，debug 可观测性 + 12 项钉住测试）；待独立审查终审。**
+
 - 症状：guardian→human_review→delegate 路径的 best-effort 记录不落盘（write 失败被 recordBestEffortSafely 静默吞掉）。
 - 排查：DSH_APPROVE_FOR_ME_DEBUG=1 在 .scratch 复现一次首/次审，观察 [approve-for-me gate] sealed/failure 日志与 store write 返回值；候选根因：tails 链内 put 校验失败、live 实例 domain 打开异常、或 sealed 处置字段在 live 构建上的形状偏差。
 - 修复后以 WP10-e 测试 3 钉住。
 
 ### WP10-e 测试与验收更新
+
+> **完成状态：已施工（本次改动）；待独立审查终审。** 项 1/2/3/4/5/6 由 WP10-a（8150cc2）的钉住测试覆盖；项 7 本次增补（genesis 评审中取消→cancelled、预取消→cancelled 且 Reviewer 未被咨询、评审中超时→unavailable，均无授权无确认记录）；项 8 非回归（903 测试全绿）；项 9 两 smoke 脚本文案已同步为 genesis 语义，但可执行断言仍受 deployment-frozen 预 WP10 产物约束（详见 acceptance-0.1.2.md WP10 节「smoke 现状」）。
 
 1. genesis ok e2e：首审（夹具 approval-e2e.ts 不加历史行）→ facts ok、dossier branded、packet 送达 Reviewer。
 2. genesis + Reviewer allow → allowed-once，createConfirmed 记录落盘（guardian route）。

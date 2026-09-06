@@ -160,6 +160,13 @@ function harness(options: {
    * (defaults to the module-level allow decision).
    */
   reviewerDecision?: (request: ReturnType<typeof parseApprovalReviewRequest>) => ReturnType<typeof decisionFor>
+  /**
+   * WP10-e item 7: hold the fake Reviewer delivery open for this many
+   * milliseconds before the decision is staged, simulating an in-review
+   * timeout (or a window in which cancellation can land). Default 0 keeps
+   * every existing test's timing semantics byte-identical.
+   */
+  reviewerDelayMs?: number
 } = {}): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
@@ -348,6 +355,10 @@ function harness(options: {
               deliveredPacket = packet
               const request = packet.request
               delivered = request
+              // WP10-e item 7: optional in-review hold (see harness option).
+              if (options.reviewerDelayMs !== undefined && options.reviewerDelayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, options.reviewerDelayMs))
+              }
               expect(childTool?.name).toBe(SUBMIT_DECISION_TOOL)
               // Simulate the real two-phase pipeline: the scoped tool stages
               // the candidate and the child-scoped tools/result observer is
@@ -1283,6 +1294,141 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     expect(sealed.catalogEpochs).toEqual([])
 
     await plugin.dispose()
+  })
+
+  it('WP10-e item 7: genesis review cancelled mid-review resolves cancelled with no authorization and no confirmed record', async () => {
+    // The cancellation lands while the scripted Reviewer is delivering its
+    // decision. The Reviewer still completes its delivery, but the gate must
+    // re-check the run lifecycle before honoring the decision or recording
+    // anything: cancel is checked BEFORE the disposition/record path, and
+    // re-checked after the review returns (pre-review-coordinator abort
+    // recheck). Outcome: cancelled, never allowed-once, no createConfirmed row.
+    const fixture = buildApprovalE2EFixture({ genesis: true })
+    await seedApprovalE2E(fixture)
+    const abort = new AbortController()
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+      reviewerDecision: request => {
+        abort.abort({ kind: 'user' })
+        return decisionFor(request)
+      },
+    })
+    const createConfirmed = vi.spyOn(DshStorageDomainGateDecisionRecordStore.prototype, 'createConfirmed')
+    try {
+      const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+      const session = fixture.parent.session as any
+      session.snapshotEvents = vi.fn(() => fixture.events)
+      session.eventAt = (seq: number) => fixture.events[seq]
+
+      await h.listeners.preExecute!({
+        agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+        arguments: { command: 'pwd', description: 'print the working directory' },
+        signal: new AbortController().signal, token: Symbol('wp10e-cancel'),
+      } as never, async () => ({ kind: 'ask' } as never))
+
+      const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string; signal: AbortSignal }): Promise<string> }
+      fixture.appendCurrentAsk()
+      const outcome = await policy.decide({
+        agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1', signal: abort.signal,
+      })
+      expect(outcome).toBe('cancelled')
+
+      // The review actually started (the cancellation was genuinely mid-review,
+      // not a pre-review short-circuit), yet nothing was authorized or recorded.
+      expect(h.deliveredPacket).toBeDefined()
+      expect(createConfirmed).not.toHaveBeenCalled()
+
+      await plugin.dispose()
+    } finally {
+      createConfirmed.mockRestore()
+    }
+  })
+
+  it('WP10-e item 7: an already-cancelled genesis ask resolves cancelled before the Reviewer is ever consulted', async () => {
+    // Cancel-before-record on the genesis path: the pipeline checks the abort
+    // signal before facts resolution and before any review delivery, so a
+    // pre-aborted request never reaches the Reviewer and never records.
+    const fixture = buildApprovalE2EFixture({ genesis: true })
+    await seedApprovalE2E(fixture)
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+    })
+    const createConfirmed = vi.spyOn(DshStorageDomainGateDecisionRecordStore.prototype, 'createConfirmed')
+    try {
+      const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+      const session = fixture.parent.session as any
+      session.snapshotEvents = vi.fn(() => fixture.events)
+      session.eventAt = (seq: number) => fixture.events[seq]
+
+      await h.listeners.preExecute!({
+        agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+        arguments: { command: 'pwd', description: 'print the working directory' },
+        signal: new AbortController().signal, token: Symbol('wp10e-precancel'),
+      } as never, async () => ({ kind: 'ask' } as never))
+
+      const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string; signal: AbortSignal }): Promise<string> }
+      fixture.appendCurrentAsk()
+      const abort = new AbortController()
+      abort.abort({ kind: 'user' })
+      const outcome = await policy.decide({
+        agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1', signal: abort.signal,
+      })
+      expect(outcome).toBe('cancelled')
+
+      // Cancelled before the review: no packet was ever delivered and no
+      // confirmed record was written.
+      expect(h.deliveredPacket).toBeUndefined()
+      expect(createConfirmed).not.toHaveBeenCalled()
+
+      await plugin.dispose()
+    } finally {
+      createConfirmed.mockRestore()
+    }
+  })
+
+  it('WP10-e item 7: genesis review exceeding the machine deadline resolves unavailable with no authorization', async () => {
+    // 评审中超时: the scripted Reviewer holds its delivery open past the
+    // configured machine deadline. The gate must fail closed to unavailable
+    // (never delegate, never allow) and must not land a confirmed record.
+    const fixture = buildApprovalE2EFixture({ genesis: true })
+    await seedApprovalE2E(fixture)
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+      reviewerDelayMs: 600,
+    })
+    const createConfirmed = vi.spyOn(DshStorageDomainGateDecisionRecordStore.prototype, 'createConfirmed')
+    try {
+      const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, timeoutMs: 150 })
+      const session = fixture.parent.session as any
+      session.snapshotEvents = vi.fn(() => fixture.events)
+      session.eventAt = (seq: number) => fixture.events[seq]
+
+      await h.listeners.preExecute!({
+        agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+        arguments: { command: 'pwd', description: 'print the working directory' },
+        signal: new AbortController().signal, token: Symbol('wp10e-timeout'),
+      } as never, async () => ({ kind: 'ask' } as never))
+
+      const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+      fixture.appendCurrentAsk()
+      const outcome = await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+      expect(outcome).toBe('unavailable')
+
+      // The review started (the timeout was genuinely mid-review), the decision
+      // arrived too late to authorize anything, and no confirmed record exists.
+      expect(h.deliveredPacket).toBeDefined()
+      expect(createConfirmed).not.toHaveBeenCalled()
+
+      await plugin.dispose()
+    } finally {
+      createConfirmed.mockRestore()
+    }
   })
 })
 

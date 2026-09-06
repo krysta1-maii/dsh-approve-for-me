@@ -259,6 +259,13 @@ try {
   const profileDir = join(dshHome, 'profiles', profile)
   const profileManifest = join(profileDir, 'package.json')
   const userPatch = join(profileDir, 'cordis.patch.yml')
+  // genesisReview is deliberately NOT set here: the deployment-frozen plugin
+  // artifact predates the key (WP10-a) and its closed-set config validation
+  // would reject it. Once the demo kit is rebuilt with WP10 code, this smoke
+  // should exercise the genesis machine-review path end to end (S1 Reviewer
+  // allow -> allowed-once without delegation; S2 Reviewer human_review ->
+  // delegate) and the profile-probe fixture's delegated assertions updated to
+  // match (separate wave).
   writeFileSync(userPatch, `- id: dsh-approve-for-me
   config:
     mode: auto-then-user
@@ -325,11 +332,24 @@ try {
 
   const result = JSON.parse(readFileSync(marker, 'utf8'))
   const { s1, s2 } = result
-  // WP6 sealed-facts gate cold-start: an unsealed lifecycle never grants
-  // directly (empty ledger -> sealed-current-missing -> auto-then-user ->
-  // delegate), so the composed answerer decides -- S1 grants the safe action,
-  // S2 rejects the denied one. This is the cold-start (no seal row yet) case
-  // only. WP6-b5: b3's read that pre-sealing was a gate/lifecycle limitation
+  // Genesis semantics (plan docs/genesis-first-approval-plan.md §3, WP10-a):
+  // an empty sealed ledger (no chain_tips row) is a LEGAL genesis state. With
+  // genesisReview at its default true the first ask enters machine review: a
+  // real-LLM Reviewer 'allow' grants allowed-once WITHOUT delegation, while
+  // 'human_review' routes to the composed answerer. The legacy empty-ledger ->
+  // sealed-current-missing -> auto-then-user -> delegate behavior now holds
+  // only with genesisReview: false (plan §5 rollback channel).
+  // Deployment-artifact constraint: this smoke installs the deployment-frozen
+  // pre-WP10 trio (approve tarball locked at source commit 9c886a4, before the
+  // genesisReview config key existed), so the observable behavior here is still
+  // the legacy cold-start delegate path on both scenarios, and the frozen
+  // plugin's closed-set config validation would reject a genesisReview key in
+  // cordis.patch.yml. The profile-probe fixture pins that legacy path
+  // (delegated === true on both scenarios) until the demo kit is rebuilt with
+  // WP10 code and the fixture gains genesis assertions (separate wave). The
+  // assertions below therefore pin the frozen artifact's legacy cold-start
+  // delegate: S1's answerer grants the safe action, S2's rejects the denied
+  // one. WP6-b5: b3's read that pre-sealing was a gate/lifecycle limitation
   // was a misdiagnosis -- the real cause was the Session eventAt 'this'-unpack
   // in src/dsh/parent-session-fact-source.ts (fixed WP6-b5), so a >=1-seal
   // lifecycle reaches the machine-policy allow path.
