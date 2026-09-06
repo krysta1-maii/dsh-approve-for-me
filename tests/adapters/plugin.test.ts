@@ -1393,7 +1393,10 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
   it('WP10-e item 7: genesis review exceeding the machine deadline resolves unavailable with no authorization', async () => {
     // 评审中超时: the scripted Reviewer holds its delivery open past the
     // configured machine deadline. The gate must fail closed to unavailable
-    // (never delegate, never allow) and must not land a confirmed record.
+    // (never delegate, never allow — this assertion holds under the default
+    // mode:'auto'; under mode:'auto-then-user' a post-review timeout
+    // deliberately routes retryable-capability → delegate) and must not land
+    // a confirmed record.
     const fixture = buildApprovalE2EFixture({ genesis: true })
     await seedApprovalE2E(fixture)
     const h = harness({

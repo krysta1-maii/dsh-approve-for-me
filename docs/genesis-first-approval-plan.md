@@ -72,19 +72,19 @@ trust-envelope 快速通道（现 live 配置 disabled）同样经 facts.resolve
 
 ### WP10-a genesis 取证分支
 
-> **完成状态：已施工（8150cc2），含钉住测试；待独立审查终审。**
+> **完成状态：已施工（8150cc2），含钉住测试；待独立审查终审。** 偏差说明（终审已确认）：实现保留 off 路径全链路——`genesisReview` 关闭（或缺省）时 empty-ledger → sealed-current-missing → delegate 行为字节级不变；仅 `genesisReview: true` 时零行走 genesis ok 构造，此时 reader 若仍返回 empty-ledger 属契约违例，抛 integrity 硬失败（never delegate）。
 
-- `readSealedParentSessionFacts`：删除 `rows.length === 0 → empty-ledger` 早退（parent-session-fact-source.ts:435），让零行走正常 'ok' 构造：链验证循环平凡通过、epochs 空、packetRows 空、抽屉照常读、current 缺席（正常 pending）。返回的 SealedParentSessionFactsV1 形状不变（seals/activities/catalogEpochs 为空数组），**无 packet schema 变更**。
-- `source-backed-gate-facts.ts` resolve：移除 empty-ledger 分支（:446-447）；其余闭集校验原样。genesis 下 epoch 交叉校验 vacuous-ok、intervening-header 扫描与 currentFacts/carrier/compileSealed 不变。
+- `readSealedParentSessionFacts`：零行早退改为门控——`rows.length === 0 && allowGenesis !== true` 时仍返回 `empty-ledger`（parent-session-fact-source.ts:452，off 路径保留）；`allowGenesis === true` 时让零行走正常 'ok' 构造：链验证循环平凡通过、epochs 空、packetRows 空、抽屉照常读、current 缺席（正常 pending）。返回的 SealedParentSessionFactsV1 形状不变（seals/activities/catalogEpochs 为空数组），**无 packet schema 变更**。
+- `source-backed-gate-facts.ts` resolve：empty-ledger 分支保留（:456-463）——`genesisReview === true` 时 reader 返回 empty-ledger 属 reader 契约违例，抛 `integrity`（sealed reader returned an empty ledger while genesis review is enabled），永不降级为可解释 delegate；`genesisReview` 关闭时维持旧行为（`sealed-current-missing` → delegate）。其余闭集校验原样。genesis 下 epoch 交叉校验 vacuous-ok、intervening-header 扫描与 currentFacts/carrier/compileSealed 不变。
 - `compileSealed`：核对零行 packet 通过全部闭集校验（sealed-dossier-compiler.ts:265 已只要求数组）；若有隐含非空假设，按闭集原则显式放开空数组并加钉。
-- gate-failure 路由表：`sealed-current-missing` 不再被抛出。码值在 GateFailureCode 闭集、client reason-code union 与 locales 中**保留**（历史 reasonCode sidecar 行的渲染兼容），删除抛点与路由项，更新 WP4-b4/WP6 钉住冷启动 delegate 的测试。
+- gate-failure 路由表：`sealed-current-missing` 码值与路由项**保留**（off 路径仍在抛出与映射；码值在 GateFailureCode 闭集、client reason-code union 与 locales 中亦保留，兼容历史 reasonCode sidecar 行的渲染），WP4-b4/WP6 钉住冷启动 delegate 的测试保持有效并增 `genesisReview: false` 回归钉。
 
 ### WP10-b 提取协同（确认现状即可，零或极小改动）
 
-> **完成状态：已确认现状（零代码改动，gate 不阻塞等待模型提取与既有降级原则一致）；待独立审查终审。**
+> **完成状态：已确认现状（零代码改动，gate 不阻塞等待模型提取与既有降级原则一致）；待独立审查终审。** 说明：本节列出的可选配置 `extractorWarmup` 未实施——保持默认懒惰行为，作为可选项另案处理。
 
 - gate **不阻塞等待模型提取**：抽屉取最近检查点状态，空=授权 unknown，交 Reviewer 权衡——与 excerpts/抽屉既有"失败/空降级、不阻塞审批"原则一致。审批到达时的 catch-up 在无新用户消息时只同步写空 delta 检查点（实测 12ms），有模型提取时异步进行、服务后续审批。**此行为已是现架构，本 WP 仅加测试钉住。**
-- 可选配置 `extractorWarmup`（默认 off）：放宽 plugin.ts:964-980 的 no-op guard，首条 root user/message 即初始化抽屉。默认保持懒惰（不为无审批会话白拉模型）；高审批密度部署可开。
+- 可选配置 `extractorWarmup`（默认 off）：放宽 plugin.ts:964-980 的 no-op guard，首条 root user/message 即初始化抽屉。默认保持懒惰（不为无审批会话白拉模型）；高审批密度部署可开。**未实施**（可选项，保持默认懒惰，另案）。
 
 ### WP10-c 延迟余量
 
@@ -122,7 +122,7 @@ trust-envelope 快速通道（现 live 配置 disabled）同样经 facts.resolve
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `genesisReview` | `true` | genesis 取证分支开关；false 回退为现行 sealed-current-missing→delegate 行为（回滚通道）。闭集 config 校验同步加键。 |
-| `extractorWarmup` | `false` | WP10-b 可选项：首条 root user/message 即初始化授权抽屉。 |
+| `extractorWarmup` | `false` | WP10-b 可选项：首条 root user/message 即初始化授权抽屉。**未实施**（可选项，保持默认懒惰，另案）。 |
 
 ## 6. 不变量对照（演化声明）
 

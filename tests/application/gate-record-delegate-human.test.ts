@@ -375,13 +375,19 @@ describe('WP10-d: silent durable-write failures become observable under the debu
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       vi.stubEnv('DSH_APPROVE_FOR_ME_DEBUG', '1')
-      const store = new DshStorageDomainGateDecisionRecordStore({ open: async () => { throw new Error('offline') } })
+      // The backend error message is truncated to a 200-char bound: the
+      // recognizable prefix survives in the log line, the tail does not.
+      const longTail = 'x'.repeat(400)
+      const store = new DshStorageDomainGateDecisionRecordStore({ open: async () => { throw new Error(`offline ${longTail}`) } })
       await store.recordBestEffort(delegateHumanRecord())
       await store.drain()
       expect(spy).toHaveBeenCalled()
       const lines = spy.mock.calls.map(c => c.join(' '))
       // The constructor-time open failure has no record context yet...
-      expect(lines.some(l => l.includes('domain-open-failed'))).toBe(true)
+      const openLine = lines.find(l => l.includes('domain-open-failed'))
+      expect(openLine).toBeDefined()
+      expect(openLine).toContain('offline ')
+      expect(openLine).not.toContain(longTail)
       // ...the write it forces surfaces with bounded record metadata.
       const line = lines.find(l => l.includes('domain-unavailable'))
       expect(line).toBeDefined()

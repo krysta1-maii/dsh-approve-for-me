@@ -92,20 +92,27 @@ const decisionRecordDomainSpec = Object.freeze({
  * swallowed upstream (the gate must never convert an audit failure into an
  * authorization decision), which also makes them invisible. With the debug flag
  * on, each failure point logs ONE bounded metadata line — route, normalized
- * outcome, stage and an error class only — never a packet, action, rationale or
- * hash. The log never influences a branch.
+ * outcome, stage and the error name plus a truncated message (at most 200
+ * chars). Live diagnosis needs the backend's own wording, so the message may
+ * embed backend keys/paths; the line never contains a packet, action,
+ * rationale or hash. Debug-gated (DSH_APPROVE_FOR_ME_DEBUG=1), stderr-only,
+ * and never influences a branch.
  */
 function debugRecordWriteFailure(stage: string, record: unknown, error?: unknown): void {
   if (process.env.DSH_APPROVE_FOR_ME_DEBUG !== '1') return
   const row = (record === null || typeof record !== 'object' ? {} : record) as Record<string, unknown>
   const field = (key: string): string | undefined => typeof row[key] === 'string' ? row[key] as string : undefined
+  const raw = error instanceof Error ? error.message : error === undefined ? undefined : String(error)
+  // 200-char bound: the message may carry backend keys/paths; keep the line
+  // recognizable without ever unbounding it.
+  const message = raw === undefined ? undefined : raw.length > 200 ? `${raw.slice(0, 200)}…` : raw
   console.error('[approve-for-me decision-record]', JSON.stringify({
     stage,
     route: field('route'),
     normalizedDecision: field('normalizedDecision'),
     pluginDisposition: field('pluginDisposition'),
     failureStage: field('failureStage'),
-    error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
+    error: message,
   }))
 }
 

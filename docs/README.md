@@ -16,7 +16,7 @@
 | 查看阶段性功能与业务审查 | [2026-08-29 GPT 审查报告](reviews/2026-08-29-functional-business-review-gpt.md) | 非规范、按提交冻结的审查快照 |
 | 决定下一步施工顺序 | [施工计划](construction-plan.md) | 当前执行计划 |
 | 长会话审批重构（sealed facts／授权台账） | [审批台账施工计划](approval-ledger-construction-plan.md) | 候选施工计划（feat/approval-ledger），新增语义最高权威 |
-| 首审机器评审（genesis 首审批复） | [首审机器评审施工计划](genesis-first-approval-plan.md) | 方案待评审（WP10），genesis 语义最高权威 |
+| 首审机器评审（genesis 首审批复） | [首审机器评审施工计划](genesis-first-approval-plan.md) | 已施工待终审后收尾（WP10），genesis 语义最高权威 |
 | 验收真实 DSH/Profile/Web 行为 | [集成验证清单](integration.md) | 目标验收清单（含完成度对账） |
 | 查看 0.1.2 验收证据 | [0.1.2 验收记录](acceptance-0.1.2.md) | 四道闸复跑记录 + policy-v3 live 补记 |
 | 复跑真实 LLM 判断质量验收 | [Guardian 质量冒烟规格](guardian-quality-smoke-spec.md) | S1/S2 已实现，S3 仅规格 |
