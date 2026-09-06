@@ -416,6 +416,17 @@ export async function readSealedParentSessionFacts(input: {
   readonly signal?: AbortSignal
   /** Authorization drawer reader (WP7-c1). When absent, authorizations defaults to empty array. */
   readonly authorizationLedger?: { readonly read: (lifecycleFingerprint: string) => Promise<readonly AuthorizationEntryV1[] | undefined> }
+  /**
+   * WP10-a genesis first-approval review. When true, a lifecycle whose sealed
+   * ledger holds zero rows (no chain tip was ever initialized) is a legal
+   * genesis state, not an explainable gap: the read returns a normal 'ok'
+   * packet with empty seals/activities/catalogEpochs, the authorization
+   * drawer is still read and live-verified entry by entry, and the current
+   * action stays absent (normal pending). When false or absent, zero rows
+   * keeps the legacy 'empty-ledger' result. A non-empty chain with any break
+   * still returns unavailable in both modes (unchanged).
+   */
+  readonly allowGenesis?: boolean
 }): Promise<SealedFactsReadResult> {
   const fail = (subcode: SealedFactsUnavailableSubcodeV1, reason: string, detail?: unknown): SealedFactsReadResult => {
     if (process.env.DSH_APPROVE_FOR_ME_DEBUG === '1') console.error('[approve-for-me fact-source]', reason, detail === undefined ? '' : JSON.stringify(detail))
@@ -432,7 +443,13 @@ export async function readSealedParentSessionFacts(input: {
   try { rows = await input.ledger.read(lifecycleFingerprint) } catch { return fail('ledger-storage-unavailable', 'ledger-read') }
   if (input.signal?.aborted) return fail('unclassified', 'aborted')
   if (rows === undefined) return fail('ledger-storage-unavailable', 'ledger-unavailable')
-  if (rows.length === 0) return { kind: 'empty-ledger' }
+  // WP10-a: zero rows means the lifecycle seal chain was never initialized.
+  // That is a common legal state (no completed approval-class action yet), so
+  // with genesis review enabled the read falls through to the normal 'ok'
+  // construction below: the chain-validation loop passes vacuously, epochs
+  // stay empty (the epoch cross-check is vacuous-ok), packetRows is empty,
+  // the drawer is still read, and the current action stays absent (pending).
+  if (rows.length === 0 && input.allowGenesis !== true) return { kind: 'empty-ledger' }
   // Disk-side chain integrity only: genesis → tip hash / topology / canonical
   // continuity. The seal chain is never a trust root, so we do NOT re-read the
   // whole Session here. Live eventAt re-binding happens only for the rows that

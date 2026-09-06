@@ -187,6 +187,41 @@ describe('createSealedDossierCompiler happy path', () => {
     expect(sealed.sealed.catalogEpochs).toEqual([{ epoch: 0, headerEventSeq: 3, commitment: hash('c') }])
   })
 
+  it('brands a genesis packet with zero sealed rows into a ready dossier with explicitly empty sealed sections (WP10-a)', () => {
+    const compile = compiler(256_000)
+    // A never-initialized lifecycle reads as a legal genesis state: no seals,
+    // no activities, no catalog epochs, empty drawer. Every closed-set check
+    // must pass vacuously and the dossier must still brand (plan §4 WP10-a).
+    const genesisPacket: SealedParentSessionFactsV1 = {
+      version: 1,
+      lifecycleFingerprint: lifecycle,
+      seals: [],
+      activities: [],
+      catalogEpochs: [],
+      authorizations: [],
+    }
+    const result = compile(input({ packet: genesisPacket }))
+    expect(result.kind).toBe('ready')
+    if (result.kind !== 'ready') return
+    const dossier = result.verified.dossier
+    const sealed = dossier.interaction as unknown as { readonly sealed: {
+      readonly current?: unknown
+      readonly tail: readonly unknown[]
+      readonly ledger: readonly unknown[]
+      readonly catalogEpochs: readonly unknown[]
+      readonly authorizations: readonly unknown[]
+    } }
+    // The empty history is explicit in the Reviewer-visible dossier, never a
+    // hidden degradation.
+    expect(sealed.sealed.current).toBeUndefined()
+    expect(sealed.sealed.tail).toEqual([])
+    expect(sealed.sealed.ledger).toEqual([])
+    expect(sealed.sealed.catalogEpochs).toEqual([])
+    expect(sealed.sealed.authorizations).toEqual([])
+    expect(result.verified.dossierHash).toBe(recomputeDossierHash(dossier))
+    expect(result.metrics.attemptCount).toBe(0)
+  })
+
   it('carries a current seal/activity when packet.current is present', () => {
     const compile = compiler(256_000)
     const theSeal = seal(9, 'completed', { approvalAsked: { eventSeq: 10, requestId: 'ask-1' } })

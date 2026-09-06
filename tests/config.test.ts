@@ -130,6 +130,15 @@ describe('plugin config', () => {
     expect(() => normalizeConfig({ ...valid(), sealBackfill: 1 as never })).toThrow(/sealBackfill must be a boolean/)
   })
 
+  it('unfreezes genesisReview as a real boolean defaulting to true (WP10-a)', () => {
+    // Genesis first-approval review defaults on; false is the rollback channel
+    // to the legacy sealed-current-missing delegate path.
+    expect(normalizeConfig(valid()).genesisReview).toBe(true)
+    expect(normalizeConfig({ ...valid(), genesisReview: false }).genesisReview).toBe(false)
+    expect(normalizeConfig({ ...valid(), genesisReview: true }).genesisReview).toBe(true)
+    expect(() => normalizeConfig({ ...valid(), genesisReview: 'yes' as never })).toThrow(/genesisReview must be a boolean/)
+  })
+
   it('normalizes the authorization extractor and drawer budget knobs to their single-source defaults (WP7-c2a)', () => {
     const normalized = normalizeConfig(valid())
     expect(normalized.authorizationExtractorEnabled).toBe(true)

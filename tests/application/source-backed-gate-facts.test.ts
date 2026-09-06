@@ -128,7 +128,7 @@ function validAskInput(userAgent: Agent = agent, overrides: Partial<SealedAskFac
   return { agent: userAgent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash', executionFact, approvalSnapshot, resolvedAction: action, approvalAsked: { seq: 6, type: 'approval/asked', turn: 1, step: 0 }, freeze, requester: { effectiveDelegationDepth: 0 }, ...overrides }
 }
 
-function resolver() {
+function resolver(genesisReview?: boolean) {
   const read = vi.fn(async (): Promise<SealedFactsReadResult> => ({ kind: 'ok', facts: packet() }))
   const compile = vi.fn(compileSealed())
   const snapshotInput = vi.fn()
@@ -144,6 +144,7 @@ function resolver() {
       maxSealedTailEvents: 512,
       projector: { project },
       snapshotInput,
+      genesisReview,
     }),
   }
 }
@@ -234,12 +235,41 @@ describe('SourceBackedGateFactResolver (sealed channel)', () => {
     await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'tail-budget-overflow' })
   })
 
-  it('routes an empty ledger to the explicit sealed-current-missing code', async () => {
-    const subject = resolver()
+  it('routes an empty ledger to the explicit sealed-current-missing code when genesis review is off (WP10-a legacy pin)', async () => {
+    const subject = resolver(false)
     subject.resolver.register(pending())
     subject.snapshotInput.mockResolvedValue({ agent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' })
     subject.read.mockResolvedValue({ kind: 'empty-ledger' })
     await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'sealed-current-missing' })
+  })
+
+  it('fails closed with integrity when an empty ledger reaches the resolver while genesis review is on (WP10-a)', async () => {
+    const subject = resolver(true)
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue({ agent, approvalRequestId: 'ask-1', callId: 'call-1', toolName: 'bash' })
+    subject.read.mockResolvedValue({ kind: 'empty-ledger' })
+    // The genesis-aware reader translates zero rows into an ok packet, so an
+    // empty-ledger here is a reader-contract violation: hard unavailable,
+    // never an explainable delegate.
+    await expect(subject.resolver.resolve(request)).rejects.toMatchObject({ code: 'integrity' })
+    expect(subject.compile).not.toHaveBeenCalled()
+  })
+
+  it('resolves a genesis packet with empty sealed history into the machine review path (WP10-a default)', async () => {
+    const subject = resolver(true)
+    subject.resolver.register(pending())
+    subject.snapshotInput.mockResolvedValue(validAskInput())
+    // Genesis packet: no seals, no activities, no catalog epochs. The epoch
+    // cross-check is vacuous-ok and the current action's own frozen
+    // commitment is validated by the capture side, not the ledger.
+    subject.read.mockResolvedValue({ kind: 'ok', facts: packet({ catalogEpochs: [] }) })
+    const facts = { action: baseAction(), toolSchemaFingerprint: 'f', classification: { kind: 'classified', classification: 'body-escalation' }, breakerKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, actionHash: request.actionHash }, allowCacheKey: { parentLifecycleFingerprint: lifecycleFingerprint, turn: 1, directUserFrontierSeq: 6, actionHash: request.actionHash, generation: 'g', configurationFingerprint: 'c' }, rootRequester: true, directChildOrigin: false, generation: 'g', configurationFingerprint: 'c', policyVersion: 'p' } as never
+    subject.project.mockReturnValue(facts)
+    await expect(subject.resolver.resolve(request)).resolves.toBe(facts)
+    expect(subject.read).toHaveBeenCalledTimes(1)
+    expect(subject.compile).toHaveBeenCalledTimes(1)
+    expect(subject.compile.mock.calls[0]![0].packet.catalogEpochs).toEqual([])
+    expect(subject.compile.mock.calls[0]![0].packet.seals).toEqual([])
   })
 
   it('requires the exact snapshot input before compiling the sealed packet', async () => {

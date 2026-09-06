@@ -81,7 +81,7 @@ function decisionFor(request: ReturnType<typeof parseApprovalReviewRequest>) {
     actionHash: request.actionHash,
     decision: 'allow',
     risk: 'low',
-    categories: [],
+    categories: [] as string[],
     userAuthorization: 'explicit',
     rationale: 'The request is explicitly authorized.',
   }
@@ -155,6 +155,11 @@ function harness(options: {
    * directory as the only valid childSession evidence.
    */
   existingExtractorChild?: boolean
+  /**
+   * WP10-a: override the structured decision the fake Reviewer deliver submits
+   * (defaults to the module-level allow decision).
+   */
+  reviewerDecision?: (request: ReturnType<typeof parseApprovalReviewRequest>) => ReturnType<typeof decisionFor>
 } = {}): InstallHarness {
   const listeners: InstallHarness['listeners'] = {
     preExecute: undefined,
@@ -351,7 +356,7 @@ function harness(options: {
                 callId: 'child-call-1',
                 rootCallId: 'child-call-1',
                 name: SUBMIT_DECISION_TOOL,
-                arguments: decisionFor(request),
+                arguments: options.reviewerDecision?.(request) ?? decisionFor(request),
                 agent: { id: 'reviewer-1', session: { id: 'reviewer-1' } },
                 signal: new AbortController().signal,
                 token: Symbol('token'),
@@ -1143,18 +1148,20 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
     await plugin.dispose()
   })
 
-  it('records a real source-backed unavailable reason code and reads it back (WP5-c)', async () => {
+  it('records a real source-backed unavailable reason code and reads it back (WP5-c, genesisReview off legacy pin)', async () => {
     const fixture = buildApprovalE2EFixture({ padEvents: 0 })
-    // Deliberately do NOT seed a sealed ledger, so the sealed reader returns an
-    // empty ledger -> the resolver throws `sealed-current-missing` (an
-    // explainable unsealed current action) and the gate records a metadata-only
-    // post-facts-failure row with that typed reason code.
+    // Deliberately do NOT seed a sealed ledger. With genesisReview disabled the
+    // sealed reader returns an empty ledger -> the resolver throws
+    // `sealed-current-missing` (an explainable unsealed current action) and the
+    // gate records a metadata-only post-facts-failure row with that typed
+    // reason code. This pins the pre-WP10-a cold-start behavior as the
+    // rollback channel (plan §5 genesisReview: false).
     const h = harness({
       schemas: [approvalE2ESchemas],
       storageDomain: fixture.storageDomain,
       agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
     })
-    const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+    const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, genesisReview: false })
     const session = fixture.parent.session as any
     session.snapshotEvents = vi.fn(() => fixture.events)
     session.eventAt = (seq: number) => fixture.events[seq]
@@ -1172,6 +1179,108 @@ describe('storage-domain approve e2e (WP4-c item 4/5)', () => {
 
     // The server read-only channel resolves the typed reason code for the ask.
     await expect(plugin.readApprovalReasonCode('ask-1')).resolves.toBe('sealed-current-missing')
+
+    await plugin.dispose()
+  })
+
+  it('WP10-a genesis first approval: reviewer allow grants allowed-once and lands a confirmed guardian record', async () => {
+    // Genesis scenario: the fixture seeds NO sealed ledger rows (the lifecycle
+    // was never initialized), so the default config (genesisReview true) must
+    // take the first approval into machine review instead of delegating.
+    const fixture = buildApprovalE2EFixture({ genesis: true })
+    await seedApprovalE2E(fixture)
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+    })
+    const createConfirmed = vi.spyOn(DshStorageDomainGateDecisionRecordStore.prototype, 'createConfirmed')
+    try {
+      const plugin = installApproveForMe(h.ctx as unknown as Context, config)
+      const session = fixture.parent.session as any
+      session.snapshotEvents = vi.fn(() => fixture.events)
+      session.eventAt = (seq: number) => fixture.events[seq]
+
+      await h.listeners.preExecute!({
+        agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+        arguments: { command: 'pwd', description: 'print the working directory' },
+        signal: new AbortController().signal, token: Symbol('wp10a-allow'),
+      } as never, async () => ({ kind: 'ask' } as never))
+
+      const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+      fixture.appendCurrentAsk()
+      const outcome = await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+      expect(outcome).toBe('allowed-once')
+
+      // The Reviewer was actually consulted: the genesis dossier carries an
+      // explicitly empty sealed history (never a hidden degradation).
+      expect(h.deliveredPacket).toBeDefined()
+      const sealed = (h.deliveredPacket as any)?.dossier?.interaction?.sealed
+      expect(sealed).toBeDefined()
+      expect(sealed.tail).toEqual([])
+      expect(sealed.ledger).toEqual([])
+      expect(sealed.catalogEpochs).toEqual([])
+      expect(sealed.authorizations).toEqual([])
+
+      // The allow was durably confirmed (createConfirmed) before the grant.
+      expect(createConfirmed).toHaveBeenCalledTimes(1)
+      expect(createConfirmed).toHaveBeenCalledWith(expect.objectContaining({
+        requestId: 'ask-1',
+        route: 'guardian',
+        normalizedDecision: 'allow',
+        pluginDisposition: 'allow',
+      }))
+
+      await plugin.dispose()
+    } finally {
+      createConfirmed.mockRestore()
+    }
+  })
+
+  it('WP10-a genesis first approval: reviewer human_review delegates in auto-then-user mode', async () => {
+    const fixture = buildApprovalE2EFixture({ genesis: true })
+    await seedApprovalE2E(fixture)
+    const h = harness({
+      schemas: [approvalE2ESchemas],
+      storageDomain: fixture.storageDomain,
+      agents: { get: id => id === 'parent-1' ? fixture.parent : undefined },
+      reviewerDecision: request => ({
+        protocolVersion: 1,
+        reviewId: request.reviewId,
+        parentSessionId: request.parentSessionId,
+        reviewerSessionId: request.reviewerSessionId,
+        generation: request.generation,
+        actionHash: request.actionHash,
+        decision: 'human_review',
+        risk: 'high',
+        categories: ['authorization-unknown'],
+        userAuthorization: 'unknown',
+        rationale: 'No retained user authorization evidence in a genesis lifecycle.',
+      }),
+    })
+    const plugin = installApproveForMe(h.ctx as unknown as Context, { ...config, mode: 'auto-then-user' })
+    const session = fixture.parent.session as any
+    session.snapshotEvents = vi.fn(() => fixture.events)
+    session.eventAt = (seq: number) => fixture.events[seq]
+
+    await h.listeners.preExecute!({
+      agent: fixture.parent, callId: 'call-1', rootCallId: 'call-1', name: 'bash',
+      arguments: { command: 'pwd', description: 'print the working directory' },
+      signal: new AbortController().signal, token: Symbol('wp10a-human'),
+    } as never, async () => ({ kind: 'ask' } as never))
+
+    const policy = h.machinePolicy as { decide(request: { agent: typeof fixture.parent; toolName: string; callId: string; requestId: string }): Promise<string> }
+    fixture.appendCurrentAsk()
+    // The Reviewer's evidence judgment (human_review) routes to the human
+    // waterfall in auto-then-user mode; the machine never self-grants.
+    const outcome = await policy.decide({ agent: fixture.parent, toolName: 'bash', callId: 'call-1', requestId: 'ask-1' })
+    expect(outcome).toBe('delegate')
+
+    expect(h.deliveredPacket).toBeDefined()
+    const sealed = (h.deliveredPacket as any)?.dossier?.interaction?.sealed
+    expect(sealed).toBeDefined()
+    expect(sealed.tail).toEqual([])
+    expect(sealed.catalogEpochs).toEqual([])
 
     await plugin.dispose()
   })

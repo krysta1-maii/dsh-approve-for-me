@@ -1086,4 +1086,88 @@ describe('readSealedParentSessionFacts authorization drawer (WP7-c1)', () => {
   })
 })
 
+describe('readSealedParentSessionFacts genesis (WP10-a)', () => {
+  const genesisBase = () => {
+    const requester = agent()
+    return {
+      agent: requester as never,
+      registry: { get: () => requester as never },
+      executionFacts: { async get() { return undefined } },
+      approvalRequestId: 'ask-1',
+      callId: 'call-1',
+      toolName: 'bash',
+    }
+  }
+
+  it('keeps returning empty-ledger for a zero-row ledger without the genesis switch', async () => {
+    const base = genesisBase()
+    await expect(readSealedParentSessionFacts({ ...base, ledger: ledger([]) })).resolves.toMatchObject({ kind: 'empty-ledger' })
+    await expect(readSealedParentSessionFacts({ ...base, ledger: ledger([]), allowGenesis: false })).resolves.toMatchObject({ kind: 'empty-ledger' })
+  })
+
+  it('returns a normal ok genesis packet for a never-initialized lifecycle when the genesis switch is on', async () => {
+    const base = genesisBase()
+    const facts = okFacts(await readSealedParentSessionFacts({ ...base, ledger: ledger([]), allowGenesis: true }))
+    expect(facts.version).toBe(1)
+    expect(facts.lifecycleFingerprint).toBe(canonicalJson(lifecycle))
+    // Empty sealed history is the legal genesis state: the Reviewer sees empty
+    // seals/activities/catalogEpochs explicitly (plan §2), never a hidden drop.
+    expect(facts.seals).toEqual([])
+    expect(facts.activities).toEqual([])
+    expect(facts.catalogEpochs).toEqual([])
+    expect(facts.authorizations).toEqual([])
+    // The current action stays absent: asked precedes any result seal (pending).
+    expect(facts.current).toBeUndefined()
+  })
+
+  it('still reads and live-verifies the authorization drawer entry by entry on a genesis read', async () => {
+    const base = genesisBase()
+    // agent() carries a direct user/message at seq 1 (time 101, text 'pwd').
+    const authEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: canonicalJson(lifecycle),
+      sourceSeq: 1,
+      occurredAt: 101,
+      quote: 'pwd',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '0'.repeat(64),
+    })
+    const authLedger = { read: vi.fn().mockResolvedValue([authEntry]) }
+    const facts = okFacts(await readSealedParentSessionFacts({ ...base, ledger: ledger([]), allowGenesis: true, authorizationLedger: authLedger }))
+    expect(authLedger.read).toHaveBeenCalledTimes(1)
+    expect(facts.authorizations).toHaveLength(1)
+    expect(facts.authorizations[0]!.quote).toBe('pwd')
+    expect(facts.authorizations[0]!.effect).toBe('grant')
+  })
+
+  it('still fails closed when a genesis drawer entry does not re-bind to the live session', async () => {
+    const base = genesisBase()
+    const badEntry = createAuthorizationEntryV1({
+      lifecycleFingerprint: canonicalJson(lifecycle),
+      sourceSeq: 1,
+      occurredAt: 999,
+      quote: 'pwd',
+      effect: 'grant',
+      coverage: 'action',
+      summary: 'grant summary',
+      extractorVersion: 'v1',
+      previousEntryHash: 'sha256:' + '1'.repeat(64),
+    })
+    const authLedger = { read: vi.fn().mockResolvedValue([badEntry]) }
+    await expect(readSealedParentSessionFacts({ ...base, ledger: ledger([]), allowGenesis: true, authorizationLedger: authLedger }))
+      .resolves.toMatchObject({ kind: 'unavailable', subcode: 'seal-live-rebind-failed' })
+  })
+
+  it('keeps a broken non-empty chain hard unavailable even with the genesis switch on', async () => {
+    const fixture = sealedReaderFixture()
+    const old = fixture.rows[1]!
+    const seal = reseal(old.seal, { previousSealHash: sealedHash('f') })
+    fixture.rows[1] = { seal, activity: reactivate(seal, old.activity) }
+    await expect(readSealedParentSessionFacts({ ...fixture.base, ledger: ledger(fixture.rows), allowGenesis: true }))
+      .resolves.toMatchObject({ kind: 'unavailable' })
+  })
+})
+
 })

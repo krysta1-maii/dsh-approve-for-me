@@ -134,6 +134,16 @@ export interface SourceBackedGateFactResolverDependencies {
   readonly generation?: string
   readonly policyVersion?: string
   readonly reviewerConfigurationFingerprint?: string
+  /**
+   * WP10-a genesis first-approval review (plugin config `genesisReview`,
+   * default true). The wired reader translates an uninitialized lifecycle
+   * (zero chain rows) into a normal ok genesis packet, so an 'empty-ledger'
+   * result reaching this switch means the reader was miswired: fail closed
+   * with a hard integrity failure, never an explainable delegate. When false
+   * or absent the legacy branch is preserved byte-for-byte (empty-ledger ->
+   * sealed-current-missing, delegated in auto-then-user mode).
+   */
+  readonly genesisReview?: boolean | undefined
   /** Obtains the exact capture/sidecar facts + live re-validation for this same immutable approval ask. */
   snapshotInput(pending: PendingSourceBackedAsk, signal?: AbortSignal, deadlineAt?: number): Promise<SealedAskFactsInputV1 | undefined>
 }
@@ -444,6 +454,12 @@ export class SourceBackedGateFactResolver implements GateActionFactResolver {
       case 'tail-budget-overflow':
         throw gateFailure('tail-budget-overflow', `approval sealed tail exceeds maxSealedTailEvents (${read.sealedCount}/${read.maxSealedTailEvents})`)
       case 'empty-ledger':
+        if (this.deps.genesisReview === true) {
+          // The genesis-aware reader never returns this shape; an empty ledger
+          // here is a reader-contract violation and must fail closed, never
+          // degrade to an explainable missing seal that delegates.
+          throw gateFailure('integrity', 'sealed reader returned an empty ledger while genesis review is enabled')
+        }
         throw gateFailure('sealed-current-missing', 'no sealed facts exist for this lifecycle; the current action is unsealed pending')
       case 'ok':
         break

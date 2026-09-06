@@ -46,6 +46,14 @@ export interface ApprovalE2EFixture {
 interface ApprovalE2EOptions {
   readonly padEvents?: number
   readonly maxSealedTailEvents?: number
+  /**
+   * WP10-a genesis first-approval scenario: build the same self-consistent
+   * session/capture fixture but seed NO sealed ledger rows and NO historical
+   * execution fact, so the lifecycle reads as never-initialized (zero chain
+   * rows = legal genesis). The current ask's capture-side facts are still
+   * written by the real pipeline; only the historical sealed row is omitted.
+   */
+  readonly genesis?: boolean
 }
 
 export const approvalE2ESchemas = { name: 'bash', description: 'Execute a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }
@@ -163,6 +171,12 @@ export function buildApprovalE2EFixture(options: ApprovalE2EOptions = {}): Appro
     async seedInternal() {
       if (seeded !== undefined) return
       const facts = new DshStorageDomainFactRepositories(storage.facility)
+      seeded = new DshStorageDomainSealedFacts(storage.facility)
+      if (options.genesis === true) {
+        // Genesis: the lifecycle has no sealed history at all. The ledger stays
+        // empty so the sealed reader observes zero rows (never initialized).
+        return
+      }
       await facts.create(pastExecution)
       const seal = createSealV1({
         lifecycleFingerprint,
@@ -186,7 +200,6 @@ export function buildApprovalE2EFixture(options: ApprovalE2EOptions = {}): Appro
         resultCategory: 'completed',
         sourceSealHash: seal.sealHash,
       })
-      seeded = new DshStorageDomainSealedFacts(storage.facility)
       await seeded.append(seal, activity)
       // The historical row's result is already on disk; no repair needed.
     },

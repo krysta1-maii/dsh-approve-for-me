@@ -136,6 +136,15 @@ export interface Config {
   readonly trustEnvelope?: Partial<TrustEnvelopeConfigV1>
   readonly toolCatalog?: ApprovalToolCatalog
   readonly caseCapture?: GuardianCaseCaptureConfigV1
+  /**
+   * WP10-a genesis first-approval review (default true). When enabled, a sealed
+   * ledger whose lifecycle was never initialized (zero chain rows) reads as a
+   * legal genesis state and the first approval goes to machine review with an
+   * empty sealed history. When false, the legacy behavior is preserved
+   * byte-for-byte: an empty ledger surfaces sealed-current-missing and routes
+   * to the human waterfall in auto-then-user mode (rollback channel).
+   */
+  readonly genesisReview?: boolean
   readonly reviewer: {
     readonly generation: string
     readonly provider: string
@@ -169,6 +178,7 @@ export const Config: z<Config> = z.object({
   trustEnvelope: z.any(),
   toolCatalog: z.any(),
   caseCapture: z.any(),
+  genesisReview: z.boolean(),
   reviewer: z.object({
     generation: z.string().min(1).required(),
     provider: z.string().min(1).required(),
@@ -200,6 +210,7 @@ export interface NormalizedConfig {
   readonly trustEnvelope: TrustEnvelopeConfigV1
   readonly toolCatalog: ApprovalToolCatalog
   readonly caseCapture: GuardianCaseCaptureConfigV1
+  readonly genesisReview: boolean
   readonly preset: ReviewerProviderDataV1
 }
 
@@ -404,6 +415,12 @@ export function normalizeConfig(config: Config): NormalizedConfig {
   if (!Number.isSafeInteger(factRetentionSweepLimit) || factRetentionSweepLimit < 1) {
     throw new TypeError('factRetentionSweepLimit must be a positive safe integer')
   }
+  // WP10-a: genesis first-approval review, fail-closed validated. An invalid
+  // value must never silently flip the first-approval safety boundary.
+  const genesisReview = config.genesisReview ?? true
+  if (typeof genesisReview !== 'boolean') {
+    throw new TypeError('genesisReview must be a boolean')
+  }
   const reviewerConfig: ReviewerConfiguration = {
     generation: config.reviewer.generation,
     modelRoute: {
@@ -435,6 +452,7 @@ export function normalizeConfig(config: Config): NormalizedConfig {
     trustEnvelope: normalizeTrustEnvelope(config.trustEnvelope),
     toolCatalog: normalizeToolCatalog(config.toolCatalog),
     caseCapture: normalizeCaseCapture(config.caseCapture),
+    genesisReview,
     preset: createReviewerProviderData(reviewerConfig),
   })
 }

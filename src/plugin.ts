@@ -438,7 +438,7 @@ export function installApproveForMe(
   }
   const sealedFacts: SealedFactsReader = {
     read: ({ agent, approvalRequestId, callId, toolName, maxSealedTailEvents, signal }) =>
-      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, authorizationLedger, approvalRequestId, callId, toolName, maxSealedTailEvents, ...(signal === undefined ? {} : { signal }) }),
+      readSealedParentSessionFacts({ agent, registry, ledger, executionFacts, authorizationLedger, approvalRequestId, callId, toolName, maxSealedTailEvents, allowGenesis: normalized.genesisReview, ...(signal === undefined ? {} : { signal }) }),
   }
   const compileSealed = createSealedDossierCompiler({
     maxHotPacketBytes: normalized.maxHotPacketBytes,
@@ -470,6 +470,10 @@ export function installApproveForMe(
     sealedFacts,
     compileSealed,
     maxSealedTailEvents: normalized.maxSealedTailEvents,
+    // WP10-a: genesis first-approval review switch (config genesisReview,
+    // default true). Off preserves the legacy empty-ledger ->
+    // sealed-current-missing delegate path byte-for-byte.
+    genesisReview: normalized.genesisReview,
     // WP5-a: the resolver carries this generation/policy/reviewer-config metadata
     // so a source-backed failure can be recorded as a metadata-only audit row.
     generation: normalized.preset.generation,
